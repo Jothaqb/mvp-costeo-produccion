@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Imported Data</h1>
+    {% if batches %}
+      <table>
+        <thead>
+          <tr>
+            <th>Batch</th>
+            <th>File</th>
+            <th>Imported at</th>
+            <th>Products</th>
+            <th>BOM lines</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for batch in batches %}
+            <tr>
+              <td>{{ batch.id }}</td>
+              <td>{{ batch.file_name }}</td>
+              <td>{{ batch.imported_at }}</td>
+              <td>{{ batch.product_count }}</td>
+              <td>{{ batch.line_count }}</td>
+              <td><a href="/imports/{{ batch.id }}">Review</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No imports yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}

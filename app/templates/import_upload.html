@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Import Loyverse CSV</h1>
+    <form action="/imports" method="post" enctype="multipart/form-data">
+      <label for="file">CSV file</label>
+      <input id="file" name="file" type="file" accept=".csv,text/csv" required>
+      <button type="submit">Import</button>
+    </form>
+  </section>
+{% endblock %}

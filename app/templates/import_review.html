@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Import Review</h1>
+    <dl class="summary">
+      <div>
+        <dt>Batch</dt>
+        <dd>{{ batch.id }}</dd>
+      </div>
+      <div>
+        <dt>File</dt>
+        <dd>{{ batch.file_name }}</dd>
+      </div>
+      <div>
+        <dt>Total imported products</dt>
+        <dd>{{ product_count }}</dd>
+      </div>
+      <div>
+        <dt>Total BOM lines</dt>
+        <dd>{{ bom_line_count }}</dd>
+      </div>
+      <div>
+        <dt>Unknown lines</dt>
+        <dd>{{ unknown_count }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Lines by component type</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Component type</th>
+          <th>Lines</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for component_type, count in component_type_counts.items() %}
+          <tr>
+            <td>{{ component_type }}</td>
+            <td>{{ count }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Products</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Name</th>
+          <th>Standard cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for header in headers %}
+          <tr>
+            <td>{{ header.product_sku }}</td>
+            <td>{{ header.product_name }}</td>
+            <td>{{ header.standard_cost or "" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>BOM Lines</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Row</th>
+          <th>Product SKU</th>
+          <th>Component SKU</th>
+          <th>Component name</th>
+          <th>Quantity</th>
+          <th>Cost</th>
+          <th>Type</th>
+          <th>Include in real cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in lines %}
+          <tr>
+            <td>{{ line.source_row_number }}</td>
+            <td>{{ line.bom_header.product_sku }}</td>
+            <td>{{ line.component_sku or "" }}</td>
+            <td>{{ line.component_name }}</td>
+            <td>{{ line.quantity or "" }}</td>
+            <td>{{ line.component_cost or "" }}</td>
+            <td>{{ line.component_type }}</td>
+            <td>{{ "yes" if line.include_in_real_cost else "no" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}
