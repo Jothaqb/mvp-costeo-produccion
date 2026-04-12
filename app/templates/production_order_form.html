@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="get" action="/production-orders/new">
+      <label for="q">Search manufactured product</label>
+      <input id="q" name="q" value="{{ search or '' }}" placeholder="SKU or partial product name">
+      <button type="submit">Search</button>
+      <a href="/production-orders/new">Clear</a>
+    </form>
+
+    <form method="post" action="/production-orders">
+      <input type="hidden" name="search" value="{{ search or '' }}">
+      <label for="internal_order_number">Internal order number</label>
+      <input id="internal_order_number" name="internal_order_number" required>
+
+      <label for="loyverse_order_ref">Loyverse reference</label>
+      <input id="loyverse_order_ref" name="loyverse_order_ref">
+
+      <label for="production_date">Production date</label>
+      <input id="production_date" name="production_date" type="date" required>
+
+      <label for="product_id">Product</label>
+      <select id="product_id" name="product_id" required>
+        {% for product in products %}
+          <option value="{{ product.id }}">{{ product.sku }} - {{ product.name }}</option>
+        {% endfor %}
+      </select>
+      {% if not products %}
+        <p>No manufactured products matched your search.</p>
+      {% endif %}
+
+      <label for="planned_qty">Planned quantity</label>
+      <input id="planned_qty" name="planned_qty">
+
+      <label for="notes">Notes</label>
+      <textarea id="notes" name="notes"></textarea>
+
+      <button type="submit">Create draft</button>
+    </form>
+  </section>
+{% endblock %}

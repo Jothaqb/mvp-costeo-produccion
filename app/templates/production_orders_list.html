@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Production Orders</h1>
+    <p><a class="button" href="/production-orders/new">New Production Order</a></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Order</th>
+          <th>Date</th>
+          <th>Product</th>
+          <th>Route</th>
+          <th>Status</th>
+          <th>Yield</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for order in orders %}
+          <tr>
+            <td>{{ order.internal_order_number }}</td>
+            <td>{{ order.production_date }}</td>
+            <td>{{ order.product_sku_snapshot }} - {{ order.product_name_snapshot }}</td>
+            <td>{{ order.route_name_snapshot }} v{{ order.route_version_snapshot }}</td>
+            <td>{{ order.status }}</td>
+            <td>{{ order.yield_percent or "" }}</td>
+            <td><a href="/production-orders/{{ order.id }}">Open</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

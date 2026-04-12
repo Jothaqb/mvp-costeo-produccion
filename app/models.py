@@ -175,3 +175,79 @@ class MachineRate(Base):
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     machine: Mapped[Machine] = relationship(back_populates="rates")
+
+
+class ProductionOrder(Base):
+    __tablename__ = "production_orders"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'in_progress', 'closed')",
+            name="ck_production_orders_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    internal_order_number: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    loyverse_order_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    production_date: Mapped[date] = mapped_column(Date, nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    product_sku_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
+    product_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    route_id: Mapped[int] = mapped_column(ForeignKey("routes.id"), nullable=False)
+    route_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    route_version_snapshot: Mapped[str] = mapped_column(String(50), nullable=False)
+    process_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    planned_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    input_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    output_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    yield_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    product: Mapped[Product] = relationship()
+    route: Mapped[Route] = relationship()
+    materials: Mapped[list["ProductionOrderMaterial"]] = relationship(
+        back_populates="production_order",
+        cascade="all, delete-orphan",
+    )
+    activities: Mapped[list["ProductionOrderActivity"]] = relationship(
+        back_populates="production_order",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProductionOrderMaterial(Base):
+    __tablename__ = "production_order_materials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    production_order_id: Mapped[int] = mapped_column(ForeignKey("production_orders.id"), nullable=False)
+    component_sku: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    component_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    quantity_standard: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    unit_cost_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    line_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    component_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    include_in_real_cost: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    production_order: Mapped[ProductionOrder] = relationship(back_populates="materials")
+
+
+class ProductionOrderActivity(Base):
+    __tablename__ = "production_order_activities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    production_order_id: Mapped[int] = mapped_column(ForeignKey("production_orders.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    activity_code_snapshot: Mapped[str] = mapped_column(String(50), nullable=False)
+    activity_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    labor_minutes: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    machine_minutes: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    labor_rate_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    overhead_rate_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    machine_rate_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    production_order: Mapped[ProductionOrder] = relationship(back_populates="activities")

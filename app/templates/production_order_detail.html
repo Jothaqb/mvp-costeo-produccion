@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ order.internal_order_number }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <dl class="summary">
+      <div>
+        <dt>Status</dt>
+        <dd>{{ order.status }}</dd>
+      </div>
+      <div>
+        <dt>Product</dt>
+        <dd>{{ order.product_sku_snapshot }} - {{ order.product_name_snapshot }}</dd>
+      </div>
+      <div>
+        <dt>Route</dt>
+        <dd>{{ order.route_name_snapshot }} v{{ order.route_version_snapshot }}</dd>
+      </div>
+      <div>
+        <dt>Process</dt>
+        <dd>{{ order.process_type }}</dd>
+      </div>
+      <div>
+        <dt>Production date</dt>
+        <dd>{{ order.production_date }}</dd>
+      </div>
+      <div>
+        <dt>Planned quantity</dt>
+        <dd>{{ order.planned_qty or "" }}</dd>
+      </div>
+      <div>
+        <dt>Input quantity</dt>
+        <dd>{{ order.input_qty or "" }}</dd>
+      </div>
+      <div>
+        <dt>Output quantity</dt>
+        <dd>{{ order.output_qty or "" }}</dd>
+      </div>
+      <div>
+        <dt>Yield</dt>
+        <dd>{{ order.yield_percent or "" }}</dd>
+      </div>
+    </dl>
+
+    {% if not is_closed %}
+      <div class="actions">
+        {% if order.status == "draft" %}
+          <form method="post" action="/production-orders/{{ order.id }}/start">
+            <button type="submit">Start order</button>
+          </form>
+        {% endif %}
+        {% if order.status == "in_progress" %}
+          <form method="post" action="/production-orders/{{ order.id }}/close">
+            <button type="submit">Close order</button>
+          </form>
+        {% endif %}
+      </div>
+    {% else %}
+      <p>Closed orders are read-only.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Yield Capture</h2>
+    {% if not is_closed %}
+      <form method="post" action="/production-orders/{{ order.id }}/yield">
+        <label for="input_qty">Input quantity</label>
+        <input id="input_qty" name="input_qty" value="{{ order.input_qty if order.input_qty is not none else '' }}">
+
+        <label for="output_qty">Output quantity</label>
+        <input id="output_qty" name="output_qty" value="{{ order.output_qty if order.output_qty is not none else '' }}">
+
+        <button type="submit">Save yield</button>
+      </form>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Activity Time Capture</h2>
+    {% if not is_closed %}
+      <form method="post" action="/production-orders/{{ order.id }}/activities">
+        <table>
+          <thead>
+            <tr>
+              <th>Sequence</th>
+              <th>Activity</th>
+              <th>Labor minutes</th>
+              <th>Machine minutes</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for activity in activities %}
+              <tr>
+                <td>{{ activity.sequence }}</td>
+                <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
+                <td>
+                  <input type="hidden" name="activity_id" value="{{ activity.id }}">
+                  <input name="labor_minutes_{{ activity.id }}" value="{{ activity.labor_minutes }}">
+                </td>
+                <td><input name="machine_minutes_{{ activity.id }}" value="{{ activity.machine_minutes }}"></td>
+                <td><input name="notes_{{ activity.id }}" value="{{ activity.notes or '' }}"></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <button type="submit">Save activity times</button>
+      </form>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Sequence</th>
+            <th>Activity</th>
+            <th>Labor minutes</th>
+            <th>Machine minutes</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for activity in activities %}
+            <tr>
+              <td>{{ activity.sequence }}</td>
+              <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
+              <td>{{ activity.labor_minutes }}</td>
+              <td>{{ activity.machine_minutes }}</td>
+              <td>{{ activity.notes or "" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Material Snapshot</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Component SKU</th>
+          <th>Component name</th>
+          <th>Quantity standard</th>
+          <th>Unit cost snapshot</th>
+          <th>Line cost snapshot</th>
+          <th>Type</th>
+          <th>Include</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for material in materials %}
+          <tr>
+            <td>{{ material.component_sku or "" }}</td>
+            <td>{{ material.component_name or "" }}</td>
+            <td>{{ material.quantity_standard or "" }}</td>
+            <td>{{ material.unit_cost_snapshot or "" }}</td>
+            <td>{{ material.line_cost or "" }}</td>
+            <td>{{ material.component_type }}</td>
+            <td>{{ "yes" if material.include_in_real_cost else "no" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

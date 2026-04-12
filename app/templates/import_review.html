@@ -3,6 +3,12 @@
 {% block content %}
   <section>
     <h1>Import Review</h1>
+    <form method="get" action="/imports/{{ batch.id }}">
+      <label for="q">Search product SKU or name</label>
+      <input id="q" name="q" value="{{ search or '' }}" placeholder="SKU or partial product name">
+      <button type="submit">Search</button>
+      <a href="/imports/{{ batch.id }}">Clear</a>
+    </form>
     <dl class="summary">
       <div>
         <dt>Batch</dt>
@@ -45,6 +51,9 @@
         {% endfor %}
       </tbody>
     </table>
+    {% if search and not headers %}
+      <p>No imported products matched "{{ search }}".</p>
+    {% endif %}
   </section>
 
   <section>

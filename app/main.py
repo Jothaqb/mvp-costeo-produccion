@@ -1,7 +1,7 @@
 from collections import Counter
 from datetime import date, datetime
 
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -24,6 +24,9 @@ from app.models import (
     MachineRate,
     OverheadRate,
     Product,
+    ProductionOrder,
+    ProductionOrderActivity,
+    ProductionOrderMaterial,
     Route,
     RouteActivity,
 )
@@ -39,6 +42,15 @@ from app.services.config_service import (
     validate_unique_code,
 )
 from app.services.import_service import import_loyverse_csv
+from app.services.production_order_service import (
+    ProductionOrderValidationError,
+    close_order,
+    create_production_order,
+    parse_optional_decimal,
+    start_order,
+    update_activity_capture,
+    update_yield_capture,
+)
 
 
 Base.metadata.create_all(bind=engine)
@@ -62,6 +74,39 @@ def _parse_optional_date(value: str) -> date | None:
 
 def _process_types() -> list[str]:
     return [item.value for item in ProcessType]
+
+
+def _production_order_detail_response(
+    order_id: int,
+    request: Request,
+    db: Session,
+    error: str | None = None,
+) -> HTMLResponse:
+    order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    materials = (
+        db.query(ProductionOrderMaterial)
+        .filter(ProductionOrderMaterial.production_order_id == order_id)
+        .order_by(ProductionOrderMaterial.id)
+        .all()
+    )
+    activities = (
+        db.query(ProductionOrderActivity)
+        .filter(ProductionOrderActivity.production_order_id == order_id)
+        .order_by(ProductionOrderActivity.sequence)
+        .all()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_detail.html",
+        context={
+            "title": "Production Order",
+            "order": order,
+            "materials": materials,
+            "activities": activities,
+            "error": error,
+            "is_closed": order.status == "closed",
+        },
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -129,23 +174,30 @@ async def create_import(
 def review_import(
     batch_id: int,
     request: Request,
+    q: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     batch = db.query(ImportBatch).filter(ImportBatch.id == batch_id).one()
-    headers = (
-        db.query(ImportedBomHeader)
-        .filter(ImportedBomHeader.import_batch_id == batch_id)
-        .order_by(ImportedBomHeader.product_sku)
-        .all()
-    )
-    lines = (
+    search = q.strip()
+    header_query = db.query(ImportedBomHeader).filter(ImportedBomHeader.import_batch_id == batch_id)
+    if search:
+        like_search = f"%{search}%"
+        header_query = header_query.filter(
+            ImportedBomHeader.product_sku.ilike(like_search)
+            | ImportedBomHeader.product_name.ilike(like_search)
+        )
+    headers = header_query.order_by(ImportedBomHeader.product_sku).all()
+    header_ids = [header.id for header in headers]
+
+    line_query = (
         db.query(ImportedBomLine)
         .join(ImportedBomHeader)
         .options(joinedload(ImportedBomLine.bom_header))
         .filter(ImportedBomHeader.import_batch_id == batch_id)
-        .order_by(ImportedBomLine.source_row_number)
-        .all()
     )
+    if search:
+        line_query = line_query.filter(ImportedBomLine.bom_header_id.in_(header_ids))
+    lines = line_query.order_by(ImportedBomLine.source_row_number).all()
     component_type_counts = Counter(line.component_type for line in lines)
     for component_type in ComponentType:
         component_type_counts.setdefault(component_type.value, 0)
@@ -162,6 +214,7 @@ def review_import(
             "bom_line_count": len(lines),
             "component_type_counts": dict(component_type_counts),
             "unknown_count": component_type_counts[ComponentType.UNKNOWN.value],
+            "search": search,
         },
     )
 
@@ -538,6 +591,141 @@ def update_product_route(
     product.default_route_id = int(default_route_id) if default_route_id else None
     db.commit()
     return _redirect("/product-routes")
+
+
+@app.get("/production-orders", response_class=HTMLResponse)
+def list_production_orders(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    orders = db.query(ProductionOrder).order_by(ProductionOrder.production_date.desc(), ProductionOrder.id.desc()).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="production_orders_list.html",
+        context={"title": "Production Orders", "orders": orders},
+    )
+
+
+@app.get("/production-orders/new", response_class=HTMLResponse)
+def new_production_order(
+    request: Request,
+    q: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    search = q.strip()
+    product_query = db.query(Product).filter(Product.is_manufactured.is_(True), Product.active.is_(True))
+    if search:
+        like_search = f"%{search}%"
+        product_query = product_query.filter(Product.sku.ilike(like_search) | Product.name.ilike(like_search))
+    products = product_query.order_by(Product.sku).limit(50).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_form.html",
+        context={"title": "New Production Order", "products": products, "error": None, "search": search},
+    )
+
+
+@app.post("/production-orders")
+def create_production_order_route(
+    request: Request,
+    internal_order_number: str = Form(...),
+    loyverse_order_ref: str = Form(""),
+    production_date: date = Form(...),
+    product_id: int = Form(...),
+    planned_qty: str = Form(""),
+    notes: str = Form(""),
+    search: str = Form(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    product_query = db.query(Product).filter(Product.is_manufactured.is_(True), Product.active.is_(True))
+    if search.strip():
+        like_search = f"%{search.strip()}%"
+        product_query = product_query.filter(Product.sku.ilike(like_search) | Product.name.ilike(like_search))
+    products = product_query.order_by(Product.sku).limit(50).all()
+    try:
+        planned_qty_value = parse_optional_decimal(planned_qty, "Planned quantity")
+        order = create_production_order(
+            db=db,
+            internal_order_number=internal_order_number,
+            loyverse_order_ref=loyverse_order_ref,
+            production_date=production_date,
+            product_id=product_id,
+            planned_qty=planned_qty_value,
+            notes=notes,
+        )
+        return _redirect(f"/production-orders/{order.id}")
+    except ProductionOrderValidationError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="production_order_form.html",
+            context={
+                "title": "New Production Order",
+                "products": products,
+                "error": str(exc),
+                "search": search.strip(),
+            },
+        )
+
+
+@app.get("/production-orders/{order_id}", response_class=HTMLResponse)
+def production_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    return _production_order_detail_response(order_id, request, db)
+
+
+@app.post("/production-orders/{order_id}/activities")
+async def update_production_order_activities(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    form = await request.form()
+    activity_ids = form.getlist("activity_id")
+    updates = [
+        {
+            "id": activity_id,
+            "labor_minutes": str(form.get(f"labor_minutes_{activity_id}", "")),
+            "machine_minutes": str(form.get(f"machine_minutes_{activity_id}", "")),
+            "notes": str(form.get(f"notes_{activity_id}", "")),
+        }
+        for activity_id in activity_ids
+    ]
+    try:
+        update_activity_capture(db, order_id, updates)
+        return _redirect(f"/production-orders/{order_id}")
+    except ProductionOrderValidationError as exc:
+        return _production_order_detail_response(order_id, request, db, str(exc))
+
+
+@app.post("/production-orders/{order_id}/yield")
+def update_production_order_yield(
+    order_id: int,
+    request: Request,
+    input_qty: str = Form(""),
+    output_qty: str = Form(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        input_qty_value = parse_optional_decimal(input_qty, "Input quantity")
+        output_qty_value = parse_optional_decimal(output_qty, "Output quantity")
+        update_yield_capture(db, order_id, input_qty_value, output_qty_value)
+        return _redirect(f"/production-orders/{order_id}")
+    except ProductionOrderValidationError as exc:
+        return _production_order_detail_response(order_id, request, db, str(exc))
+
+
+@app.post("/production-orders/{order_id}/start")
+def start_production_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    try:
+        start_order(db, order_id)
+        return _redirect(f"/production-orders/{order_id}")
+    except ProductionOrderValidationError as exc:
+        return _production_order_detail_response(order_id, request, db, str(exc))
+
+
+@app.post("/production-orders/{order_id}/close")
+def close_production_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    try:
+        close_order(db, order_id)
+        return _redirect(f"/production-orders/{order_id}")
+    except ProductionOrderValidationError as exc:
+        return _production_order_detail_response(order_id, request, db, str(exc))
 
 
 @app.get("/rates", response_class=HTMLResponse)

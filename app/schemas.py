@@ -15,3 +15,9 @@ class ProcessType(str, Enum):
     GRINDING = "grinding"
     MIXING = "mixing"
     PACKAGING = "packaging"
+
+
+class ProductionOrderStatus(str, Enum):
+    DRAFT = "draft"
+    IN_PROGRESS = "in_progress"
+    CLOSED = "closed"
