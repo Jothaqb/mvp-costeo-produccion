@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Rates</h1>
+    <p>
+      <a class="button" href="/rates/labor/new">New Labor Rate</a>
+      <a class="button" href="/rates/overhead/new">New Overhead Rate</a>
+      <a class="button" href="/rates/machine/new">New Machine Rate</a>
+    </p>
+  </section>
+
+  <section>
+    <h2>Labor Rates</h2>
+    <table>
+      <thead><tr><th>From</th><th>To</th><th>Hourly rate</th><th>Notes</th><th></th></tr></thead>
+      <tbody>
+        {% for rate in labor_rates %}
+          <tr>
+            <td>{{ rate.effective_from }}</td>
+            <td>{{ rate.effective_to or "" }}</td>
+            <td>{{ rate.hourly_rate }}</td>
+            <td>{{ rate.notes or "" }}</td>
+            <td><a href="/rates/labor/{{ rate.id }}/edit">Edit</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Overhead Rates</h2>
+    <table>
+      <thead><tr><th>From</th><th>To</th><th>Hourly rate</th><th>Notes</th><th></th></tr></thead>
+      <tbody>
+        {% for rate in overhead_rates %}
+          <tr>
+            <td>{{ rate.effective_from }}</td>
+            <td>{{ rate.effective_to or "" }}</td>
+            <td>{{ rate.hourly_rate }}</td>
+            <td>{{ rate.notes or "" }}</td>
+            <td><a href="/rates/overhead/{{ rate.id }}/edit">Edit</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Machine Rates</h2>
+    <table>
+      <thead><tr><th>Machine</th><th>From</th><th>To</th><th>Hourly rate</th><th>Notes</th><th></th></tr></thead>
+      <tbody>
+        {% for rate in machine_rates %}
+          <tr>
+            <td>{{ rate.machine.code }} - {{ rate.machine.name }}</td>
+            <td>{{ rate.effective_from }}</td>
+            <td>{{ rate.effective_to or "" }}</td>
+            <td>{{ rate.hourly_rate }}</td>
+            <td>{{ rate.notes or "" }}</td>
+            <td><a href="/rates/machine/{{ rate.id }}/edit">Edit</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

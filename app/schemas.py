@@ -8,3 +8,10 @@ class ComponentType(str, Enum):
     FICTITIOUS_OVERHEAD = "fictitious_overhead"
     FICTITIOUS_OTHER = "fictitious_other"
     UNKNOWN = "unknown"
+
+
+class ProcessType(str, Enum):
+    DEHYDRATION = "dehydration"
+    GRINDING = "grinding"
+    MIXING = "mixing"
+    PACKAGING = "packaging"

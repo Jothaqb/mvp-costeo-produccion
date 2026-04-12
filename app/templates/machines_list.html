@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Machines</h1>
+    <p><a class="button" href="/machines/new">New Machine</a></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Code</th>
+          <th>Name</th>
+          <th>Active</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for machine in machines %}
+          <tr>
+            <td>{{ machine.code }}</td>
+            <td>{{ machine.name }}</td>
+            <td>{{ "yes" if machine.active else "no" }}</td>
+            <td><a href="/machines/{{ machine.id }}/edit">Edit</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

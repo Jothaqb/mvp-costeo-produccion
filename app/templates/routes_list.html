@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Routes</h1>
+    <p><a class="button" href="/routes/new">New Route</a></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Code</th>
+          <th>Name</th>
+          <th>Process type</th>
+          <th>Version</th>
+          <th>Active</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for route in routes %}
+          <tr>
+            <td><a href="/routes/{{ route.id }}">{{ route.code }}</a></td>
+            <td>{{ route.name }}</td>
+            <td>{{ route.process_type }}</td>
+            <td>{{ route.version }}</td>
+            <td>{{ "yes" if route.active else "no" }}</td>
+            <td><a href="/routes/{{ route.id }}/edit">Edit</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

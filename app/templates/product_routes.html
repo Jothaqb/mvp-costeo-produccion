@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Product Routes</h1>
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Product</th>
+          <th>Default route</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for product in products %}
+          <tr>
+            <td>{{ product.sku }}</td>
+            <td>{{ product.name }}</td>
+            <td>
+              <form method="post" action="/product-routes/{{ product.id }}">
+                <select name="default_route_id">
+                  <option value="">None</option>
+                  {% for route in routes %}
+                    <option value="{{ route.id }}" {% if product.default_route_id == route.id %}selected{% endif %}>{{ route.code }} - {{ route.name }}</option>
+                  {% endfor %}
+                </select>
+                <button type="submit">Save</button>
+              </form>
+            </td>
+            <td>{{ product.default_route.code if product.default_route else "" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

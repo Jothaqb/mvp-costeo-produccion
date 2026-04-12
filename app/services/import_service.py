@@ -82,6 +82,21 @@ LOYVERSE_PARENT_NAME_INDEX = 2
 LOYVERSE_AVERAGE_COST_INDEX = 12
 LOYVERSE_BOM_INCLUDED_SKU_INDEX = 14
 LOYVERSE_BOM_QUANTITY_INDEX = 15
+LOYVERSE_USE_PRODUCTION_INDEX = 17
+EXCLUDED_BOM_INCLUDED_SKUS = {
+    "10371",
+    "10669",
+    "10630",
+    "10330",
+    "10370",
+    "10403",
+    "10317",
+    "10642",
+    "10180",
+    "10542",
+    "10629",
+    "10628",
+}
 
 
 @dataclass(frozen=True)
@@ -187,11 +202,16 @@ def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSu
             continue
 
         if _is_loyverse_parent_row(row):
-            current_header = _create_parent_records_from_loyverse_row(db, batch, row)
-            imported_products.add(current_header.product_sku)
+            if _is_manufactured_parent_row(row):
+                current_header = _create_parent_records_from_loyverse_row(db, batch, row)
+                imported_products.add(current_header.product_sku)
+            else:
+                current_header = None
 
         component = _extract_component_from_loyverse_row(row)
         if current_header is None or not _has_component_signal(component):
+            continue
+        if _is_excluded_bom_sku(component["sku"]):
             continue
 
         component_type = classify_component(component["sku"], component["name"])
@@ -241,6 +261,16 @@ def _is_loyverse_parent_row(row: list[str]) -> bool:
     return bool(_cell(row, LOYVERSE_PARENT_SKU_INDEX))
 
 
+def _is_manufactured_parent_row(row: list[str]) -> bool:
+    return normalize_text(_cell(row, LOYVERSE_USE_PRODUCTION_INDEX)) == "y"
+
+
+def _is_excluded_bom_sku(component_sku: str | Decimal | None) -> bool:
+    if component_sku is None:
+        return False
+    return str(component_sku).strip() in EXCLUDED_BOM_INCLUDED_SKUS
+
+
 def _create_parent_records_from_loyverse_row(
     db: Session,
     batch: ImportBatch,
@@ -257,6 +287,7 @@ def _create_parent_records_from_loyverse_row(
 
     product.name = name
     product.standard_cost = standard_cost
+    product.is_manufactured = True
     product.active = True
 
     header = ImportedBomHeader(

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ route.code }} - {{ route.name }}</h1>
+    <p>{{ route.process_type }} / version {{ route.version }}</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  </section>
+
+  <section>
+    <h2>Add Activity</h2>
+    <form method="post" action="/routes/{{ route.id }}/activities">
+      <label for="sequence">Sequence</label>
+      <input id="sequence" name="sequence" type="number" min="1" required>
+
+      <label for="activity_id">Activity</label>
+      <select id="activity_id" name="activity_id" required>
+        {% for activity in activities %}
+          <option value="{{ activity.id }}">{{ activity.code }} - {{ activity.name }}</option>
+        {% endfor %}
+      </select>
+
+      <label><input name="required" type="checkbox" value="true" checked> Required</label>
+      <label><input name="visible_default" type="checkbox" value="true" checked> Visible by default</label>
+      <button type="submit">Add</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Route Activities</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Sequence</th>
+          <th>Activity</th>
+          <th>Required</th>
+          <th>Visible</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in route_activities %}
+          <tr>
+            <td>{{ item.sequence }}</td>
+            <td>{{ item.activity.code }} - {{ item.activity.name }}</td>
+            <td>{{ "yes" if item.required else "no" }}</td>
+            <td>{{ "yes" if item.visible_default else "no" }}</td>
+            <td>
+              <form method="post" action="/routes/{{ route.id }}/activities/{{ item.id }}/delete">
+                <button type="submit">Delete</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

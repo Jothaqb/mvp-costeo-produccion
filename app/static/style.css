@@ -62,9 +62,21 @@ label {
   font-weight: 700;
 }
 
-input {
+input,
+select,
+textarea {
   display: block;
   margin-bottom: 16px;
+}
+
+textarea {
+  min-height: 80px;
+  min-width: 320px;
+}
+
+.error {
+  color: #b42318;
+  font-weight: 700;
 }
 
 button,

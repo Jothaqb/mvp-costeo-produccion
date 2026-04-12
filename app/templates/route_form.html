@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="post" action="{{ '/routes/' ~ route.id ~ '/edit' if route else '/routes' }}">
+      <label for="code">Code</label>
+      <input id="code" name="code" value="{{ route.code if route else '' }}" required>
+
+      <label for="name">Name</label>
+      <input id="name" name="name" value="{{ route.name if route else '' }}" required>
+
+      <label for="process_type">Process type</label>
+      <select id="process_type" name="process_type" required>
+        {% for process_type in process_types %}
+          <option value="{{ process_type }}" {% if route and route.process_type == process_type %}selected{% endif %}>{{ process_type }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="version">Version</label>
+      <input id="version" name="version" value="{{ route.version if route else '1' }}" required>
+
+      <label><input name="active" type="checkbox" value="true" {% if not route or route.active %}checked{% endif %}> Active</label>
+      <button type="submit">Save</button>
+    </form>
+  </section>
+{% endblock %}

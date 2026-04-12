@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Activities</h1>
+    <p><a class="button" href="/activities/new">New Activity</a></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Code</th>
+          <th>Name</th>
+          <th>Labor</th>
+          <th>Machine</th>
+          <th>Default machine</th>
+          <th>Active</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for activity in activities %}
+          <tr>
+            <td>{{ activity.code }}</td>
+            <td>{{ activity.name }}</td>
+            <td>{{ "yes" if activity.applies_labor else "no" }}</td>
+            <td>{{ "yes" if activity.applies_machine else "no" }}</td>
+            <td>{{ activity.default_machine.code if activity.default_machine else "" }}</td>
+            <td>{{ "yes" if activity.active else "no" }}</td>
+            <td><a href="/activities/{{ activity.id }}/edit">Edit</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}
