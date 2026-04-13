@@ -12,6 +12,7 @@ from app.database import (
     engine,
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
+    ensure_sprint4_costing_columns,
     get_db,
 )
 from app.models import (
@@ -56,6 +57,7 @@ from app.services.production_order_service import (
 Base.metadata.create_all(bind=engine)
 ensure_product_default_route_column()
 ensure_product_is_manufactured_column()
+ensure_sprint4_costing_columns()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")

@@ -41,6 +41,30 @@
         <dt>Yield</dt>
         <dd>{{ order.yield_percent or "" }}</dd>
       </div>
+      <div>
+        <dt>Material snapshot cost</dt>
+        <dd>{{ order.material_snapshot_cost_total if order.material_snapshot_cost_total is not none else "" }}</dd>
+      </div>
+      <div>
+        <dt>Real labor cost</dt>
+        <dd>{{ order.real_labor_cost_total if order.real_labor_cost_total is not none else "" }}</dd>
+      </div>
+      <div>
+        <dt>Real overhead cost</dt>
+        <dd>{{ order.real_overhead_cost_total if order.real_overhead_cost_total is not none else "" }}</dd>
+      </div>
+      <div>
+        <dt>Real machine cost</dt>
+        <dd>{{ order.real_machine_cost_total if order.real_machine_cost_total is not none else "" }}</dd>
+      </div>
+      <div>
+        <dt>Real total cost</dt>
+        <dd>{{ order.real_total_cost if order.real_total_cost is not none else "" }}</dd>
+      </div>
+      <div>
+        <dt>Real unit cost</dt>
+        <dd>{{ order.real_unit_cost if order.real_unit_cost is not none else "" }}</dd>
+      </div>
     </dl>
 
     {% if not is_closed %}
@@ -87,6 +111,10 @@
               <th>Activity</th>
               <th>Labor minutes</th>
               <th>Machine minutes</th>
+              <th>Labor cost</th>
+              <th>Overhead cost</th>
+              <th>Machine cost</th>
+              <th>Total activity cost</th>
               <th>Notes</th>
             </tr>
           </thead>
@@ -100,6 +128,10 @@
                   <input name="labor_minutes_{{ activity.id }}" value="{{ activity.labor_minutes }}">
                 </td>
                 <td><input name="machine_minutes_{{ activity.id }}" value="{{ activity.machine_minutes }}"></td>
+                <td>{{ activity.labor_cost }}</td>
+                <td>{{ activity.overhead_cost }}</td>
+                <td>{{ activity.machine_cost }}</td>
+                <td>{{ activity.total_activity_cost }}</td>
                 <td><input name="notes_{{ activity.id }}" value="{{ activity.notes or '' }}"></td>
               </tr>
             {% endfor %}
@@ -115,6 +147,10 @@
             <th>Activity</th>
             <th>Labor minutes</th>
             <th>Machine minutes</th>
+            <th>Labor cost</th>
+            <th>Overhead cost</th>
+            <th>Machine cost</th>
+            <th>Total activity cost</th>
             <th>Notes</th>
           </tr>
         </thead>
@@ -125,6 +161,10 @@
               <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
               <td>{{ activity.labor_minutes }}</td>
               <td>{{ activity.machine_minutes }}</td>
+              <td>{{ activity.labor_cost }}</td>
+              <td>{{ activity.overhead_cost }}</td>
+              <td>{{ activity.machine_cost }}</td>
+              <td>{{ activity.total_activity_cost }}</td>
               <td>{{ activity.notes or "" }}</td>
             </tr>
           {% endfor %}

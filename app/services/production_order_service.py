@@ -15,6 +15,7 @@ from app.models import (
     RouteActivity,
 )
 from app.schemas import ProductionOrderStatus
+from app.services.costing_service import CostingValidationError, calculate_order_cost
 
 
 class ProductionOrderValidationError(Exception):
@@ -188,6 +189,12 @@ def close_order(db: Session, order_id: int) -> ProductionOrder:
         raise ProductionOrderValidationError("Output quantity must be greater than 0 before closing.")
 
     order.yield_percent = order.output_qty / order.input_qty
+    try:
+        calculate_order_cost(db, order)
+    except CostingValidationError as exc:
+        db.rollback()
+        raise ProductionOrderValidationError(str(exc)) from exc
+
     order.status = ProductionOrderStatus.CLOSED.value
     order.closed_at = datetime.utcnow()
     db.commit()
@@ -205,12 +212,16 @@ def _copy_route_activities(
     route_activities: list[RouteActivity],
 ) -> None:
     for route_activity in route_activities:
+        default_machine = route_activity.activity.default_machine
         db.add(
             ProductionOrderActivity(
                 production_order_id=order.id,
                 sequence=route_activity.sequence,
                 activity_code_snapshot=route_activity.activity.code,
                 activity_name_snapshot=route_activity.activity.name,
+                machine_id_snapshot=default_machine.id if default_machine else None,
+                machine_code_snapshot=default_machine.code if default_machine else None,
+                machine_name_snapshot=default_machine.name if default_machine else None,
                 labor_minutes=Decimal("0"),
                 machine_minutes=Decimal("0"),
             )
