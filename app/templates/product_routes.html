@@ -3,6 +3,12 @@
 {% block content %}
   <section>
     <h1>Product Routes</h1>
+    <form method="get" action="/product-routes" class="filters">
+      <label for="product_sku">Product SKU</label>
+      <input id="product_sku" name="product_sku" value="{{ product_sku }}">
+      <button type="submit">Filter</button>
+      <a class="button" href="/product-routes">Clear</a>
+    </form>
     <table>
       <thead>
         <tr>
@@ -19,6 +25,7 @@
             <td>{{ product.name }}</td>
             <td>
               <form method="post" action="/product-routes/{{ product.id }}">
+                <input type="hidden" name="product_sku" value="{{ product_sku }}">
                 <select name="default_route_id">
                   <option value="">None</option>
                   {% for route in routes %}

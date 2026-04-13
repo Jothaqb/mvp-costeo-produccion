@@ -1,5 +1,6 @@
 from collections import Counter
 from datetime import date, datetime
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -103,6 +104,21 @@ def _production_order_detail_response(
         .order_by(ProductionOrderActivity.sequence)
         .all()
     )
+    activity_codes = {activity.activity_code_snapshot for activity in activities}
+    activity_catalog_by_code = {}
+    if activity_codes:
+        activity_catalog_by_code = {
+            activity.code: activity
+            for activity in db.query(Activity).filter(Activity.code.in_(activity_codes)).all()
+        }
+    activity_permissions = {
+        activity.id: {
+            "applies_labor": activity_catalog_by_code[activity.activity_code_snapshot].applies_labor,
+            "applies_machine": activity_catalog_by_code[activity.activity_code_snapshot].applies_machine,
+        }
+        for activity in activities
+        if activity.activity_code_snapshot in activity_catalog_by_code
+    }
     return templates.TemplateResponse(
         request=request,
         name="production_order_detail.html",
@@ -111,6 +127,7 @@ def _production_order_detail_response(
             "order": order,
             "materials": materials,
             "activities": activities,
+            "activity_permissions": activity_permissions,
             "error": error,
             "is_closed": order.status == "closed",
         },
@@ -579,13 +596,21 @@ def delete_route_activity(
 
 
 @app.get("/product-routes", response_class=HTMLResponse)
-def product_routes(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    products = db.query(Product).filter(Product.is_manufactured.is_(True)).order_by(Product.sku).all()
+def product_routes(
+    request: Request,
+    product_sku: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    search_sku = product_sku.strip()
+    product_query = db.query(Product).filter(Product.is_manufactured.is_(True))
+    if search_sku:
+        product_query = product_query.filter(Product.sku.ilike(f"%{search_sku}%"))
+    products = product_query.order_by(Product.sku).all()
     routes = db.query(Route).filter(Route.active.is_(True)).order_by(Route.code).all()
     return templates.TemplateResponse(
         request=request,
         name="product_routes.html",
-        context={"title": "Product Routes", "products": products, "routes": routes},
+        context={"title": "Product Routes", "products": products, "routes": routes, "product_sku": search_sku},
     )
 
 
@@ -593,11 +618,15 @@ def product_routes(request: Request, db: Session = Depends(get_db)) -> HTMLRespo
 def update_product_route(
     product_id: int,
     default_route_id: str = Form(""),
+    product_sku: str = Form(""),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     product = db.query(Product).filter(Product.id == product_id).one()
     product.default_route_id = int(default_route_id) if default_route_id else None
     db.commit()
+    search_sku = product_sku.strip()
+    if search_sku:
+        return _redirect(f"/product-routes?product_sku={quote(search_sku)}")
     return _redirect("/product-routes")
 
 

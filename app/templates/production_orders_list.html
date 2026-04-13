@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
 
 {% block content %}
   <section>
@@ -68,13 +69,13 @@
             <td>{{ order.product_sku_snapshot }} - {{ order.product_name_snapshot }}</td>
             <td>{{ order.process_type }}</td>
             <td>{{ order.status }}</td>
-            <td>{{ order.input_qty or "" }}</td>
-            <td>{{ order.output_qty or "" }}</td>
+            <td>{{ fmt.number_3(order.input_qty) }}</td>
+            <td>{{ fmt.number_3(order.output_qty) }}</td>
             <td>{{ order.yield_percent or "" }}</td>
-            <td>{{ order.material_snapshot_cost_total if order.material_snapshot_cost_total is not none else "" }}</td>
-            <td>{{ order.real_total_cost if order.real_total_cost is not none else "" }}</td>
-            <td>{{ order.real_unit_cost if order.real_unit_cost is not none else "" }}</td>
-            <td>{{ order.variance_amount if order.variance_amount is not none else "" }}</td>
+            <td>{{ fmt.money_crc(order.material_snapshot_cost_total) }}</td>
+            <td>{{ fmt.money_crc(order.real_total_cost) }}</td>
+            <td>{{ fmt.money_crc(order.real_unit_cost) }}</td>
+            <td>{{ fmt.money_crc(order.variance_amount) }}</td>
             <td>{{ order.variance_percent if order.variance_percent is not none else "" }}</td>
             <td><a href="/production-orders/{{ order.id }}">Open</a></td>
           </tr>

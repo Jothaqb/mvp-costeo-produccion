@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
 
 {% block content %}
   <section>
@@ -27,15 +28,15 @@
       </div>
       <div>
         <dt>Planned quantity</dt>
-        <dd>{{ order.planned_qty or "" }}</dd>
+        <dd>{{ fmt.number_3(order.planned_qty) }}</dd>
       </div>
       <div>
         <dt>Input quantity</dt>
-        <dd>{{ order.input_qty or "" }}</dd>
+        <dd>{{ fmt.number_3(order.input_qty) }}</dd>
       </div>
       <div>
         <dt>Output quantity</dt>
-        <dd>{{ order.output_qty or "" }}</dd>
+        <dd>{{ fmt.number_3(order.output_qty) }}</dd>
       </div>
       <div>
         <dt>Yield</dt>
@@ -43,31 +44,31 @@
       </div>
       <div>
         <dt>Material snapshot cost</dt>
-        <dd>{{ order.material_snapshot_cost_total if order.material_snapshot_cost_total is not none else "" }}</dd>
+        <dd>{{ fmt.money_crc(order.material_snapshot_cost_total) }}</dd>
       </div>
       <div>
         <dt>Real labor cost</dt>
-        <dd>{{ order.real_labor_cost_total if order.real_labor_cost_total is not none else "" }}</dd>
+        <dd>{{ fmt.money_crc(order.real_labor_cost_total) }}</dd>
       </div>
       <div>
         <dt>Real overhead cost</dt>
-        <dd>{{ order.real_overhead_cost_total if order.real_overhead_cost_total is not none else "" }}</dd>
+        <dd>{{ fmt.money_crc(order.real_overhead_cost_total) }}</dd>
       </div>
       <div>
         <dt>Real machine cost</dt>
-        <dd>{{ order.real_machine_cost_total if order.real_machine_cost_total is not none else "" }}</dd>
+        <dd>{{ fmt.money_crc(order.real_machine_cost_total) }}</dd>
       </div>
       <div>
         <dt>Real total cost</dt>
-        <dd>{{ order.real_total_cost if order.real_total_cost is not none else "" }}</dd>
+        <dd>{{ fmt.money_crc(order.real_total_cost) }}</dd>
       </div>
       <div>
         <dt>Real unit cost</dt>
-        <dd>{{ order.real_unit_cost if order.real_unit_cost is not none else "" }}</dd>
+        <dd>{{ fmt.money_crc(order.real_unit_cost) }}</dd>
       </div>
       <div>
         <dt>Variance amount</dt>
-        <dd>{{ order.variance_amount if order.variance_amount is not none else "" }}</dd>
+        <dd>{{ fmt.money_crc(order.variance_amount) }}</dd>
       </div>
       <div>
         <dt>Variance percent</dt>
@@ -128,14 +129,15 @@
           </thead>
           <tbody>
             {% for activity in activities %}
+              {% set permissions = activity_permissions.get(activity.id) %}
               <tr>
                 <td>{{ activity.sequence }}</td>
                 <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
                 <td>
                   <input type="hidden" name="activity_id" value="{{ activity.id }}">
-                  <input name="labor_minutes_{{ activity.id }}" value="{{ activity.labor_minutes }}">
+                  <input name="labor_minutes_{{ activity.id }}" value="{{ activity.labor_minutes }}" {% if permissions and not permissions.applies_labor %}disabled{% endif %}>
                 </td>
-                <td><input name="machine_minutes_{{ activity.id }}" value="{{ activity.machine_minutes }}"></td>
+                <td><input name="machine_minutes_{{ activity.id }}" value="{{ activity.machine_minutes }}" {% if permissions and not permissions.applies_machine %}disabled{% endif %}></td>
                 <td>{{ activity.labor_cost }}</td>
                 <td>{{ activity.overhead_cost }}</td>
                 <td>{{ activity.machine_cost }}</td>
@@ -167,12 +169,12 @@
             <tr>
               <td>{{ activity.sequence }}</td>
               <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
-              <td>{{ activity.labor_minutes }}</td>
-              <td>{{ activity.machine_minutes }}</td>
-              <td>{{ activity.labor_cost }}</td>
-              <td>{{ activity.overhead_cost }}</td>
-              <td>{{ activity.machine_cost }}</td>
-              <td>{{ activity.total_activity_cost }}</td>
+              <td>{{ fmt.number_3(activity.labor_minutes) }}</td>
+              <td>{{ fmt.number_3(activity.machine_minutes) }}</td>
+              <td>{{ fmt.money_crc(activity.labor_cost) }}</td>
+              <td>{{ fmt.money_crc(activity.overhead_cost) }}</td>
+              <td>{{ fmt.money_crc(activity.machine_cost) }}</td>
+              <td>{{ fmt.money_crc(activity.total_activity_cost) }}</td>
               <td>{{ activity.notes or "" }}</td>
             </tr>
           {% endfor %}
@@ -200,9 +202,9 @@
           <tr>
             <td>{{ material.component_sku or "" }}</td>
             <td>{{ material.component_name or "" }}</td>
-            <td>{{ material.quantity_standard or "" }}</td>
-            <td>{{ material.unit_cost_snapshot or "" }}</td>
-            <td>{{ material.line_cost or "" }}</td>
+            <td>{{ fmt.number_3(material.quantity_standard) }}</td>
+            <td>{{ fmt.money_crc(material.unit_cost_snapshot) }}</td>
+            <td>{{ fmt.money_crc(material.line_cost) }}</td>
             <td>{{ material.component_type }}</td>
             <td>{{ "yes" if material.include_in_real_cost else "no" }}</td>
           </tr>

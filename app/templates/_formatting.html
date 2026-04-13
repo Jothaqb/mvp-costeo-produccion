@@ -1,0 +1,15 @@
+{% macro money_crc(value) -%}
+  {%- if value is not none and value != "" -%}
+    {%- if value < 0 -%}
+      -₡{{ "{:,.0f}".format(-value) }}
+    {%- else -%}
+      ₡{{ "{:,.0f}".format(value) }}
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro number_3(value) -%}
+  {%- if value is not none and value != "" -%}
+    {{- "{:,.3f}".format(value) -}}
+  {%- endif -%}
+{%- endmacro %}

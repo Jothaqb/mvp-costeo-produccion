@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
+    Activity,
     ImportedBomHeader,
     ImportedBomLine,
     ImportBatch,
@@ -122,6 +123,14 @@ def update_activity_capture(
     _ensure_not_closed(order)
 
     activities_by_id = {activity.id: activity for activity in order.activities}
+    activity_codes = {activity.activity_code_snapshot for activity in order.activities}
+    activity_catalog_by_code = {}
+    if activity_codes:
+        activity_catalog_by_code = {
+            activity.code: activity
+            for activity in db.query(Activity).filter(Activity.code.in_(activity_codes)).all()
+        }
+
     for update in activity_updates:
         activity_id = int(update["id"])
         activity = activities_by_id.get(activity_id)
@@ -130,6 +139,12 @@ def update_activity_capture(
 
         labor_minutes = parse_optional_decimal(update.get("labor_minutes"), "Labor minutes") or Decimal("0")
         machine_minutes = parse_optional_decimal(update.get("machine_minutes"), "Machine minutes") or Decimal("0")
+        activity_catalog = activity_catalog_by_code.get(activity.activity_code_snapshot)
+        if activity_catalog is not None and not activity_catalog.applies_labor:
+            labor_minutes = Decimal("0")
+        if activity_catalog is not None and not activity_catalog.applies_machine:
+            machine_minutes = Decimal("0")
+
         if labor_minutes < 0 or machine_minutes < 0:
             raise ProductionOrderValidationError("Activity minutes cannot be negative.")
 
