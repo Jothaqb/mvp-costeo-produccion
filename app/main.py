@@ -13,6 +13,7 @@ from app.database import (
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
     ensure_sprint4_costing_columns,
+    ensure_sprint5_comparison_columns,
     get_db,
 )
 from app.models import (
@@ -31,7 +32,7 @@ from app.models import (
     Route,
     RouteActivity,
 )
-from app.schemas import ComponentType, ProcessType
+from app.schemas import ComponentType, ProcessType, ProductionOrderStatus
 from app.services.config_service import (
     ValidationError,
     parse_decimal,
@@ -58,6 +59,7 @@ Base.metadata.create_all(bind=engine)
 ensure_product_default_route_column()
 ensure_product_is_manufactured_column()
 ensure_sprint4_costing_columns()
+ensure_sprint5_comparison_columns()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -76,6 +78,10 @@ def _parse_optional_date(value: str) -> date | None:
 
 def _process_types() -> list[str]:
     return [item.value for item in ProcessType]
+
+
+def _production_order_statuses() -> list[str]:
+    return [item.value for item in ProductionOrderStatus]
 
 
 def _production_order_detail_response(
@@ -596,12 +602,59 @@ def update_product_route(
 
 
 @app.get("/production-orders", response_class=HTMLResponse)
-def list_production_orders(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    orders = db.query(ProductionOrder).order_by(ProductionOrder.production_date.desc(), ProductionOrder.id.desc()).all()
+def list_production_orders(
+    request: Request,
+    order_number: str = Query(""),
+    product_sku: str = Query(""),
+    product_name: str = Query(""),
+    process_type: str = Query(""),
+    status: str = Query(""),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    filters = {
+        "order_number": order_number.strip(),
+        "product_sku": product_sku.strip(),
+        "product_name": product_name.strip(),
+        "process_type": process_type.strip(),
+        "status": status.strip(),
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+    order_query = db.query(ProductionOrder)
+    if filters["order_number"]:
+        order_query = order_query.filter(
+            ProductionOrder.internal_order_number.ilike(f"%{filters['order_number']}%")
+        )
+    if filters["product_sku"]:
+        order_query = order_query.filter(
+            ProductionOrder.product_sku_snapshot.ilike(f"%{filters['product_sku']}%")
+        )
+    if filters["product_name"]:
+        order_query = order_query.filter(
+            ProductionOrder.product_name_snapshot.ilike(f"%{filters['product_name']}%")
+        )
+    if filters["process_type"] in _process_types():
+        order_query = order_query.filter(ProductionOrder.process_type == filters["process_type"])
+    if filters["status"] in _production_order_statuses():
+        order_query = order_query.filter(ProductionOrder.status == filters["status"])
+    if filters["date_from"]:
+        order_query = order_query.filter(ProductionOrder.production_date >= filters["date_from"])
+    if filters["date_to"]:
+        order_query = order_query.filter(ProductionOrder.production_date <= filters["date_to"])
+
+    orders = order_query.order_by(ProductionOrder.production_date.desc(), ProductionOrder.id.desc()).all()
     return templates.TemplateResponse(
         request=request,
         name="production_orders_list.html",
-        context={"title": "Production Orders", "orders": orders},
+        context={
+            "title": "Production Orders",
+            "orders": orders,
+            "filters": filters,
+            "process_types": _process_types(),
+            "statuses": _production_order_statuses(),
+        },
     )
 
 

@@ -88,6 +88,11 @@ def calculate_order_cost(db: Session, order: ProductionOrder) -> None:
     order.real_machine_cost_total = machine_total
     order.real_total_cost = material_total + labor_total + overhead_total + machine_total
     order.real_unit_cost = order.real_total_cost / order.output_qty
+    order.variance_amount = order.real_total_cost - order.material_snapshot_cost_total
+    if order.material_snapshot_cost_total > ZERO:
+        order.variance_percent = order.variance_amount / order.material_snapshot_cost_total
+    else:
+        order.variance_percent = None
 
 
 def _calculate_material_total(order: ProductionOrder) -> Decimal:

@@ -4,15 +4,59 @@
   <section>
     <h1>Production Orders</h1>
     <p><a class="button" href="/production-orders/new">New Production Order</a></p>
+    <form method="get" action="/production-orders" class="filters">
+      <label for="order_number">Order number</label>
+      <input id="order_number" name="order_number" value="{{ filters.order_number }}">
+
+      <label for="product_sku">Product SKU</label>
+      <input id="product_sku" name="product_sku" value="{{ filters.product_sku }}">
+
+      <label for="product_name">Product name</label>
+      <input id="product_name" name="product_name" value="{{ filters.product_name }}">
+
+      <label for="process_type">Process</label>
+      <select id="process_type" name="process_type">
+        <option value="">All</option>
+        {% for process_type in process_types %}
+          <option value="{{ process_type }}" {% if filters.process_type == process_type %}selected{% endif %}>
+            {{ process_type }}
+          </option>
+        {% endfor %}
+      </select>
+
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="">All</option>
+        {% for status in statuses %}
+          <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="date_from">Date from</label>
+      <input id="date_from" name="date_from" type="date" value="{{ filters.date_from or '' }}">
+
+      <label for="date_to">Date to</label>
+      <input id="date_to" name="date_to" type="date" value="{{ filters.date_to or '' }}">
+
+      <button type="submit">Filter</button>
+      <a class="button" href="/production-orders">Clear</a>
+    </form>
     <table>
       <thead>
         <tr>
           <th>Order</th>
           <th>Date</th>
           <th>Product</th>
-          <th>Route</th>
+          <th>Process</th>
           <th>Status</th>
+          <th>Input qty</th>
+          <th>Output qty</th>
           <th>Yield</th>
+          <th>Material snapshot total</th>
+          <th>Real total cost</th>
+          <th>Real unit cost</th>
+          <th>Variance amount</th>
+          <th>Variance percent</th>
           <th></th>
         </tr>
       </thead>
@@ -22,9 +66,16 @@
             <td>{{ order.internal_order_number }}</td>
             <td>{{ order.production_date }}</td>
             <td>{{ order.product_sku_snapshot }} - {{ order.product_name_snapshot }}</td>
-            <td>{{ order.route_name_snapshot }} v{{ order.route_version_snapshot }}</td>
+            <td>{{ order.process_type }}</td>
             <td>{{ order.status }}</td>
+            <td>{{ order.input_qty or "" }}</td>
+            <td>{{ order.output_qty or "" }}</td>
             <td>{{ order.yield_percent or "" }}</td>
+            <td>{{ order.material_snapshot_cost_total if order.material_snapshot_cost_total is not none else "" }}</td>
+            <td>{{ order.real_total_cost if order.real_total_cost is not none else "" }}</td>
+            <td>{{ order.real_unit_cost if order.real_unit_cost is not none else "" }}</td>
+            <td>{{ order.variance_amount if order.variance_amount is not none else "" }}</td>
+            <td>{{ order.variance_percent if order.variance_percent is not none else "" }}</td>
             <td><a href="/production-orders/{{ order.id }}">Open</a></td>
           </tr>
         {% endfor %}

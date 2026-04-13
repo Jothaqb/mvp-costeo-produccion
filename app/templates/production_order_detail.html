@@ -65,6 +65,14 @@
         <dt>Real unit cost</dt>
         <dd>{{ order.real_unit_cost if order.real_unit_cost is not none else "" }}</dd>
       </div>
+      <div>
+        <dt>Variance amount</dt>
+        <dd>{{ order.variance_amount if order.variance_amount is not none else "" }}</dd>
+      </div>
+      <div>
+        <dt>Variance percent</dt>
+        <dd>{{ order.variance_percent if order.variance_percent is not none else "" }}</dd>
+      </div>
     </dl>
 
     {% if not is_closed %}

@@ -208,6 +208,8 @@ class ProductionOrder(Base):
     real_machine_cost_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     real_total_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     real_unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    variance_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    variance_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
