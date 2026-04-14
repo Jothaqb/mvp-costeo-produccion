@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ order.internal_order_number }} - Production Order</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      color: #111;
+      font-family: Arial, sans-serif;
+      font-size: 12px;
+      line-height: 1.35;
+      margin: 24px;
+    }
+
+    h1,
+    h2 {
+      margin: 0 0 10px;
+    }
+
+    h1 {
+      font-size: 22px;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      border-bottom: 1px solid #111;
+      font-size: 15px;
+      margin-top: 22px;
+      padding-bottom: 4px;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+
+    th,
+    td {
+      border: 1px solid #333;
+      padding: 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #eee;
+      font-weight: 700;
+    }
+
+    .grid {
+      display: grid;
+      gap: 8px 18px;
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .field {
+      align-items: end;
+      display: grid;
+      gap: 8px;
+      grid-template-columns: max-content 1fr;
+      min-height: 24px;
+    }
+
+    .label {
+      font-weight: 700;
+    }
+
+    .line {
+      border-bottom: 1px solid #111;
+      min-height: 18px;
+    }
+
+    .checkbox {
+      border: 1px solid #111;
+      display: inline-block;
+      height: 14px;
+      width: 14px;
+    }
+
+    .write-area {
+      border: 1px solid #333;
+      height: 80px;
+      width: 100%;
+    }
+
+    .signatures {
+      display: grid;
+      gap: 18px;
+      grid-template-columns: 1fr 1fr 1fr;
+      margin-top: 30px;
+    }
+
+    .signature-line {
+      border-top: 1px solid #111;
+      padding-top: 6px;
+      text-align: center;
+    }
+
+    .no-print {
+      margin-bottom: 16px;
+    }
+
+    @media print {
+      body {
+        margin: 12mm;
+      }
+
+      .no-print {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print">
+    <button type="button" onclick="window.print()">Print</button>
+  </div>
+
+  <h1>Orden de Produccion</h1>
+
+  <section class="grid">
+    <div class="field">
+      <span class="label">Order Number</span>
+      <span>{{ order.internal_order_number }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Semana</span>
+      <span>{{ week_number }}</span>
+    </div>
+    <div class="field">
+      <span class="label">SKU</span>
+      <span>{{ order.product_sku_snapshot }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Fecha emision</span>
+      <span>{{ issue_date }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Product description</span>
+      <span>{{ order.product_name_snapshot }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Fecha de fabricacion</span>
+      <span class="line"></span>
+    </div>
+    <div class="field">
+      <span class="label">Loyverse Reference</span>
+      <span class="line"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>BOM</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Check</th>
+          <th>Component SKU</th>
+          <th>Component name</th>
+          <th>Quantity standard</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for material in materials %}
+          <tr>
+            <td><span class="checkbox"></span></td>
+            <td>{{ material.component_sku or "" }}</td>
+            <td>{{ material.component_name or "" }}</td>
+            <td>{{ material.quantity_standard or "" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Route and Times</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Sequence</th>
+          <th>Activity</th>
+          <th>Labor minutes</th>
+          <th>Machine minutes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for activity in activities %}
+          <tr>
+            <td>{{ activity.sequence }}</td>
+            <td>{{ activity.activity_name_snapshot }}</td>
+            <td><span class="line"></span></td>
+            <td><span class="line"></span></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Observaciones</h2>
+    <div class="write-area"></div>
+  </section>
+
+  <section>
+    <h2>Firmas</h2>
+    <div class="signatures">
+      <div class="signature-line">Aprobado por</div>
+      <div class="signature-line">Revisado por</div>
+      <div class="signature-line">Fecha</div>
+    </div>
+  </section>
+</body>
+</html>

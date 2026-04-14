@@ -13,12 +13,6 @@
 
     <form method="post" action="/production-orders">
       <input type="hidden" name="search" value="{{ search or '' }}">
-      <label for="internal_order_number">Internal order number</label>
-      <input id="internal_order_number" name="internal_order_number" required>
-
-      <label for="loyverse_order_ref">Loyverse reference</label>
-      <input id="loyverse_order_ref" name="loyverse_order_ref">
-
       <label for="production_date">Production date</label>
       <input id="production_date" name="production_date" type="date" required>
 

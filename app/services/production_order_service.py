@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     Activity,
+    AppSequence,
     ImportedBomHeader,
     ImportedBomLine,
     ImportBatch,
@@ -21,6 +22,10 @@ from app.services.costing_service import CostingValidationError, calculate_order
 
 class ProductionOrderValidationError(Exception):
     pass
+
+
+PRODUCTION_ORDER_SEQUENCE_NAME = "production_order"
+PRODUCTION_ORDER_PREFIX = "OP"
 
 
 def parse_optional_decimal(value: str | Decimal | None, field_name: str) -> Decimal | None:
@@ -43,25 +48,11 @@ def parse_required_decimal(value: str | Decimal | None, field_name: str) -> Deci
 
 def create_production_order(
     db: Session,
-    internal_order_number: str,
-    loyverse_order_ref: str | None,
     production_date: date,
     product_id: int,
     planned_qty: Decimal | None,
     notes: str | None,
 ) -> ProductionOrder:
-    order_number = internal_order_number.strip()
-    if not order_number:
-        raise ProductionOrderValidationError("Internal order number is required.")
-
-    existing_order = (
-        db.query(ProductionOrder)
-        .filter(ProductionOrder.internal_order_number == order_number)
-        .one_or_none()
-    )
-    if existing_order is not None:
-        raise ProductionOrderValidationError("Internal order number already exists.")
-
     product = db.query(Product).filter(Product.id == product_id).one_or_none()
     if product is None:
         raise ProductionOrderValidationError("Product is required.")
@@ -88,9 +79,11 @@ def create_production_order(
     if bom_header is None:
         raise ProductionOrderValidationError("Product must have an imported BOM before creating an order.")
 
+    order_number = _generate_internal_order_number(db)
+
     order = ProductionOrder(
         internal_order_number=order_number,
-        loyverse_order_ref=(loyverse_order_ref or "").strip() or None,
+        loyverse_order_ref=None,
         production_date=production_date,
         product_id=product.id,
         product_sku_snapshot=product.sku,
@@ -219,6 +212,46 @@ def close_order(db: Session, order_id: int) -> ProductionOrder:
 
 def get_order(db: Session, order_id: int) -> ProductionOrder:
     return db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+
+
+def _generate_internal_order_number(db: Session) -> str:
+    sequence = (
+        db.query(AppSequence)
+        .filter(AppSequence.name == PRODUCTION_ORDER_SEQUENCE_NAME)
+        .one_or_none()
+    )
+    if sequence is None:
+        sequence = AppSequence(
+            name=PRODUCTION_ORDER_SEQUENCE_NAME,
+            next_value=_bootstrap_next_production_order_sequence(db),
+        )
+        db.add(sequence)
+        db.flush()
+
+    order_number = f"{PRODUCTION_ORDER_PREFIX}{sequence.next_value}"
+    existing_order = (
+        db.query(ProductionOrder)
+        .filter(ProductionOrder.internal_order_number == order_number)
+        .one_or_none()
+    )
+    if existing_order is not None:
+        raise ProductionOrderValidationError(f"Generated internal order number {order_number} already exists.")
+
+    sequence.next_value += 1
+    return order_number
+
+
+def _bootstrap_next_production_order_sequence(db: Session) -> int:
+    highest = 0
+    prefix_length = len(PRODUCTION_ORDER_PREFIX)
+    order_numbers = db.query(ProductionOrder.internal_order_number).all()
+    for (order_number,) in order_numbers:
+        if not order_number or not order_number.startswith(PRODUCTION_ORDER_PREFIX):
+            continue
+        suffix = order_number[prefix_length:]
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return highest + 1
 
 
 def _copy_route_activities(

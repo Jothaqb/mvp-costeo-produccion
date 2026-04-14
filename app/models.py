@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -16,6 +16,8 @@ class Product(Base):
     unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
     standard_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     loyverse_handle: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    loyverse_item_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    loyverse_variant_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     default_route_id: Mapped[int | None] = mapped_column(ForeignKey("routes.id"), nullable=True)
     is_manufactured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -28,6 +30,14 @@ class Product(Base):
     )
 
     default_route: Mapped["Route | None"] = relationship("Route", back_populates="products")
+
+
+class AppSequence(Base):
+    __tablename__ = "app_sequences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    next_value: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class ImportBatch(Base):
@@ -210,6 +220,11 @@ class ProductionOrder(Base):
     real_unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     variance_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     variance_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    loyverse_cost_sync_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    loyverse_cost_sync_attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    loyverse_cost_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    loyverse_cost_sync_variant_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    loyverse_cost_sync_pushed_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

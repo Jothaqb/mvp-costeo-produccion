@@ -11,10 +11,13 @@ from sqlalchemy.orm import Session, joinedload
 from app.database import (
     Base,
     engine,
+    ensure_app_sequences_table,
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
+    ensure_product_loyverse_mapping_columns,
     ensure_sprint4_costing_columns,
     ensure_sprint5_comparison_columns,
+    ensure_sprint6_loyverse_cost_sync_columns,
     get_db,
 )
 from app.models import (
@@ -45,6 +48,7 @@ from app.services.config_service import (
     validate_unique_code,
 )
 from app.services.import_service import import_loyverse_csv
+from app.services.loyverse_service import sync_closed_order_cost_to_loyverse
 from app.services.production_order_service import (
     ProductionOrderValidationError,
     close_order,
@@ -59,8 +63,11 @@ from app.services.production_order_service import (
 Base.metadata.create_all(bind=engine)
 ensure_product_default_route_column()
 ensure_product_is_manufactured_column()
+ensure_product_loyverse_mapping_columns()
+ensure_app_sequences_table()
 ensure_sprint4_costing_columns()
 ensure_sprint5_comparison_columns()
+ensure_sprint6_loyverse_cost_sync_columns()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -709,8 +716,6 @@ def new_production_order(
 @app.post("/production-orders")
 def create_production_order_route(
     request: Request,
-    internal_order_number: str = Form(...),
-    loyverse_order_ref: str = Form(""),
     production_date: date = Form(...),
     product_id: int = Form(...),
     planned_qty: str = Form(""),
@@ -727,8 +732,6 @@ def create_production_order_route(
         planned_qty_value = parse_optional_decimal(planned_qty, "Planned quantity")
         order = create_production_order(
             db=db,
-            internal_order_number=internal_order_number,
-            loyverse_order_ref=loyverse_order_ref,
             production_date=production_date,
             product_id=product_id,
             planned_qty=planned_qty_value,
@@ -751,6 +754,39 @@ def create_production_order_route(
 @app.get("/production-orders/{order_id}", response_class=HTMLResponse)
 def production_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     return _production_order_detail_response(order_id, request, db)
+
+
+@app.get("/production-orders/{order_id}/print", response_class=HTMLResponse)
+def production_order_print(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    if order.status not in {"draft", "in_progress"}:
+        return _production_order_detail_response(order_id, request, db, "Only draft or in-progress orders can be printed.")
+
+    materials = (
+        db.query(ProductionOrderMaterial)
+        .filter(ProductionOrderMaterial.production_order_id == order_id)
+        .order_by(ProductionOrderMaterial.id)
+        .all()
+    )
+    activities = (
+        db.query(ProductionOrderActivity)
+        .filter(ProductionOrderActivity.production_order_id == order_id)
+        .order_by(ProductionOrderActivity.sequence)
+        .all()
+    )
+    issue_date = date.today()
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_print.html",
+        context={
+            "title": "Production Order Print",
+            "order": order,
+            "materials": materials,
+            "activities": activities,
+            "issue_date": issue_date,
+            "week_number": order.production_date.isocalendar().week,
+        },
+    )
 
 
 @app.post("/production-orders/{order_id}/activities")
@@ -806,7 +842,12 @@ def start_production_order(order_id: int, request: Request, db: Session = Depend
 @app.post("/production-orders/{order_id}/close")
 def close_production_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
     try:
+        order_before_close = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+        status_before_close = order_before_close.status
         close_order(db, order_id)
+        order_after_close = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+        if status_before_close != "closed" and order_after_close.status == "closed":
+            sync_closed_order_cost_to_loyverse(db, order_after_close.id)
         return _redirect(f"/production-orders/{order_id}")
     except ProductionOrderValidationError as exc:
         return _production_order_detail_response(order_id, request, db, str(exc))

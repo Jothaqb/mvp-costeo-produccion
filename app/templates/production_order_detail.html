@@ -78,6 +78,7 @@
 
     {% if not is_closed %}
       <div class="actions">
+        <a role="button" href="/production-orders/{{ order.id }}/print" target="_blank" aria-label="Print worksheet" title="Print worksheet">🖨</a>
         {% if order.status == "draft" %}
           <form method="post" action="/production-orders/{{ order.id }}/start">
             <button type="submit">Start order</button>

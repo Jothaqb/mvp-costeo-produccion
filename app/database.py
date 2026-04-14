@@ -53,6 +53,40 @@ def ensure_product_is_manufactured_column() -> None:
             )
 
 
+def ensure_product_loyverse_mapping_columns() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "products",
+            {
+                "loyverse_item_id": "VARCHAR(100)",
+                "loyverse_variant_id": "VARCHAR(100)",
+            },
+        )
+
+
+def ensure_app_sequences_table() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS app_sequences (
+                id INTEGER NOT NULL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL UNIQUE,
+                next_value INTEGER NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_app_sequences_name ON app_sequences (name)"
+        )
+
+
 def ensure_sprint4_costing_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -96,6 +130,24 @@ def ensure_sprint5_comparison_columns() -> None:
             {
                 "variance_amount": "NUMERIC(12, 4)",
                 "variance_percent": "NUMERIC(12, 4)",
+            },
+        )
+
+
+def ensure_sprint6_loyverse_cost_sync_columns() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "production_orders",
+            {
+                "loyverse_cost_sync_status": "VARCHAR(50)",
+                "loyverse_cost_sync_attempted_at": "DATETIME",
+                "loyverse_cost_sync_error": "TEXT",
+                "loyverse_cost_sync_variant_id": "VARCHAR(100)",
+                "loyverse_cost_sync_pushed_cost": "NUMERIC(12, 4)",
             },
         )
 
