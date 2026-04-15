@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.database import (
     Base,
     engine,
+    ensure_b2b_sales_followup_columns,
     ensure_app_sequences_table,
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
@@ -85,6 +86,7 @@ ensure_sprint4_costing_columns()
 ensure_sprint5_comparison_columns()
 ensure_sprint6_loyverse_cost_sync_columns()
 ensure_sprint7c_lot_columns_and_tables()
+ensure_b2b_sales_followup_columns()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -434,8 +436,9 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
     customer_id = int(str(form.get("customer_id", "0") or "0"))
     delivery_date = datetime.strptime(str(form.get("delivery_date")), "%Y-%m-%d").date()
     line_inputs = _line_inputs_from_form(form, "line", 5)
+    observations = str(form.get("observations", ""))
     try:
-        order = create_sales_order(db, customer_id, delivery_date, line_inputs)
+        order = create_sales_order(db, customer_id, delivery_date, line_inputs, observations)
         return _redirect(f"/b2b/orders/{order.id}")
     except (B2BValidationError, ValueError) as exc:
         db.rollback()
@@ -459,6 +462,8 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
                 "catalog": catalog,
                 "error": str(exc),
                 "min_delivery_date": date.today() + timedelta(days=1),
+                "submitted_observations": observations,
+                "submitted_lines": line_inputs,
             },
         )
 
@@ -525,8 +530,9 @@ async def update_b2b_order(order_id: int, request: Request, db: Session = Depend
     ]
     deleted_line_ids = [int(line_id) for line_id in form.getlist("delete_line_id")]
     new_line_inputs = _line_inputs_from_form(form, "new_line", 3)
+    observations = str(form.get("observations", ""))
     try:
-        update_sales_order_lines(db, order_id, line_updates, deleted_line_ids, new_line_inputs)
+        update_sales_order_lines(db, order_id, line_updates, deleted_line_ids, new_line_inputs, observations)
         return _redirect(f"/b2b/orders/{order_id}")
     except B2BValidationError as exc:
         db.rollback()
@@ -554,6 +560,7 @@ async def update_b2b_order(order_id: int, request: Request, db: Session = Depend
                 "catalog": catalog,
                 "catalog_by_sku": catalog_by_sku,
                 "error": str(exc),
+                "submitted_observations": observations,
             },
         )
 

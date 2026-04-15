@@ -15,6 +15,7 @@
       <div><dt>Legal name</dt><dd>{{ order.legal_name_snapshot or "" }}</dd></div>
       <div><dt>Legal ID</dt><dd>{{ order.legal_id_snapshot or "" }}</dd></div>
       <div><dt>Phone</dt><dd>{{ order.phone_snapshot or "" }}</dd></div>
+      <div><dt>Observations</dt><dd>{{ order.observations or "" }}</dd></div>
     </dl>
 
     {% if order.status != "invoiced" %}

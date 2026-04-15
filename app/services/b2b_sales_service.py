@@ -214,6 +214,7 @@ def create_sales_order(
     customer_id: int,
     delivery_date: date,
     line_inputs: list[dict[str, str]],
+    observations: str,
 ) -> B2BSalesOrder:
     validate_future_delivery_date(delivery_date)
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one_or_none()
@@ -236,6 +237,7 @@ def create_sales_order(
         delivery_date=delivery_date,
         status="draft",
         total_amount=ZERO,
+        observations=observations.strip() or None,
     )
     db.add(order)
     db.flush()
@@ -252,9 +254,11 @@ def update_sales_order_lines(
     line_updates: list[dict[str, str]],
     deleted_line_ids: list[int],
     new_line_inputs: list[dict[str, str]],
+    observations: str,
 ) -> B2BSalesOrder:
     order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
     _ensure_order_editable(order)
+    order.observations = observations.strip() or None
     catalog_by_sku = _active_customer_catalog_by_sku(db, order.customer_id)
 
     deleted_ids = set(deleted_line_ids)

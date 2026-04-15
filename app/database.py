@@ -182,6 +182,20 @@ def ensure_sprint6_loyverse_cost_sync_columns() -> None:
         )
 
 
+def ensure_b2b_sales_followup_columns() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "b2b_sales_orders",
+            {
+                "observations": "TEXT",
+            },
+        )
+
+
 def _ensure_columns(connection, table_name: str, column_definitions: dict[str, str]) -> None:
     columns = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
     if not columns:

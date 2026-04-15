@@ -40,34 +40,83 @@
         <label for="delivery_date">Delivery date</label>
         <input id="delivery_date" name="delivery_date" type="date" min="{{ min_delivery_date }}" required>
 
+        <label for="observations">Observations</label>
+        <textarea id="observations" name="observations">{{ submitted_observations or "" }}</textarea>
+
         <table>
           <thead>
             <tr>
               <th>Product</th>
               <th>Quantity</th>
               <th>Unit price</th>
+              <th>Amount</th>
             </tr>
           </thead>
           <tbody>
             {% for index in range(1, 6) %}
+              {% set submitted_line = submitted_lines[index - 1] if submitted_lines is defined and submitted_lines|length >= index else none %}
               <tr>
                 <td>
-                  <select name="line_sku_{{ index }}">
+                  <select class="b2b-product-select" name="line_sku_{{ index }}">
                     <option value="">Select product...</option>
                     {% for product in catalog %}
-                      <option value="{{ product.sku }}">{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
+                      <option value="{{ product.sku }}" data-price="{{ product.distributor_price }}" {% if submitted_line and submitted_line.sku == product.sku %}selected{% endif %}>{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
                     {% endfor %}
                   </select>
                 </td>
-                <td><input name="line_quantity_{{ index }}"></td>
-                <td>Shown in product list</td>
+                <td><input class="b2b-quantity-input" name="line_quantity_{{ index }}" value="{{ submitted_line.quantity if submitted_line else '' }}"></td>
+                <td class="b2b-unit-price"></td>
+                <td class="b2b-line-amount"></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
 
+        <p><strong>Order Total:</strong> <span id="b2b-order-total">&#8353;0</span></p>
+
         <button type="submit">Create draft order</button>
       </form>
     </section>
   {% endif %}
+
+  <script>
+    function b2bNumber(value) {
+      const parsed = Number(String(value || "").replace(",", "."));
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function b2bFormatMoney(value) {
+      return "\u20a1" + Math.round(value).toLocaleString("en-US");
+    }
+
+    function b2bRecalculate() {
+      let total = 0;
+      document.querySelectorAll("tbody tr").forEach((row) => {
+        const select = row.querySelector(".b2b-product-select");
+        const quantityInput = row.querySelector(".b2b-quantity-input");
+        const unitCell = row.querySelector(".b2b-unit-price");
+        const amountCell = row.querySelector(".b2b-line-amount");
+        if (!select || !quantityInput || !unitCell || !amountCell) {
+          return;
+        }
+        const option = select.options[select.selectedIndex];
+        const price = b2bNumber(option ? option.dataset.price : "");
+        const quantity = b2bNumber(quantityInput.value);
+        const amount = price * quantity;
+        unitCell.textContent = price ? b2bFormatMoney(price) : "";
+        amountCell.textContent = amount ? b2bFormatMoney(amount) : "";
+        total += amount;
+      });
+      const totalElement = document.getElementById("b2b-order-total");
+      if (totalElement) {
+        totalElement.textContent = b2bFormatMoney(total);
+      }
+    }
+
+    document.querySelectorAll(".b2b-product-select, .b2b-quantity-input").forEach((input) => {
+      input.addEventListener("change", b2bRecalculate);
+      input.addEventListener("input", b2bRecalculate);
+    });
+    b2bRecalculate();
+  </script>
 {% endblock %}
