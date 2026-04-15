@@ -12,6 +12,7 @@ from app.database import (
     Base,
     engine,
     ensure_b2b_sales_followup_columns,
+    ensure_b2b_loyverse_mapping_tables,
     ensure_app_sequences_table,
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
@@ -28,6 +29,8 @@ from app.models import (
     B2BCustomerProduct,
     B2BSalesOrder,
     B2BSalesOrderLine,
+    LoyverseCustomerMapping,
+    LoyverseVariantMapping,
     ImportBatch,
     ImportedBomHeader,
     ImportedBomLine,
@@ -52,6 +55,12 @@ from app.services.b2b_sales_service import (
     update_customer,
     update_customer_product,
     update_sales_order_lines,
+)
+from app.services.b2b_loyverse_mapping_service import (
+    LoyverseMappingSyncError,
+    build_b2b_invoice_readiness,
+    refresh_loyverse_customer_mappings,
+    refresh_loyverse_variant_mappings,
 )
 from app.services.config_service import (
     ValidationError,
@@ -87,6 +96,7 @@ ensure_sprint5_comparison_columns()
 ensure_sprint6_loyverse_cost_sync_columns()
 ensure_sprint7c_lot_columns_and_tables()
 ensure_b2b_sales_followup_columns()
+ensure_b2b_loyverse_mapping_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -367,6 +377,68 @@ def update_b2b_customer_product(
         )
 
 
+@app.get("/b2b/loyverse-mappings", response_class=HTMLResponse)
+def b2b_loyverse_mappings(
+    request: Request,
+    message: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    customers = (
+        db.query(LoyverseCustomerMapping)
+        .order_by(LoyverseCustomerMapping.active.desc(), LoyverseCustomerMapping.customer_name, LoyverseCustomerMapping.phone)
+        .limit(100)
+        .all()
+    )
+    variants = (
+        db.query(LoyverseVariantMapping)
+        .order_by(LoyverseVariantMapping.active.desc(), LoyverseVariantMapping.sku, LoyverseVariantMapping.item_name)
+        .limit(150)
+        .all()
+    )
+    customer_count = db.query(LoyverseCustomerMapping).count()
+    active_customer_count = db.query(LoyverseCustomerMapping).filter(LoyverseCustomerMapping.active.is_(True)).count()
+    variant_count = db.query(LoyverseVariantMapping).count()
+    active_variant_count = db.query(LoyverseVariantMapping).filter(LoyverseVariantMapping.active.is_(True)).count()
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_loyverse_mappings.html",
+        context={
+            "title": "B2B Loyverse Mappings",
+            "customers": customers,
+            "variants": variants,
+            "customer_count": customer_count,
+            "active_customer_count": active_customer_count,
+            "variant_count": variant_count,
+            "active_variant_count": active_variant_count,
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@app.post("/b2b/loyverse-mappings/customers/refresh")
+def refresh_b2b_loyverse_customers(db: Session = Depends(get_db)) -> Response:
+    try:
+        result = refresh_loyverse_customer_mappings(db)
+        message = f"Customer mappings refreshed. Created: {result['created']}, updated: {result['updated']}, skipped: {result['skipped']}."
+        return _redirect(f"/b2b/loyverse-mappings?message={quote(message)}")
+    except LoyverseMappingSyncError as exc:
+        db.rollback()
+        return _redirect(f"/b2b/loyverse-mappings?error={quote(str(exc))}")
+
+
+@app.post("/b2b/loyverse-mappings/variants/refresh")
+def refresh_b2b_loyverse_variants(db: Session = Depends(get_db)) -> Response:
+    try:
+        result = refresh_loyverse_variant_mappings(db)
+        message = f"Variant mappings refreshed. Created: {result['created']}, updated: {result['updated']}, skipped: {result['skipped']}."
+        return _redirect(f"/b2b/loyverse-mappings?message={quote(message)}")
+    except LoyverseMappingSyncError as exc:
+        db.rollback()
+        return _redirect(f"/b2b/loyverse-mappings?error={quote(str(exc))}")
+
+
 @app.get("/b2b/orders", response_class=HTMLResponse)
 def b2b_orders(
     request: Request,
@@ -477,10 +549,11 @@ def b2b_order_detail(order_id: int, request: Request, db: Session = Depends(get_
         .order_by(B2BSalesOrderLine.line_number)
         .all()
     )
+    readiness = build_b2b_invoice_readiness(db, order_id)
     return templates.TemplateResponse(
         request=request,
         name="b2b_order_detail.html",
-        context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": None},
+        context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": None, "readiness": readiness},
     )
 
 
@@ -604,7 +677,7 @@ def update_b2b_order_status(
         return templates.TemplateResponse(
             request=request,
             name="b2b_order_detail.html",
-            context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc)},
+            context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc), "readiness": build_b2b_invoice_readiness(db, order_id)},
         )
 
 

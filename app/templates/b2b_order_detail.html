@@ -42,6 +42,42 @@
     {% endif %}
   </section>
 
+  {% if readiness %}
+    <section>
+      <h2>Loyverse Invoice Readiness</h2>
+      <p><strong>Status:</strong> {% if readiness.ready %}Ready{% else %}Not ready{% endif %}</p>
+      <p>{{ readiness.note }}</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Check</th>
+            <th>Result</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Technical config</td>
+            <td>{% if readiness.token_present %}Ready{% else %}Missing{% endif %}</td>
+            <td>{{ readiness.token_message }}</td>
+          </tr>
+          <tr>
+            <td>Customer mapping</td>
+            <td>{% if readiness.customer.ready %}Ready{% else %}Missing{% endif %}</td>
+            <td>{{ readiness.customer.message }}{% if readiness.customer.loyverse_customer_id %} ID: {{ readiness.customer.loyverse_customer_id }}{% endif %}</td>
+          </tr>
+          {% for line in readiness.lines %}
+            <tr>
+              <td>Variant mapping for {{ line.sku }}</td>
+              <td>{% if line.ready %}Ready{% else %}Missing{% endif %}</td>
+              <td>{{ line.message }}{% if line.loyverse_variant_id %} Variant: {{ line.loyverse_variant_id }}{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
   <section>
     <h2>Lines</h2>
     <p>Line count: {{ lines|length }}</p>

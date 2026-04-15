@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/b2b/orders">B2B Sales history</a></p>
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <p>Manual refresh only. These local mappings are used for invoice readiness validation and do not create Loyverse receipts.</p>
+    <div class="actions">
+      <form method="post" action="/b2b/loyverse-mappings/customers/refresh">
+        <button type="submit">Refresh Loyverse customers</button>
+      </form>
+      <form method="post" action="/b2b/loyverse-mappings/variants/refresh">
+        <button type="submit">Refresh Loyverse variants</button>
+      </form>
+    </div>
+  </section>
+
+  <section>
+    <h2>Customer Mappings</h2>
+    <p>Active: {{ active_customer_count }} | Total cached: {{ customer_count }}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Active</th>
+          <th>Loyverse customer ID</th>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Email</th>
+          <th>Last refreshed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for customer in customers %}
+          <tr>
+            <td>{{ "Y" if customer.active else "N" }}</td>
+            <td>{{ customer.loyverse_customer_id }}</td>
+            <td>{{ customer.customer_name or "" }}</td>
+            <td>{{ customer.phone or "" }}</td>
+            <td>{{ customer.email or "" }}</td>
+            <td>{{ customer.last_refreshed_at }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Variant Mappings</h2>
+    <p>Active: {{ active_variant_count }} | Total cached: {{ variant_count }}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Active</th>
+          <th>SKU</th>
+          <th>Variant ID</th>
+          <th>Item ID</th>
+          <th>Item name</th>
+          <th>Variant name</th>
+          <th>Last refreshed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for variant in variants %}
+          <tr>
+            <td>{{ "Y" if variant.active else "N" }}</td>
+            <td>{{ variant.sku or "" }}</td>
+            <td>{{ variant.loyverse_variant_id }}</td>
+            <td>{{ variant.loyverse_item_id or "" }}</td>
+            <td>{{ variant.item_name or "" }}</td>
+            <td>{{ variant.variant_name or "" }}</td>
+            <td>{{ variant.last_refreshed_at }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

@@ -196,6 +196,60 @@ def ensure_b2b_sales_followup_columns() -> None:
         )
 
 
+def ensure_b2b_loyverse_mapping_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS loyverse_customer_mappings (
+                id INTEGER NOT NULL PRIMARY KEY,
+                loyverse_customer_id VARCHAR(100) NOT NULL UNIQUE,
+                customer_name VARCHAR(255),
+                phone VARCHAR(100),
+                email VARCHAR(255),
+                active BOOLEAN NOT NULL DEFAULT 1,
+                last_refreshed_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_loyverse_customer_mappings_loyverse_customer_id "
+            "ON loyverse_customer_mappings (loyverse_customer_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_loyverse_customer_mappings_phone "
+            "ON loyverse_customer_mappings (phone)"
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS loyverse_variant_mappings (
+                id INTEGER NOT NULL PRIMARY KEY,
+                sku VARCHAR(100),
+                loyverse_variant_id VARCHAR(100) NOT NULL UNIQUE,
+                loyverse_item_id VARCHAR(100),
+                item_name VARCHAR(255),
+                variant_name VARCHAR(255),
+                active BOOLEAN NOT NULL DEFAULT 1,
+                last_refreshed_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_loyverse_variant_mappings_sku "
+            "ON loyverse_variant_mappings (sku)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_loyverse_variant_mappings_loyverse_variant_id "
+            "ON loyverse_variant_mappings (loyverse_variant_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_loyverse_variant_mappings_loyverse_item_id "
+            "ON loyverse_variant_mappings (loyverse_item_id)"
+        )
+
+
 def _ensure_columns(connection, table_name: str, column_definitions: dict[str, str]) -> None:
     columns = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
     if not columns:

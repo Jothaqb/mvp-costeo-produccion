@@ -53,6 +53,31 @@ class LotSequence(Base):
     next_value: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class LoyverseCustomerMapping(Base):
+    __tablename__ = "loyverse_customer_mappings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    loyverse_customer_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class LoyverseVariantMapping(Base):
+    __tablename__ = "loyverse_variant_mappings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    sku: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    loyverse_variant_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    loyverse_item_id: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    item_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    variant_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class B2BCustomer(Base):
     __tablename__ = "b2b_customers"
 
