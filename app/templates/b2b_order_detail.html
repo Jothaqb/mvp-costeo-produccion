@@ -5,7 +5,7 @@
   <section>
     <h1>{{ order.order_number }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <p><a href="/b2b/orders">Sales history</a></p>
+    <p><a href="/b2b/orders">Sales history</a> | <a href="/b2b/orders/{{ order.id }}/document">View document</a></p>
     <dl class="summary">
       <div><dt>Status</dt><dd>{{ order.status }}</dd></div>
       <div><dt>Customer</dt><dd>{{ order.customer_name_snapshot }}</dd></div>

@@ -1,0 +1,205 @@
+{% import "_formatting.html" as fmt %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ document_title }} {{ order.order_number }}</title>
+    <style>
+      body {
+        color: #1f2933;
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        line-height: 1.4;
+        margin: 32px;
+      }
+
+      header,
+      section {
+        margin-bottom: 24px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        font-size: 28px;
+        margin-bottom: 8px;
+      }
+
+      h2 {
+        border-bottom: 1px solid #b8c2cc;
+        font-size: 16px;
+        padding-bottom: 6px;
+      }
+
+      .document-meta,
+      .party-grid {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .label {
+        color: #52606d;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+
+      table {
+        border-collapse: collapse;
+        width: 100%;
+      }
+
+      th,
+      td {
+        border: 1px solid #d9e2ec;
+        padding: 8px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #f0f4f8;
+      }
+
+      .number {
+        text-align: right;
+      }
+
+      .total-row td {
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .actions {
+        margin-bottom: 16px;
+      }
+
+      .actions button,
+      .actions a {
+        background: #2563eb;
+        border: 0;
+        border-radius: 6px;
+        color: white;
+        display: inline-block;
+        font: inherit;
+        padding: 8px 12px;
+        text-decoration: none;
+      }
+
+      .actions a {
+        background: #52606d;
+        margin-left: 8px;
+      }
+
+      .payment-box {
+        border: 1px solid #b8c2cc;
+        padding: 12px;
+      }
+
+      @media print {
+        body {
+          margin: 16px;
+        }
+
+        .actions {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="actions">
+      <button type="button" onclick="window.print()">Print</button>
+      <a href="/b2b/orders/{{ order.id }}">Back to order</a>
+    </div>
+
+    <header>
+      <h1>{{ document_title }}</h1>
+      <div class="document-meta">
+        <div>
+          <div class="label">B2B Order Number</div>
+          <div>{{ order.order_number }}</div>
+        </div>
+        <div>
+          <div class="label">Status</div>
+          <div>{{ order.status }}</div>
+        </div>
+        <div>
+          <div class="label">Creation Date</div>
+          <div>{{ order.created_at.date() if order.created_at else "" }}</div>
+        </div>
+        <div>
+          <div class="label">Delivery Date</div>
+          <div>{{ order.delivery_date }}</div>
+        </div>
+      </div>
+    </header>
+
+    <section class="party-grid">
+      <div>
+        <h2>Informaci&oacute;n Green Corner</h2>
+        <p><strong>Correo:</strong> <a href="mailto:greencornercr1@gmail.com">greencornercr1@gmail.com</a></p>
+        <p><strong>Direcci&oacute;n:</strong> Ofibodegas San Antonio, Bodega 28, Rio Azul, La Union, Cartago</p>
+        <p><strong>Cuenta Bancaria:</strong> CR41010200009562878741</p>
+      </div>
+      <div>
+        <h2>Customer Information</h2>
+        <p><strong>Customer:</strong> {{ order.customer_name_snapshot }}</p>
+        <p><strong>Address:</strong> {{ order.address_snapshot or "" }}</p>
+        <p><strong>Legal Name:</strong> {{ order.legal_name_snapshot or "" }}</p>
+        <p><strong>Legal ID:</strong> {{ order.legal_id_snapshot or "" }}</p>
+        <p><strong>Phone:</strong> {{ order.phone_snapshot or "" }}</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Order Lines</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>SKU</th>
+            <th>Description</th>
+            <th class="number">Quantity</th>
+            <th class="number">Unit Price</th>
+            <th class="number">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in lines %}
+            <tr>
+              <td>{{ line.line_number }}</td>
+              <td>{{ line.sku_snapshot }}</td>
+              <td>{{ line.description_snapshot }}</td>
+              <td class="number">{{ fmt.number_3(line.quantity) }}</td>
+              <td class="number">{{ fmt.money_crc(line.unit_price_snapshot) }}</td>
+              <td class="number">{{ fmt.money_crc(line.line_total) }}</td>
+            </tr>
+          {% endfor %}
+          <tr class="total-row">
+            <td colspan="5" class="number">Total</td>
+            <td class="number">{{ fmt.money_crc(order.total_amount) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Observations</h2>
+      <p>{{ order.observations or "" }}</p>
+    </section>
+
+    <section class="payment-box">
+      <h2>Payment Information</h2>
+      <p>Payment by bank transfer to Green Corner.</p>
+      <p><strong>Cuenta Bancaria:</strong> CR41010200009562878741</p>
+    </section>
+  </body>
+</html>

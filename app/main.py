@@ -484,6 +484,23 @@ def b2b_order_detail(order_id: int, request: Request, db: Session = Depends(get_
     )
 
 
+@app.get("/b2b/orders/{order_id}/document", response_class=HTMLResponse)
+def b2b_order_document(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
+    lines = (
+        db.query(B2BSalesOrderLine)
+        .filter(B2BSalesOrderLine.sales_order_id == order_id)
+        .order_by(B2BSalesOrderLine.line_number)
+        .all()
+    )
+    document_title = "Factura" if order.status == "invoiced" else "Proforma"
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_order_document.html",
+        context={"title": document_title, "document_title": document_title, "order": order, "lines": lines},
+    )
+
+
 @app.get("/b2b/orders/{order_id}/edit", response_class=HTMLResponse)
 def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
