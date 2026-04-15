@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>Edit BOM - {{ order.internal_order_number }}</h1>
+    <p>{{ order.product_sku_snapshot }} - {{ order.product_name_snapshot }}</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <form method="post" action="/production-orders/{{ order.id }}/bom/edit" onsubmit="return confirm('You are about to modify the BOM of this Production Order. Do you want to save these changes?');">
+      <table>
+        <thead>
+          <tr>
+            <th>Component SKU</th>
+            <th>Component name</th>
+            <th>Quantity standard</th>
+            <th>Requirement quantity</th>
+            <th>Delete</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for material in materials %}
+            {% set requirement_quantity = order.planned_qty * material.quantity_standard if order.planned_qty is not none and material.quantity_standard is not none else none %}
+            <tr>
+              <td>
+                <input type="hidden" name="material_id" value="{{ material.id }}">
+                <select name="component_sku_{{ material.id }}" required>
+                  {% if material.component_sku and material.component_sku not in products_by_sku %}
+                    <option value="{{ material.component_sku }}" selected>{{ material.component_sku }} - SKU not found</option>
+                  {% endif %}
+                  {% for product in products %}
+                    <option value="{{ product.sku }}" {% if product.sku == material.component_sku %}selected{% endif %}>{{ product.sku }} - {{ product.name }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td>{{ material.component_name or "" }}</td>
+              <td><input name="quantity_standard_{{ material.id }}" value="{{ material.quantity_standard if material.quantity_standard is not none else '' }}"></td>
+              <td>{{ fmt.number_3(requirement_quantity) }}</td>
+              <td><input type="checkbox" name="delete_material_id" value="{{ material.id }}"></td>
+            </tr>
+          {% endfor %}
+          <tr>
+            <td>
+              <select name="new_component_sku">
+                <option value="">Add component...</option>
+                {% for product in products %}
+                  <option value="{{ product.sku }}">{{ product.sku }} - {{ product.name }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td></td>
+            <td><input name="new_quantity_standard"></td>
+            <td></td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <button type="submit">Save BOM changes</button>
+      <a href="/production-orders/{{ order.id }}">Cancel</a>
+    </form>
+  </section>
+{% endblock %}

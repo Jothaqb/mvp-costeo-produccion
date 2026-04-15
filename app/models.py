@@ -40,6 +40,19 @@ class AppSequence(Base):
     next_value: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class LotSequence(Base):
+    __tablename__ = "lot_sequences"
+    __table_args__ = (
+        UniqueConstraint("iso_year", "iso_week", "product_sku", name="uq_lot_sequence_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    iso_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    iso_week: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_sku: Mapped[str] = mapped_column(String(100), nullable=False)
+    next_value: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class ImportBatch(Base):
     __tablename__ = "import_batches"
 
@@ -220,6 +233,7 @@ class ProductionOrder(Base):
     real_unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     variance_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     variance_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    lot_number: Mapped[str | None] = mapped_column(String(50), unique=True, index=True, nullable=True)
     loyverse_cost_sync_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     loyverse_cost_sync_attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     loyverse_cost_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)

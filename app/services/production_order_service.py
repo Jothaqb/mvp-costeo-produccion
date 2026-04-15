@@ -9,6 +9,7 @@ from app.models import (
     ImportedBomHeader,
     ImportedBomLine,
     ImportBatch,
+    LotSequence,
     Product,
     ProductionOrder,
     ProductionOrderActivity,
@@ -26,6 +27,7 @@ class ProductionOrderValidationError(Exception):
 
 PRODUCTION_ORDER_SEQUENCE_NAME = "production_order"
 PRODUCTION_ORDER_PREFIX = "OP"
+LOT_SEQUENCE_START = 1
 
 
 def parse_optional_decimal(value: str | Decimal | None, field_name: str) -> Decimal | None:
@@ -97,6 +99,7 @@ def create_production_order(
         status=ProductionOrderStatus.DRAFT.value,
         notes=(notes or "").strip() or None,
     )
+    order.lot_number = _generate_lot_number(db, production_date, product.sku)
     db.add(order)
     db.flush()
 
@@ -170,6 +173,78 @@ def update_yield_capture(
         order.yield_percent = output_qty / input_qty
     else:
         order.yield_percent = None
+
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+def update_order_bom(
+    db: Session,
+    order_id: int,
+    material_updates: list[dict[str, str]],
+    deleted_material_ids: list[int],
+    new_material: dict[str, str],
+) -> ProductionOrder:
+    order = get_order(db, order_id)
+    _ensure_not_closed(order)
+
+    materials_by_id = {material.id: material for material in order.materials}
+    deleted_ids = set(deleted_material_ids)
+    for material_id in deleted_ids:
+        material = materials_by_id.get(material_id)
+        if material is not None:
+            db.delete(material)
+
+    for update in material_updates:
+        material_id = int(update["id"])
+        if material_id in deleted_ids:
+            continue
+        material = materials_by_id.get(material_id)
+        if material is None:
+            continue
+
+        quantity_standard = parse_optional_decimal(update.get("quantity_standard"), "Quantity standard")
+        if quantity_standard is not None and quantity_standard < 0:
+            raise ProductionOrderValidationError("Quantity standard cannot be negative.")
+
+        component_product = _resolve_component_product(db, update.get("component_sku"))
+        previous_sku = material.component_sku
+        material.component_sku = component_product.sku
+        material.component_name = component_product.name
+        if previous_sku != component_product.sku:
+            if component_product.standard_cost is None:
+                raise ProductionOrderValidationError(
+                    f"Product {component_product.sku} has no standard cost and cannot be used in the BOM."
+                )
+            material.unit_cost_snapshot = component_product.standard_cost
+        material.quantity_standard = quantity_standard
+
+    new_component_sku = (new_material.get("component_sku") or "").strip()
+    new_quantity_text = (new_material.get("quantity_standard") or "").strip()
+    if new_component_sku or new_quantity_text:
+        component_product = _resolve_component_product(db, new_component_sku)
+        if component_product.standard_cost is None:
+            raise ProductionOrderValidationError(
+                f"Product {component_product.sku} has no standard cost and cannot be added to the BOM."
+            )
+        quantity_standard = parse_optional_decimal(new_quantity_text, "New line quantity standard")
+        if quantity_standard is None:
+            raise ProductionOrderValidationError("New line quantity standard is required.")
+        if quantity_standard < 0:
+            raise ProductionOrderValidationError("New line quantity standard cannot be negative.")
+        db.add(
+            ProductionOrderMaterial(
+                production_order_id=order.id,
+                component_sku=component_product.sku,
+                component_name=component_product.name,
+                quantity_standard=quantity_standard,
+                unit_cost_snapshot=component_product.standard_cost,
+                line_cost=None,
+                component_type="material",
+                include_in_real_cost=True,
+            )
+        )
 
     db.commit()
     db.refresh(order)
@@ -252,6 +327,50 @@ def _bootstrap_next_production_order_sequence(db: Session) -> int:
         if suffix.isdigit():
             highest = max(highest, int(suffix))
     return highest + 1
+
+
+def _generate_lot_number(db: Session, production_date: date, product_sku: str) -> str:
+    iso_year, iso_week, _ = production_date.isocalendar()
+    sequence = (
+        db.query(LotSequence)
+        .filter(
+            LotSequence.iso_year == iso_year,
+            LotSequence.iso_week == iso_week,
+            LotSequence.product_sku == product_sku,
+        )
+        .one_or_none()
+    )
+    if sequence is None:
+        sequence = LotSequence(
+            iso_year=iso_year,
+            iso_week=iso_week,
+            product_sku=product_sku,
+            next_value=LOT_SEQUENCE_START,
+        )
+        db.add(sequence)
+        db.flush()
+
+    lot_number = f"{iso_year}{iso_week:02d}{_sku_lot_fragment(product_sku)}{sequence.next_value:02d}"
+    existing_order = db.query(ProductionOrder).filter(ProductionOrder.lot_number == lot_number).one_or_none()
+    if existing_order is not None:
+        raise ProductionOrderValidationError(f"Generated lot number {lot_number} already exists.")
+
+    sequence.next_value += 1
+    return lot_number
+
+
+def _sku_lot_fragment(product_sku: str) -> str:
+    return (product_sku or "")[-4:].zfill(4)
+
+
+def _resolve_component_product(db: Session, component_sku: str | None) -> Product:
+    sku = (component_sku or "").strip()
+    if not sku:
+        raise ProductionOrderValidationError("Component SKU is required.")
+    product = db.query(Product).filter(Product.sku == sku).one_or_none()
+    if product is None:
+        raise ProductionOrderValidationError(f"Component SKU {sku} does not exist.")
+    return product
 
 
 def _copy_route_activities(

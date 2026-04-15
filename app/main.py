@@ -18,6 +18,7 @@ from app.database import (
     ensure_sprint4_costing_columns,
     ensure_sprint5_comparison_columns,
     ensure_sprint6_loyverse_cost_sync_columns,
+    ensure_sprint7c_lot_columns_and_tables,
     get_db,
 )
 from app.models import (
@@ -56,6 +57,7 @@ from app.services.production_order_service import (
     parse_optional_decimal,
     start_order,
     update_activity_capture,
+    update_order_bom,
     update_yield_capture,
 )
 
@@ -68,6 +70,7 @@ ensure_app_sequences_table()
 ensure_sprint4_costing_columns()
 ensure_sprint5_comparison_columns()
 ensure_sprint6_loyverse_cost_sync_columns()
+ensure_sprint7c_lot_columns_and_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -828,6 +831,86 @@ def update_production_order_yield(
         return _redirect(f"/production-orders/{order_id}")
     except ProductionOrderValidationError as exc:
         return _production_order_detail_response(order_id, request, db, str(exc))
+
+
+@app.get("/production-orders/{order_id}/bom/edit", response_class=HTMLResponse)
+def edit_production_order_bom(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    if order.status == "closed":
+        return _production_order_detail_response(order_id, request, db, "Closed orders are read-only.")
+
+    materials = (
+        db.query(ProductionOrderMaterial)
+        .filter(ProductionOrderMaterial.production_order_id == order_id)
+        .order_by(ProductionOrderMaterial.id)
+        .all()
+    )
+    products = db.query(Product).order_by(Product.sku).all()
+    products_by_sku = {product.sku: product for product in products}
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_bom_edit.html",
+        context={
+            "title": "Edit BOM",
+            "order": order,
+            "materials": materials,
+            "products": products,
+            "products_by_sku": products_by_sku,
+            "error": None,
+        },
+    )
+
+
+@app.post("/production-orders/{order_id}/bom/edit")
+async def update_production_order_bom(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    form = await request.form()
+    material_ids = form.getlist("material_id")
+    updates = [
+        {
+            "id": material_id,
+            "component_sku": str(form.get(f"component_sku_{material_id}", "")),
+            "quantity_standard": str(form.get(f"quantity_standard_{material_id}", "")),
+        }
+        for material_id in material_ids
+    ]
+    deleted_material_ids = [int(material_id) for material_id in form.getlist("delete_material_id")]
+    new_material = {
+        "component_sku": str(form.get("new_component_sku", "")),
+        "quantity_standard": str(form.get("new_quantity_standard", "")),
+    }
+    try:
+        update_order_bom(db, order_id, updates, deleted_material_ids, new_material)
+        return _redirect(f"/production-orders/{order_id}")
+    except ProductionOrderValidationError as exc:
+        order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+        materials = (
+            db.query(ProductionOrderMaterial)
+            .filter(ProductionOrderMaterial.production_order_id == order_id)
+            .order_by(ProductionOrderMaterial.id)
+            .all()
+        )
+        products = db.query(Product).order_by(Product.sku).all()
+        products_by_sku = {product.sku: product for product in products}
+        return templates.TemplateResponse(
+            request=request,
+            name="production_order_bom_edit.html",
+            context={
+                "title": "Edit BOM",
+                "order": order,
+                "materials": materials,
+                "products": products,
+                "products_by_sku": products_by_sku,
+                "error": str(exc),
+            },
+        )
 
 
 @app.post("/production-orders/{order_id}/start")

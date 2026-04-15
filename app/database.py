@@ -87,6 +87,36 @@ def ensure_app_sequences_table() -> None:
         )
 
 
+def ensure_sprint7c_lot_columns_and_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "production_orders",
+            {
+                "lot_number": "VARCHAR(50)",
+            },
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_production_orders_lot_number "
+            "ON production_orders (lot_number)"
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS lot_sequences (
+                id INTEGER NOT NULL PRIMARY KEY,
+                iso_year INTEGER NOT NULL,
+                iso_week INTEGER NOT NULL,
+                product_sku VARCHAR(100) NOT NULL,
+                next_value INTEGER NOT NULL,
+                CONSTRAINT uq_lot_sequence_scope UNIQUE (iso_year, iso_week, product_sku)
+            )
+            """
+        )
+
+
 def ensure_sprint4_costing_columns() -> None:
     if engine.dialect.name != "sqlite":
         return

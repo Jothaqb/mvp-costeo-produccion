@@ -144,6 +144,10 @@
       <span>{{ order.product_name_snapshot }}</span>
     </div>
     <div class="field">
+      <span class="label">Lot number</span>
+      <span>{{ order.lot_number or "" }}</span>
+    </div>
+    <div class="field">
       <span class="label">Fecha de fabricacion</span>
       <span class="line"></span>
     </div>
@@ -162,15 +166,18 @@
           <th>Component SKU</th>
           <th>Component name</th>
           <th>Quantity standard</th>
+          <th>Requirement quantity</th>
         </tr>
       </thead>
       <tbody>
         {% for material in materials %}
+          {% set requirement_quantity = order.planned_qty * material.quantity_standard if order.planned_qty is not none and material.quantity_standard is not none else none %}
           <tr>
             <td><span class="checkbox"></span></td>
             <td>{{ material.component_sku or "" }}</td>
             <td>{{ material.component_name or "" }}</td>
-            <td>{{ material.quantity_standard or "" }}</td>
+            <td>{{ material.quantity_standard if material.quantity_standard is not none else "" }}</td>
+            <td>{{ "{:,.3f}".format(requirement_quantity) if requirement_quantity is not none else "" }}</td>
           </tr>
         {% endfor %}
       </tbody>

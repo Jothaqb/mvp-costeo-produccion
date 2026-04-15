@@ -15,6 +15,10 @@
         <dd>{{ order.product_sku_snapshot }} - {{ order.product_name_snapshot }}</dd>
       </div>
       <div>
+        <dt>Lot number</dt>
+        <dd>{{ order.lot_number or "" }}</dd>
+      </div>
+      <div>
         <dt>Route</dt>
         <dd>{{ order.route_name_snapshot }} v{{ order.route_version_snapshot }}</dd>
       </div>
@@ -79,6 +83,7 @@
     {% if not is_closed %}
       <div class="actions">
         <a role="button" href="/production-orders/{{ order.id }}/print" target="_blank" aria-label="Print worksheet" title="Print worksheet">🖨</a>
+        <a role="button" href="/production-orders/{{ order.id }}/bom/edit">Edit BOM</a>
         {% if order.status == "draft" %}
           <form method="post" action="/production-orders/{{ order.id }}/start">
             <button type="submit">Start order</button>
@@ -192,6 +197,7 @@
           <th>Component SKU</th>
           <th>Component name</th>
           <th>Quantity standard</th>
+          <th>Requirement quantity</th>
           <th>Unit cost snapshot</th>
           <th>Line cost snapshot</th>
           <th>Type</th>
@@ -200,10 +206,12 @@
       </thead>
       <tbody>
         {% for material in materials %}
+          {% set requirement_quantity = order.planned_qty * material.quantity_standard if order.planned_qty is not none and material.quantity_standard is not none else none %}
           <tr>
             <td>{{ material.component_sku or "" }}</td>
             <td>{{ material.component_name or "" }}</td>
             <td>{{ fmt.number_3(material.quantity_standard) }}</td>
+            <td>{{ fmt.number_3(requirement_quantity) }}</td>
             <td>{{ fmt.money_crc(material.unit_cost_snapshot) }}</td>
             <td>{{ fmt.money_crc(material.line_cost) }}</td>
             <td>{{ material.component_type }}</td>
