@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
@@ -23,6 +23,10 @@ from app.database import (
 )
 from app.models import (
     Activity,
+    B2BCustomer,
+    B2BCustomerProduct,
+    B2BSalesOrder,
+    B2BSalesOrderLine,
     ImportBatch,
     ImportedBomHeader,
     ImportedBomLine,
@@ -38,6 +42,16 @@ from app.models import (
     RouteActivity,
 )
 from app.schemas import ComponentType, ProcessType, ProductionOrderStatus
+from app.services.b2b_sales_service import (
+    B2BValidationError,
+    add_customer_product,
+    change_sales_order_status,
+    create_customer,
+    create_sales_order,
+    update_customer,
+    update_customer_product,
+    update_sales_order_lines,
+)
 from app.services.config_service import (
     ValidationError,
     parse_decimal,
@@ -93,6 +107,20 @@ def _process_types() -> list[str]:
 
 def _production_order_statuses() -> list[str]:
     return [item.value for item in ProductionOrderStatus]
+
+
+def _b2b_statuses() -> list[str]:
+    return ["draft", "in_process", "invoiced"]
+
+
+def _line_inputs_from_form(form, prefix: str, count: int) -> list[dict[str, str]]:
+    return [
+        {
+            "sku": str(form.get(f"{prefix}_sku_{index}", "")),
+            "quantity": str(form.get(f"{prefix}_quantity_{index}", "")),
+        }
+        for index in range(1, count + 1)
+    ]
 
 
 def _production_order_detail_response(
@@ -151,6 +179,409 @@ def dashboard(request: Request) -> HTMLResponse:
         name="dashboard.html",
         context={"title": "Production Costing MVP"},
     )
+
+
+@app.get("/b2b/customers", response_class=HTMLResponse)
+def b2b_customers(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    customers = db.query(B2BCustomer).order_by(B2BCustomer.customer_name).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_customers_list.html",
+        context={"title": "B2B Customers", "customers": customers},
+    )
+
+
+@app.get("/b2b/customers/new", response_class=HTMLResponse)
+def new_b2b_customer(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_customer_form.html",
+        context={"title": "New B2B Customer", "customer": None, "error": None},
+    )
+
+
+@app.post("/b2b/customers")
+def create_b2b_customer(
+    request: Request,
+    customer_name: str = Form(...),
+    address: str = Form(""),
+    province: str = Form(""),
+    canton: str = Form(""),
+    district: str = Form(""),
+    legal_name: str = Form(""),
+    legal_id: str = Form(""),
+    phone: str = Form(""),
+    loyverse_customer_id: str = Form(""),
+    active: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        customer = create_customer(
+            db,
+            customer_name,
+            address,
+            province,
+            canton,
+            district,
+            legal_name,
+            legal_id,
+            phone,
+            loyverse_customer_id,
+            active,
+        )
+        return _redirect(f"/b2b/customers/{customer.id}/products")
+    except B2BValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="b2b_customer_form.html",
+            context={"title": "New B2B Customer", "customer": None, "error": str(exc)},
+        )
+
+
+@app.get("/b2b/customers/{customer_id}/edit", response_class=HTMLResponse)
+def edit_b2b_customer(customer_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_customer_form.html",
+        context={"title": "Edit B2B Customer", "customer": customer, "error": None},
+    )
+
+
+@app.post("/b2b/customers/{customer_id}/edit")
+def update_b2b_customer(
+    customer_id: int,
+    request: Request,
+    customer_name: str = Form(...),
+    address: str = Form(""),
+    province: str = Form(""),
+    canton: str = Form(""),
+    district: str = Form(""),
+    legal_name: str = Form(""),
+    legal_id: str = Form(""),
+    phone: str = Form(""),
+    loyverse_customer_id: str = Form(""),
+    active: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Response:
+    customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+    try:
+        update_customer(
+            db,
+            customer_id,
+            customer_name,
+            address,
+            province,
+            canton,
+            district,
+            legal_name,
+            legal_id,
+            phone,
+            loyverse_customer_id,
+            active,
+        )
+        return _redirect("/b2b/customers")
+    except B2BValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="b2b_customer_form.html",
+            context={"title": "Edit B2B Customer", "customer": customer, "error": str(exc)},
+        )
+
+
+@app.get("/b2b/customers/{customer_id}/products", response_class=HTMLResponse)
+def b2b_customer_products(customer_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+    products = (
+        db.query(B2BCustomerProduct)
+        .filter(B2BCustomerProduct.customer_id == customer_id)
+        .order_by(B2BCustomerProduct.sku)
+        .all()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_customer_products.html",
+        context={"title": "B2B Customer Products", "customer": customer, "products": products, "error": None},
+    )
+
+
+@app.post("/b2b/customers/{customer_id}/products")
+def add_b2b_customer_product(
+    customer_id: int,
+    request: Request,
+    sku: str = Form(...),
+    description: str = Form(...),
+    distributor_price: str = Form(...),
+    active: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        add_customer_product(db, customer_id, sku, description, distributor_price, active)
+        return _redirect(f"/b2b/customers/{customer_id}/products")
+    except B2BValidationError as exc:
+        db.rollback()
+        customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+        products = (
+            db.query(B2BCustomerProduct)
+            .filter(B2BCustomerProduct.customer_id == customer_id)
+            .order_by(B2BCustomerProduct.sku)
+            .all()
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="b2b_customer_products.html",
+            context={"title": "B2B Customer Products", "customer": customer, "products": products, "error": str(exc)},
+        )
+
+
+@app.post("/b2b/customers/{customer_id}/products/{product_line_id}/edit")
+def update_b2b_customer_product(
+    customer_id: int,
+    product_line_id: int,
+    request: Request,
+    description: str = Form(...),
+    distributor_price: str = Form(...),
+    active: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        update_customer_product(db, customer_id, product_line_id, description, distributor_price, active)
+        return _redirect(f"/b2b/customers/{customer_id}/products")
+    except B2BValidationError as exc:
+        db.rollback()
+        customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+        products = (
+            db.query(B2BCustomerProduct)
+            .filter(B2BCustomerProduct.customer_id == customer_id)
+            .order_by(B2BCustomerProduct.sku)
+            .all()
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="b2b_customer_products.html",
+            context={"title": "B2B Customer Products", "customer": customer, "products": products, "error": str(exc)},
+        )
+
+
+@app.get("/b2b/orders", response_class=HTMLResponse)
+def b2b_orders(
+    request: Request,
+    customer_id: str = Query(""),
+    status: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    filters = {"customer_id": customer_id.strip(), "status": status.strip()}
+    order_query = db.query(B2BSalesOrder)
+    if filters["customer_id"]:
+        order_query = order_query.filter(B2BSalesOrder.customer_id == int(filters["customer_id"]))
+    if filters["status"] in _b2b_statuses():
+        order_query = order_query.filter(B2BSalesOrder.status == filters["status"])
+    orders = order_query.order_by(B2BSalesOrder.created_at.desc(), B2BSalesOrder.id.desc()).all()
+    customers = db.query(B2BCustomer).order_by(B2BCustomer.customer_name).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_orders_list.html",
+        context={
+            "title": "B2B Sales Orders",
+            "orders": orders,
+            "customers": customers,
+            "statuses": _b2b_statuses(),
+            "filters": filters,
+        },
+    )
+
+
+@app.get("/b2b/orders/new", response_class=HTMLResponse)
+def new_b2b_order(
+    request: Request,
+    customer_id: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    customers = db.query(B2BCustomer).filter(B2BCustomer.active.is_(True)).order_by(B2BCustomer.customer_name).all()
+    selected_customer = None
+    catalog = []
+    if customer_id.strip():
+        selected_customer = db.query(B2BCustomer).filter(B2BCustomer.id == int(customer_id)).one_or_none()
+        if selected_customer is not None:
+            catalog = (
+                db.query(B2BCustomerProduct)
+                .filter(
+                    B2BCustomerProduct.customer_id == selected_customer.id,
+                    B2BCustomerProduct.active.is_(True),
+                )
+                .order_by(B2BCustomerProduct.description)
+                .all()
+            )
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_order_form.html",
+        context={
+            "title": "New B2B Order",
+            "customers": customers,
+            "selected_customer": selected_customer,
+            "catalog": catalog,
+            "error": None,
+            "min_delivery_date": date.today() + timedelta(days=1),
+        },
+    )
+
+
+@app.post("/b2b/orders")
+async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    customer_id = int(str(form.get("customer_id", "0") or "0"))
+    delivery_date = datetime.strptime(str(form.get("delivery_date")), "%Y-%m-%d").date()
+    line_inputs = _line_inputs_from_form(form, "line", 5)
+    try:
+        order = create_sales_order(db, customer_id, delivery_date, line_inputs)
+        return _redirect(f"/b2b/orders/{order.id}")
+    except (B2BValidationError, ValueError) as exc:
+        db.rollback()
+        customers = db.query(B2BCustomer).filter(B2BCustomer.active.is_(True)).order_by(B2BCustomer.customer_name).all()
+        selected_customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one_or_none()
+        catalog = []
+        if selected_customer is not None:
+            catalog = (
+                db.query(B2BCustomerProduct)
+                .filter(B2BCustomerProduct.customer_id == selected_customer.id, B2BCustomerProduct.active.is_(True))
+                .order_by(B2BCustomerProduct.description)
+                .all()
+            )
+        return templates.TemplateResponse(
+            request=request,
+            name="b2b_order_form.html",
+            context={
+                "title": "New B2B Order",
+                "customers": customers,
+                "selected_customer": selected_customer,
+                "catalog": catalog,
+                "error": str(exc),
+                "min_delivery_date": date.today() + timedelta(days=1),
+            },
+        )
+
+
+@app.get("/b2b/orders/{order_id}", response_class=HTMLResponse)
+def b2b_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
+    lines = (
+        db.query(B2BSalesOrderLine)
+        .filter(B2BSalesOrderLine.sales_order_id == order_id)
+        .order_by(B2BSalesOrderLine.line_number)
+        .all()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_order_detail.html",
+        context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": None},
+    )
+
+
+@app.get("/b2b/orders/{order_id}/edit", response_class=HTMLResponse)
+def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
+    if order.status == "invoiced":
+        return b2b_order_detail(order_id, request, db)
+    lines = (
+        db.query(B2BSalesOrderLine)
+        .filter(B2BSalesOrderLine.sales_order_id == order_id)
+        .order_by(B2BSalesOrderLine.line_number)
+        .all()
+    )
+    catalog = (
+        db.query(B2BCustomerProduct)
+        .filter(B2BCustomerProduct.customer_id == order.customer_id, B2BCustomerProduct.active.is_(True))
+        .order_by(B2BCustomerProduct.description)
+        .all()
+    )
+    catalog_by_sku = {item.sku: item for item in catalog}
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_order_edit.html",
+        context={
+            "title": "Edit B2B Order",
+            "order": order,
+            "lines": lines,
+            "catalog": catalog,
+            "catalog_by_sku": catalog_by_sku,
+            "error": None,
+        },
+    )
+
+
+@app.post("/b2b/orders/{order_id}/edit")
+async def update_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    line_ids = form.getlist("line_id")
+    line_updates = [
+        {
+            "id": line_id,
+            "sku": str(form.get(f"line_sku_{line_id}", "")),
+            "quantity": str(form.get(f"line_quantity_{line_id}", "")),
+        }
+        for line_id in line_ids
+    ]
+    deleted_line_ids = [int(line_id) for line_id in form.getlist("delete_line_id")]
+    new_line_inputs = _line_inputs_from_form(form, "new_line", 3)
+    try:
+        update_sales_order_lines(db, order_id, line_updates, deleted_line_ids, new_line_inputs)
+        return _redirect(f"/b2b/orders/{order_id}")
+    except B2BValidationError as exc:
+        db.rollback()
+        order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
+        lines = (
+            db.query(B2BSalesOrderLine)
+            .filter(B2BSalesOrderLine.sales_order_id == order_id)
+            .order_by(B2BSalesOrderLine.line_number)
+            .all()
+        )
+        catalog = (
+            db.query(B2BCustomerProduct)
+            .filter(B2BCustomerProduct.customer_id == order.customer_id, B2BCustomerProduct.active.is_(True))
+            .order_by(B2BCustomerProduct.description)
+            .all()
+        )
+        catalog_by_sku = {item.sku: item for item in catalog}
+        return templates.TemplateResponse(
+            request=request,
+            name="b2b_order_edit.html",
+            context={
+                "title": "Edit B2B Order",
+                "order": order,
+                "lines": lines,
+                "catalog": catalog,
+                "catalog_by_sku": catalog_by_sku,
+                "error": str(exc),
+            },
+        )
+
+
+@app.post("/b2b/orders/{order_id}/status")
+def update_b2b_order_status(
+    request: Request,
+    order_id: int,
+    status: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        change_sales_order_status(db, order_id, status)
+        return _redirect(f"/b2b/orders/{order_id}")
+    except B2BValidationError as exc:
+        db.rollback()
+        order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
+        lines = (
+            db.query(B2BSalesOrderLine)
+            .filter(B2BSalesOrderLine.sales_order_id == order_id)
+            .order_by(B2BSalesOrderLine.line_number)
+            .all()
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="b2b_order_detail.html",
+            context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc)},
+        )
 
 
 @app.get("/imports", response_class=HTMLResponse)

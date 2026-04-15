@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>Edit {{ order.order_number }}</h1>
+    <p>{{ order.customer_name_snapshot }} | Delivery: {{ order.delivery_date }}</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <form method="post" action="/b2b/orders/{{ order.id }}/edit">
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Unit price snapshot</th>
+            <th>Quantity</th>
+            <th>Line total</th>
+            <th>Delete</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in lines %}
+            <tr>
+              <td>
+                <input type="hidden" name="line_id" value="{{ line.id }}">
+                <select name="line_sku_{{ line.id }}" required>
+                  {% if line.sku_snapshot not in catalog_by_sku %}
+                    <option value="{{ line.sku_snapshot }}" selected>{{ line.description_snapshot }} ({{ line.sku_snapshot }})</option>
+                  {% endif %}
+                  {% for product in catalog %}
+                    <option value="{{ product.sku }}" {% if product.sku == line.sku_snapshot %}selected{% endif %}>{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td>{{ fmt.money_crc(line.unit_price_snapshot) }}</td>
+              <td><input name="line_quantity_{{ line.id }}" value="{{ line.quantity }}" required></td>
+              <td>{{ fmt.money_crc(line.line_total) }}</td>
+              <td><input type="checkbox" name="delete_line_id" value="{{ line.id }}"></td>
+            </tr>
+          {% endfor %}
+          {% for index in range(1, 4) %}
+            <tr>
+              <td>
+                <select name="new_line_sku_{{ index }}">
+                  <option value="">Add product...</option>
+                  {% for product in catalog %}
+                    <option value="{{ product.sku }}">{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td></td>
+              <td><input name="new_line_quantity_{{ index }}"></td>
+              <td></td>
+              <td></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <button type="submit">Save order lines</button>
+      <a href="/b2b/orders/{{ order.id }}">Cancel</a>
+    </form>
+  </section>
+{% endblock %}

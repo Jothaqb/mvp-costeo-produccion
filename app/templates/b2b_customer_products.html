@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>Products for {{ customer.customer_name }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <p><a href="/b2b/customers">Customers</a></p>
+
+    <h2>Add product</h2>
+    <form method="post" action="/b2b/customers/{{ customer.id }}/products">
+      <label for="sku">SKU</label>
+      <input id="sku" name="sku" required>
+
+      <label for="description">Description</label>
+      <input id="description" name="description" required>
+
+      <label for="distributor_price">Distributor price</label>
+      <input id="distributor_price" name="distributor_price" required>
+
+      <label>
+        <input type="checkbox" name="active" value="true" checked>
+        Active
+      </label>
+
+      <button type="submit">Add product</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Catalog and Pricing</h2>
+    {% for product in products %}
+      <form method="post" action="/b2b/customers/{{ customer.id }}/products/{{ product.id }}/edit">
+        <p><strong>{{ product.sku }}</strong></p>
+        <label for="description_{{ product.id }}">Description</label>
+        <input id="description_{{ product.id }}" name="description" value="{{ product.description }}" required>
+
+        <label for="distributor_price_{{ product.id }}">Distributor price</label>
+        <input id="distributor_price_{{ product.id }}" name="distributor_price" value="{{ product.distributor_price }}" required>
+
+        <label>
+          <input type="checkbox" name="active" value="true" {% if product.active %}checked{% endif %}>
+          Active
+        </label>
+
+        <button type="submit">Save</button>
+      </form>
+    {% endfor %}
+  </section>
+{% endblock %}

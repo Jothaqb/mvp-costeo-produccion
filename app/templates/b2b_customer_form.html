@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="post" action="{{ '/b2b/customers/' ~ customer.id ~ '/edit' if customer else '/b2b/customers' }}">
+      <label for="customer_name">Customer name</label>
+      <input id="customer_name" name="customer_name" value="{{ customer.customer_name if customer else '' }}" required>
+
+      <label for="address">Address</label>
+      <textarea id="address" name="address">{{ customer.address if customer and customer.address else '' }}</textarea>
+
+      <label for="province">Province</label>
+      <input id="province" name="province" value="{{ customer.province if customer and customer.province else '' }}">
+
+      <label for="canton">Canton</label>
+      <input id="canton" name="canton" value="{{ customer.canton if customer and customer.canton else '' }}">
+
+      <label for="district">District</label>
+      <input id="district" name="district" value="{{ customer.district if customer and customer.district else '' }}">
+
+      <label for="legal_name">Legal name</label>
+      <input id="legal_name" name="legal_name" value="{{ customer.legal_name if customer and customer.legal_name else '' }}">
+
+      <label for="legal_id">Legal ID</label>
+      <input id="legal_id" name="legal_id" value="{{ customer.legal_id if customer and customer.legal_id else '' }}">
+
+      <label for="phone">Phone</label>
+      <input id="phone" name="phone" value="{{ customer.phone if customer and customer.phone else '' }}">
+
+      <label for="loyverse_customer_id">Loyverse customer ID</label>
+      <input id="loyverse_customer_id" name="loyverse_customer_id" value="{{ customer.loyverse_customer_id if customer and customer.loyverse_customer_id else '' }}">
+
+      <label>
+        <input type="checkbox" name="active" value="true" {% if not customer or customer.active %}checked{% endif %}>
+        Active
+      </label>
+
+      <button type="submit">Save customer</button>
+      <a href="/b2b/customers">Cancel</a>
+    </form>
+  </section>
+{% endblock %}

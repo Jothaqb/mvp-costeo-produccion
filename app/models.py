@@ -53,6 +53,117 @@ class LotSequence(Base):
     next_value: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class B2BCustomer(Base):
+    __tablename__ = "b2b_customers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    customer_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    province: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    canton: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    district: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    legal_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legal_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    loyverse_customer_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    products: Mapped[list["B2BCustomerProduct"]] = relationship(
+        back_populates="customer",
+        cascade="all, delete-orphan",
+    )
+    orders: Mapped[list["B2BSalesOrder"]] = relationship(back_populates="customer")
+
+
+class B2BCustomerProduct(Base):
+    __tablename__ = "b2b_customer_products"
+    __table_args__ = (UniqueConstraint("customer_id", "sku", name="uq_b2b_customer_product_sku"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("b2b_customers.id"), nullable=False)
+    sku: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str] = mapped_column(String(255), nullable=False)
+    distributor_price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    customer: Mapped[B2BCustomer] = relationship(back_populates="products")
+
+
+class B2BSalesOrder(Base):
+    __tablename__ = "b2b_sales_orders"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'in_process', 'invoiced')",
+            name="ck_b2b_sales_orders_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    order_number: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("b2b_customers.id"), nullable=False)
+    customer_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    address_snapshot: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    province_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    canton_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    district_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    legal_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legal_id_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    phone_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    loyverse_customer_id_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    delivery_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    customer: Mapped[B2BCustomer] = relationship(back_populates="orders")
+    lines: Mapped[list["B2BSalesOrderLine"]] = relationship(
+        back_populates="sales_order",
+        cascade="all, delete-orphan",
+    )
+
+
+class B2BSalesOrderLine(Base):
+    __tablename__ = "b2b_sales_order_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    sales_order_id: Mapped[int] = mapped_column(ForeignKey("b2b_sales_orders.id"), nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    sku_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
+    description_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    unit_price_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    sales_order: Mapped[B2BSalesOrder] = relationship(back_populates="lines")
+
+
 class ImportBatch(Base):
     __tablename__ = "import_batches"
 

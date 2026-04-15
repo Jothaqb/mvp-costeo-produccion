@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/b2b/orders/new">New B2B order</a> | <a href="/b2b/customers">Customers</a></p>
+    <form method="get" action="/b2b/orders">
+      <label for="customer_id">Customer</label>
+      <select id="customer_id" name="customer_id">
+        <option value="">All customers</option>
+        {% for customer in customers %}
+          <option value="{{ customer.id }}" {% if filters.customer_id == customer.id|string %}selected{% endif %}>{{ customer.customer_name }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="">All statuses</option>
+        {% for status in statuses %}
+          <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+        {% endfor %}
+      </select>
+
+      <button type="submit">Filter</button>
+      <a href="/b2b/orders">Clear</a>
+    </form>
+  </section>
+
+  <section>
+    <table>
+      <thead>
+        <tr>
+          <th>Order</th>
+          <th>Customer</th>
+          <th>Delivery date</th>
+          <th>Status</th>
+          <th>Total</th>
+          <th>Created</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for order in orders %}
+          <tr>
+            <td>{{ order.order_number }}</td>
+            <td>{{ order.customer_name_snapshot }}</td>
+            <td>{{ order.delivery_date }}</td>
+            <td>{{ order.status }}</td>
+            <td>{{ fmt.money_crc(order.total_amount) }}</td>
+            <td>{{ order.created_at }}</td>
+            <td><a href="/b2b/orders/{{ order.id }}">View</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

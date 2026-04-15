@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/b2b/customers/new">New customer</a> | <a href="/b2b/orders">B2B orders</a></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Legal name</th>
+          <th>Legal ID</th>
+          <th>Phone</th>
+          <th>Active</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for customer in customers %}
+          <tr>
+            <td>{{ customer.customer_name }}</td>
+            <td>{{ customer.legal_name or "" }}</td>
+            <td>{{ customer.legal_id or "" }}</td>
+            <td>{{ customer.phone or "" }}</td>
+            <td>{{ "yes" if customer.active else "no" }}</td>
+            <td>
+              <a href="/b2b/customers/{{ customer.id }}/edit">Edit</a>
+              <a href="/b2b/customers/{{ customer.id }}/products">Products</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

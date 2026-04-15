@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <form method="get" action="/b2b/orders/new">
+      <label for="customer_id_select">Customer</label>
+      <select id="customer_id_select" name="customer_id" required>
+        <option value="">Select customer...</option>
+        {% for customer in customers %}
+          <option value="{{ customer.id }}" {% if selected_customer and selected_customer.id == customer.id %}selected{% endif %}>{{ customer.customer_name }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Load customer</button>
+    </form>
+  </section>
+
+  {% if selected_customer %}
+    <section>
+      <h2>Customer</h2>
+      <dl class="summary">
+        <div><dt>Name</dt><dd>{{ selected_customer.customer_name }}</dd></div>
+        <div><dt>Address</dt><dd>{{ selected_customer.address or "" }}</dd></div>
+        <div><dt>Province</dt><dd>{{ selected_customer.province or "" }}</dd></div>
+        <div><dt>Canton</dt><dd>{{ selected_customer.canton or "" }}</dd></div>
+        <div><dt>District</dt><dd>{{ selected_customer.district or "" }}</dd></div>
+        <div><dt>Legal name</dt><dd>{{ selected_customer.legal_name or "" }}</dd></div>
+        <div><dt>Legal ID</dt><dd>{{ selected_customer.legal_id or "" }}</dd></div>
+        <div><dt>Phone</dt><dd>{{ selected_customer.phone or "" }}</dd></div>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Order lines</h2>
+      <form method="post" action="/b2b/orders">
+        <input type="hidden" name="customer_id" value="{{ selected_customer.id }}">
+        <label for="delivery_date">Delivery date</label>
+        <input id="delivery_date" name="delivery_date" type="date" min="{{ min_delivery_date }}" required>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Quantity</th>
+              <th>Unit price</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for index in range(1, 6) %}
+              <tr>
+                <td>
+                  <select name="line_sku_{{ index }}">
+                    <option value="">Select product...</option>
+                    {% for product in catalog %}
+                      <option value="{{ product.sku }}">{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
+                    {% endfor %}
+                  </select>
+                </td>
+                <td><input name="line_quantity_{{ index }}"></td>
+                <td>Shown in product list</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+
+        <button type="submit">Create draft order</button>
+      </form>
+    </section>
+  {% endif %}
+{% endblock %}
