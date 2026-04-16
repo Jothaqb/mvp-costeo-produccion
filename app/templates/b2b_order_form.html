@@ -40,6 +40,14 @@
         <label for="delivery_date">Delivery date</label>
         <input id="delivery_date" name="delivery_date" type="date" min="{{ min_delivery_date }}" required>
 
+        <label for="b2b_channel_id">B2B Channel</label>
+        <select id="b2b_channel_id" name="b2b_channel_id" required>
+          <option value="">Select channel...</option>
+          {% for payment_type in payment_types %}
+            <option value="{{ payment_type.loyverse_payment_type_id }}" {% if submitted_b2b_channel_id is defined and submitted_b2b_channel_id == payment_type.loyverse_payment_type_id %}selected{% endif %}>{{ payment_type.name }}</option>
+          {% endfor %}
+        </select>
+
         <label for="observations">Observations</label>
         <textarea id="observations" name="observations">{{ submitted_observations or "" }}</textarea>
 

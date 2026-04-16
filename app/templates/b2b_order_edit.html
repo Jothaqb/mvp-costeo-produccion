@@ -8,6 +8,15 @@
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
     <form method="post" action="/b2b/orders/{{ order.id }}/edit">
+      <label for="b2b_channel_id">B2B Channel</label>
+      <select id="b2b_channel_id" name="b2b_channel_id" required>
+        <option value="">Select channel...</option>
+        {% set selected_channel_id = submitted_b2b_channel_id if submitted_b2b_channel_id is defined else order.loyverse_payment_type_id_snapshot %}
+        {% for payment_type in payment_types %}
+          <option value="{{ payment_type.loyverse_payment_type_id }}" {% if selected_channel_id == payment_type.loyverse_payment_type_id %}selected{% endif %}>{{ payment_type.name }}</option>
+        {% endfor %}
+      </select>
+
       <label for="observations">Observations</label>
       <textarea id="observations" name="observations">{{ submitted_observations if submitted_observations is defined else order.observations or "" }}</textarea>
 

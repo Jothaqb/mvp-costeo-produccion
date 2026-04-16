@@ -14,6 +14,9 @@
       <form method="post" action="/b2b/loyverse-mappings/variants/refresh">
         <button type="submit">Refresh Loyverse variants</button>
       </form>
+      <form method="post" action="/b2b/loyverse-mappings/payment-types/refresh">
+        <button type="submit">Refresh Loyverse payment types</button>
+      </form>
     </div>
   </section>
 
@@ -40,6 +43,33 @@
             <td>{{ customer.phone or "" }}</td>
             <td>{{ customer.email or "" }}</td>
             <td>{{ customer.last_refreshed_at }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>B2B Channel / Payment Type Mappings</h2>
+    <p>Active: {{ active_payment_type_count }} | Total cached: {{ payment_type_count }}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Active</th>
+          <th>B2B Channel</th>
+          <th>Loyverse payment type ID</th>
+          <th>Type</th>
+          <th>Last refreshed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for payment_type in payment_types %}
+          <tr>
+            <td>{{ "Y" if payment_type.active else "N" }}</td>
+            <td>{{ payment_type.name }}</td>
+            <td>{{ payment_type.loyverse_payment_type_id }}</td>
+            <td>{{ payment_type.payment_type or "" }}</td>
+            <td>{{ payment_type.last_refreshed_at }}</td>
           </tr>
         {% endfor %}
       </tbody>

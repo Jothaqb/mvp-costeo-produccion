@@ -30,6 +30,7 @@ from app.models import (
     B2BSalesOrder,
     B2BSalesOrderLine,
     LoyverseCustomerMapping,
+    LoyversePaymentTypeMapping,
     LoyverseVariantMapping,
     ImportBatch,
     ImportedBomHeader,
@@ -56,10 +57,12 @@ from app.services.b2b_sales_service import (
     update_customer_product,
     update_sales_order_lines,
 )
+from app.services.b2b_loyverse_invoice_service import invoice_b2b_order_in_loyverse
 from app.services.b2b_loyverse_mapping_service import (
     LoyverseMappingSyncError,
     build_b2b_invoice_readiness,
     refresh_loyverse_customer_mappings,
+    refresh_loyverse_payment_type_mappings,
     refresh_loyverse_variant_mappings,
 )
 from app.services.config_service import (
@@ -396,10 +399,18 @@ def b2b_loyverse_mappings(
         .limit(150)
         .all()
     )
+    payment_types = (
+        db.query(LoyversePaymentTypeMapping)
+        .order_by(LoyversePaymentTypeMapping.active.desc(), LoyversePaymentTypeMapping.name)
+        .limit(100)
+        .all()
+    )
     customer_count = db.query(LoyverseCustomerMapping).count()
     active_customer_count = db.query(LoyverseCustomerMapping).filter(LoyverseCustomerMapping.active.is_(True)).count()
     variant_count = db.query(LoyverseVariantMapping).count()
     active_variant_count = db.query(LoyverseVariantMapping).filter(LoyverseVariantMapping.active.is_(True)).count()
+    payment_type_count = db.query(LoyversePaymentTypeMapping).count()
+    active_payment_type_count = db.query(LoyversePaymentTypeMapping).filter(LoyversePaymentTypeMapping.active.is_(True)).count()
     return templates.TemplateResponse(
         request=request,
         name="b2b_loyverse_mappings.html",
@@ -407,10 +418,13 @@ def b2b_loyverse_mappings(
             "title": "B2B Loyverse Mappings",
             "customers": customers,
             "variants": variants,
+            "payment_types": payment_types,
             "customer_count": customer_count,
             "active_customer_count": active_customer_count,
             "variant_count": variant_count,
             "active_variant_count": active_variant_count,
+            "payment_type_count": payment_type_count,
+            "active_payment_type_count": active_payment_type_count,
             "message": message,
             "error": error,
         },
@@ -433,6 +447,17 @@ def refresh_b2b_loyverse_variants(db: Session = Depends(get_db)) -> Response:
     try:
         result = refresh_loyverse_variant_mappings(db)
         message = f"Variant mappings refreshed. Created: {result['created']}, updated: {result['updated']}, skipped: {result['skipped']}."
+        return _redirect(f"/b2b/loyverse-mappings?message={quote(message)}")
+    except LoyverseMappingSyncError as exc:
+        db.rollback()
+        return _redirect(f"/b2b/loyverse-mappings?error={quote(str(exc))}")
+
+
+@app.post("/b2b/loyverse-mappings/payment-types/refresh")
+def refresh_b2b_loyverse_payment_types(db: Session = Depends(get_db)) -> Response:
+    try:
+        result = refresh_loyverse_payment_type_mappings(db)
+        message = f"Payment type mappings refreshed. Created: {result['created']}, updated: {result['updated']}, skipped: {result['skipped']}."
         return _redirect(f"/b2b/loyverse-mappings?message={quote(message)}")
     except LoyverseMappingSyncError as exc:
         db.rollback()
@@ -476,6 +501,12 @@ def new_b2b_order(
     customers = db.query(B2BCustomer).filter(B2BCustomer.active.is_(True)).order_by(B2BCustomer.customer_name).all()
     selected_customer = None
     catalog = []
+    payment_types = (
+        db.query(LoyversePaymentTypeMapping)
+        .filter(LoyversePaymentTypeMapping.active.is_(True))
+        .order_by(LoyversePaymentTypeMapping.name)
+        .all()
+    )
     if customer_id.strip():
         selected_customer = db.query(B2BCustomer).filter(B2BCustomer.id == int(customer_id)).one_or_none()
         if selected_customer is not None:
@@ -496,6 +527,7 @@ def new_b2b_order(
             "customers": customers,
             "selected_customer": selected_customer,
             "catalog": catalog,
+            "payment_types": payment_types,
             "error": None,
             "min_delivery_date": date.today() + timedelta(days=1),
         },
@@ -509,14 +541,21 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
     delivery_date = datetime.strptime(str(form.get("delivery_date")), "%Y-%m-%d").date()
     line_inputs = _line_inputs_from_form(form, "line", 5)
     observations = str(form.get("observations", ""))
+    b2b_channel_id = str(form.get("b2b_channel_id", ""))
     try:
-        order = create_sales_order(db, customer_id, delivery_date, line_inputs, observations)
+        order = create_sales_order(db, customer_id, delivery_date, line_inputs, observations, b2b_channel_id)
         return _redirect(f"/b2b/orders/{order.id}")
     except (B2BValidationError, ValueError) as exc:
         db.rollback()
         customers = db.query(B2BCustomer).filter(B2BCustomer.active.is_(True)).order_by(B2BCustomer.customer_name).all()
         selected_customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one_or_none()
         catalog = []
+        payment_types = (
+            db.query(LoyversePaymentTypeMapping)
+            .filter(LoyversePaymentTypeMapping.active.is_(True))
+            .order_by(LoyversePaymentTypeMapping.name)
+            .all()
+        )
         if selected_customer is not None:
             catalog = (
                 db.query(B2BCustomerProduct)
@@ -532,9 +571,11 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
                 "customers": customers,
                 "selected_customer": selected_customer,
                 "catalog": catalog,
+                "payment_types": payment_types,
                 "error": str(exc),
                 "min_delivery_date": date.today() + timedelta(days=1),
                 "submitted_observations": observations,
+                "submitted_b2b_channel_id": b2b_channel_id,
                 "submitted_lines": line_inputs,
             },
         )
@@ -592,6 +633,12 @@ def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db
         .all()
     )
     catalog_by_sku = {item.sku: item for item in catalog}
+    payment_types = (
+        db.query(LoyversePaymentTypeMapping)
+        .filter(LoyversePaymentTypeMapping.active.is_(True))
+        .order_by(LoyversePaymentTypeMapping.name)
+        .all()
+    )
     return templates.TemplateResponse(
         request=request,
         name="b2b_order_edit.html",
@@ -601,6 +648,7 @@ def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db
             "lines": lines,
             "catalog": catalog,
             "catalog_by_sku": catalog_by_sku,
+            "payment_types": payment_types,
             "error": None,
         },
     )
@@ -621,8 +669,9 @@ async def update_b2b_order(order_id: int, request: Request, db: Session = Depend
     deleted_line_ids = [int(line_id) for line_id in form.getlist("delete_line_id")]
     new_line_inputs = _line_inputs_from_form(form, "new_line", 3)
     observations = str(form.get("observations", ""))
+    b2b_channel_id = str(form.get("b2b_channel_id", ""))
     try:
-        update_sales_order_lines(db, order_id, line_updates, deleted_line_ids, new_line_inputs, observations)
+        update_sales_order_lines(db, order_id, line_updates, deleted_line_ids, new_line_inputs, observations, b2b_channel_id)
         return _redirect(f"/b2b/orders/{order_id}")
     except B2BValidationError as exc:
         db.rollback()
@@ -640,6 +689,12 @@ async def update_b2b_order(order_id: int, request: Request, db: Session = Depend
             .all()
         )
         catalog_by_sku = {item.sku: item for item in catalog}
+        payment_types = (
+            db.query(LoyversePaymentTypeMapping)
+            .filter(LoyversePaymentTypeMapping.active.is_(True))
+            .order_by(LoyversePaymentTypeMapping.name)
+            .all()
+        )
         return templates.TemplateResponse(
             request=request,
             name="b2b_order_edit.html",
@@ -649,8 +704,10 @@ async def update_b2b_order(order_id: int, request: Request, db: Session = Depend
                 "lines": lines,
                 "catalog": catalog,
                 "catalog_by_sku": catalog_by_sku,
+                "payment_types": payment_types,
                 "error": str(exc),
                 "submitted_observations": observations,
+                "submitted_b2b_channel_id": b2b_channel_id,
             },
         )
 
@@ -663,7 +720,10 @@ def update_b2b_order_status(
     db: Session = Depends(get_db),
 ) -> Response:
     try:
-        change_sales_order_status(db, order_id, status)
+        if status == "invoiced":
+            invoice_b2b_order_in_loyverse(db, order_id)
+        else:
+            change_sales_order_status(db, order_id, status)
         return _redirect(f"/b2b/orders/{order_id}")
     except B2BValidationError as exc:
         db.rollback()
@@ -679,7 +739,6 @@ def update_b2b_order_status(
             name="b2b_order_detail.html",
             context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc), "readiness": build_b2b_invoice_readiness(db, order_id)},
         )
-
 
 @app.get("/imports", response_class=HTMLResponse)
 def list_imports(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:

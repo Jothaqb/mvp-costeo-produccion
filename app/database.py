@@ -201,6 +201,28 @@ def ensure_b2b_loyverse_mapping_tables() -> None:
         return
 
     with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "b2b_sales_orders",
+            {
+                "b2b_channel_name_snapshot": "VARCHAR(255)",
+                "loyverse_payment_type_id_snapshot": "VARCHAR(100)",
+                "loyverse_receipt_id": "VARCHAR(100)",
+                "loyverse_receipt_number": "VARCHAR(100)",
+                "loyverse_invoice_sync_status": "VARCHAR(50)",
+                "loyverse_invoice_sync_error": "TEXT",
+                "loyverse_invoice_sync_attempted_at": "DATETIME",
+                "loyverse_invoice_synced_at": "DATETIME",
+                "loyverse_invoice_sync_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            },
+        )
+        _ensure_columns(
+            connection,
+            "b2b_sales_order_lines",
+            {
+                "loyverse_variant_id_snapshot": "VARCHAR(100)",
+            },
+        )
         connection.exec_driver_sql(
             """
             CREATE TABLE IF NOT EXISTS loyverse_customer_mappings (
@@ -247,6 +269,22 @@ def ensure_b2b_loyverse_mapping_tables() -> None:
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_loyverse_variant_mappings_loyverse_item_id "
             "ON loyverse_variant_mappings (loyverse_item_id)"
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS loyverse_payment_type_mappings (
+                id INTEGER NOT NULL PRIMARY KEY,
+                loyverse_payment_type_id VARCHAR(100) NOT NULL UNIQUE,
+                name VARCHAR(255) NOT NULL,
+                payment_type VARCHAR(100),
+                active BOOLEAN NOT NULL DEFAULT 1,
+                last_refreshed_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_loyverse_payment_type_mappings_loyverse_payment_type_id "
+            "ON loyverse_payment_type_mappings (loyverse_payment_type_id)"
         )
 
 

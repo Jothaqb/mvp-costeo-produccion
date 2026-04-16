@@ -78,6 +78,17 @@ class LoyverseVariantMapping(Base):
     last_refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class LoyversePaymentTypeMapping(Base):
+    __tablename__ = "loyverse_payment_type_mappings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    loyverse_payment_type_id: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    payment_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_refreshed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class B2BCustomer(Base):
     __tablename__ = "b2b_customers"
 
@@ -153,6 +164,15 @@ class B2BSalesOrder(Base):
     status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
     observations: Mapped[str | None] = mapped_column(Text, nullable=True)
+    b2b_channel_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    loyverse_payment_type_id_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    loyverse_receipt_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    loyverse_receipt_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    loyverse_invoice_sync_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    loyverse_invoice_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    loyverse_invoice_sync_attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    loyverse_invoice_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    loyverse_invoice_sync_attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -179,6 +199,7 @@ class B2BSalesOrderLine(Base):
     unit_price_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    loyverse_variant_id_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

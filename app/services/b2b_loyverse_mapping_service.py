@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models import (
     B2BSalesOrder,
     LoyverseCustomerMapping,
+    LoyversePaymentTypeMapping,
     LoyverseVariantMapping,
 )
 
@@ -106,6 +107,44 @@ def refresh_loyverse_variant_mappings(db: Session) -> dict[str, int]:
     return {"created": created, "updated": updated, "skipped": skipped, "total": created + updated + skipped}
 
 
+def refresh_loyverse_payment_type_mappings(db: Session) -> dict[str, int]:
+    token = _require_token()
+    refreshed_at = datetime.utcnow()
+    payment_types = _get_paginated_collection(token, "/payment_types", "payment_types")
+
+    db.query(LoyversePaymentTypeMapping).update({LoyversePaymentTypeMapping.active: False})
+    created = 0
+    updated = 0
+    skipped = 0
+
+    for payment_type in payment_types:
+        loyverse_payment_type_id = _string_value(payment_type, "id", "payment_type_id")
+        name = _string_value(payment_type, "name")
+        if not loyverse_payment_type_id or not name:
+            skipped += 1
+            continue
+
+        mapping = (
+            db.query(LoyversePaymentTypeMapping)
+            .filter(LoyversePaymentTypeMapping.loyverse_payment_type_id == loyverse_payment_type_id)
+            .one_or_none()
+        )
+        if mapping is None:
+            mapping = LoyversePaymentTypeMapping(loyverse_payment_type_id=loyverse_payment_type_id, name=name)
+            db.add(mapping)
+            created += 1
+        else:
+            updated += 1
+
+        mapping.name = name
+        mapping.payment_type = _string_value(payment_type, "type", "payment_type") or None
+        mapping.active = True
+        mapping.last_refreshed_at = refreshed_at
+
+    db.commit()
+    return {"created": created, "updated": updated, "skipped": skipped, "total": len(payment_types)}
+
+
 def build_b2b_invoice_readiness(db: Session, order_id: int) -> dict:
     order = (
         db.query(B2BSalesOrder)
@@ -114,16 +153,32 @@ def build_b2b_invoice_readiness(db: Session, order_id: int) -> dict:
         .one()
     )
     token_present = bool(os.getenv("LOYVERSE_API_TOKEN", "").strip())
+    store_id_present = bool(os.getenv("LOYVERSE_STORE_ID", "").strip())
+    config_ready = token_present and store_id_present
+    config_messages = []
+    if token_present:
+        config_messages.append("LOYVERSE_API_TOKEN is configured.")
+    else:
+        config_messages.append("LOYVERSE_API_TOKEN is missing.")
+    if store_id_present:
+        config_messages.append("LOYVERSE_STORE_ID is configured.")
+    else:
+        config_messages.append("LOYVERSE_STORE_ID is missing.")
+
     customer = _resolve_customer_mapping(db, order)
+    channel = _resolve_channel_mapping(db, order)
     line_results = [_resolve_variant_mapping(db, line.sku_snapshot) for line in sorted(order.lines, key=lambda line: line.line_number)]
-    ready = token_present and customer["ready"] and all(line["ready"] for line in line_results)
+    ready = config_ready and customer["ready"] and channel["ready"] and all(line["ready"] for line in line_results)
     return {
         "ready": ready,
+        "config_ready": config_ready,
         "token_present": token_present,
-        "token_message": "LOYVERSE_API_TOKEN is configured." if token_present else "LOYVERSE_API_TOKEN is missing.",
+        "store_id_present": store_id_present,
+        "token_message": " ".join(config_messages),
         "customer": customer,
+        "channel": channel,
         "lines": line_results,
-        "note": "Readiness only validates mappings and token/config. It does not create a Loyverse receipt.",
+        "note": "Readiness only validates mappings and token/store config. It does not create a Loyverse receipt.",
     }
 
 
@@ -158,6 +213,33 @@ def _resolve_customer_mapping(db: Session, order: B2BSalesOrder) -> dict:
     if not candidates:
         return {"ready": False, "source": "local phone mapping", "loyverse_customer_id": None, "message": f"No local Loyverse customer mapping found for phone {phone}."}
     return {"ready": False, "source": "local phone mapping", "loyverse_customer_id": None, "message": f"Multiple local Loyverse customer mappings found for phone {phone}."}
+
+
+def _resolve_channel_mapping(db: Session, order: B2BSalesOrder) -> dict:
+    payment_type_id = (order.loyverse_payment_type_id_snapshot or "").strip()
+    channel_name = (order.b2b_channel_name_snapshot or "").strip()
+    if not payment_type_id:
+        return {"ready": False, "loyverse_payment_type_id": None, "message": "B2B Channel is not selected for this order."}
+
+    mapping = (
+        db.query(LoyversePaymentTypeMapping)
+        .filter(
+            LoyversePaymentTypeMapping.active.is_(True),
+            LoyversePaymentTypeMapping.loyverse_payment_type_id == payment_type_id,
+        )
+        .one_or_none()
+    )
+    if mapping is None:
+        return {
+            "ready": False,
+            "loyverse_payment_type_id": payment_type_id,
+            "message": f"Selected B2B Channel is not active in the local Loyverse payment type cache: {channel_name or payment_type_id}.",
+        }
+    return {
+        "ready": True,
+        "loyverse_payment_type_id": payment_type_id,
+        "message": f"B2B Channel is mapped to Loyverse payment type: {channel_name or mapping.name}.",
+    }
 
 
 def _resolve_variant_mapping(db: Session, sku: str) -> dict:

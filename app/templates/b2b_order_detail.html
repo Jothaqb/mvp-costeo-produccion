@@ -11,6 +11,7 @@
       <div><dt>Customer</dt><dd>{{ order.customer_name_snapshot }}</dd></div>
       <div><dt>Delivery date</dt><dd>{{ order.delivery_date }}</dd></div>
       <div><dt>Total</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
+      <div><dt>B2B Channel</dt><dd>{{ order.b2b_channel_name_snapshot or "" }}</dd></div>
       <div><dt>Address</dt><dd>{{ order.address_snapshot or "" }}</dd></div>
       <div><dt>Legal name</dt><dd>{{ order.legal_name_snapshot or "" }}</dd></div>
       <div><dt>Legal ID</dt><dd>{{ order.legal_id_snapshot or "" }}</dd></div>
@@ -42,6 +43,19 @@
     {% endif %}
   </section>
 
+  <section>
+    <h2>Loyverse Receipt Sync</h2>
+    <dl class="summary">
+      <div><dt>Status</dt><dd>{{ order.loyverse_invoice_sync_status or "not_synced" }}</dd></div>
+      <div><dt>Receipt ID</dt><dd>{{ order.loyverse_receipt_id or "" }}</dd></div>
+      <div><dt>Receipt Number</dt><dd>{{ order.loyverse_receipt_number or "" }}</dd></div>
+      <div><dt>Attempted At</dt><dd>{{ order.loyverse_invoice_sync_attempted_at or "" }}</dd></div>
+      <div><dt>Synced At</dt><dd>{{ order.loyverse_invoice_synced_at or "" }}</dd></div>
+      <div><dt>Attempt Count</dt><dd>{{ order.loyverse_invoice_sync_attempt_count or 0 }}</dd></div>
+      <div><dt>Error</dt><dd>{{ order.loyverse_invoice_sync_error or "" }}</dd></div>
+    </dl>
+  </section>
+
   {% if readiness %}
     <section>
       <h2>Loyverse Invoice Readiness</h2>
@@ -58,13 +72,18 @@
         <tbody>
           <tr>
             <td>Technical config</td>
-            <td>{% if readiness.token_present %}Ready{% else %}Missing{% endif %}</td>
+            <td>{% if readiness.config_ready %}Ready{% else %}Missing{% endif %}</td>
             <td>{{ readiness.token_message }}</td>
           </tr>
           <tr>
             <td>Customer mapping</td>
             <td>{% if readiness.customer.ready %}Ready{% else %}Missing{% endif %}</td>
             <td>{{ readiness.customer.message }}{% if readiness.customer.loyverse_customer_id %} ID: {{ readiness.customer.loyverse_customer_id }}{% endif %}</td>
+          </tr>
+          <tr>
+            <td>B2B Channel</td>
+            <td>{% if readiness.channel.ready %}Ready{% else %}Missing{% endif %}</td>
+            <td>{{ readiness.channel.message }}{% if readiness.channel.loyverse_payment_type_id %} Payment type: {{ readiness.channel.loyverse_payment_type_id }}{% endif %}</td>
           </tr>
           {% for line in readiness.lines %}
             <tr>
