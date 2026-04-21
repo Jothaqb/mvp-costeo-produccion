@@ -3,23 +3,34 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ title or "Production Costing MVP" }}</title>
+    <title>{{ title or "Green Corner Operations" }}</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
   </head>
   <body>
+    {% set path = request.url.path %}
+    {% set is_sales = path == "/b2b" or path.startswith("/b2b/") %}
+    {% set is_production = path == "/imports" or path.startswith("/imports/") or path == "/activities" or path.startswith("/activities/") or path == "/machines" or path.startswith("/machines/") or path == "/routes" or path.startswith("/routes/") or path == "/product-routes" or path.startswith("/product-routes/") or path == "/rates" or path.startswith("/rates/") or path == "/production-orders" or path.startswith("/production-orders/") %}
     <header class="site-header">
-      <nav>
-        <a href="/">Home</a>
-        <a href="/imports/new">Import CSV</a>
-        <a href="/imports">Imported Data</a>
-        <a href="/activities">Activities</a>
-        <a href="/machines">Machines</a>
-        <a href="/routes">Routes</a>
-        <a href="/product-routes">Product Routes</a>
-        <a href="/rates">Rates</a>
-        <a href="/production-orders">Production Orders</a>
-        <a href="/b2b/orders">B2B Sales</a>
-        <a href="/b2b/loyverse-mappings">B2B Loyverse</a>
+      <nav class="top-nav" aria-label="Main navigation">
+        <a class="brand" href="/">Green Corner</a>
+        <div class="nav-links">
+          <a class="nav-link" href="/">Home</a>
+          {% if is_production %}
+            <span class="nav-context">Production</span>
+            <a class="nav-link" href="/imports/new">Import CSV</a>
+            <a class="nav-link" href="/imports">Imported Data</a>
+            <a class="nav-link" href="/activities">Activities</a>
+            <a class="nav-link" href="/machines">Machines</a>
+            <a class="nav-link" href="/routes">Routes</a>
+            <a class="nav-link" href="/product-routes">Product Routes</a>
+            <a class="nav-link" href="/rates">Rates</a>
+            <a class="nav-link" href="/production-orders">Production Orders</a>
+          {% elif is_sales %}
+            <span class="nav-context">Sales</span>
+            <a class="nav-link" href="/b2b/orders">B2B Sales</a>
+            <a class="nav-link" href="/b2b/loyverse-mappings">B2B Loyverse</a>
+          {% endif %}
+        </div>
       </nav>
     </header>
     <main>

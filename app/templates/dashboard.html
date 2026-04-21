@@ -1,12 +1,14 @@
 {% extends "base.html" %}
 
 {% block content %}
-  <section>
-    <h1>Production Costing MVP</h1>
-    <p>Import Loyverse CSV data and review BOM classification.</p>
-    <div class="actions">
-      <a class="button" href="/imports/new">Import CSV</a>
-      <a class="button secondary" href="/imports">View imported data</a>
-    </div>
+  <section class="page-hero home-hero">
+    <p class="eyebrow">Operations System</p>
+    <h1>Green Corner Operations</h1>
+    <p class="lead">Choose the area you want to work in.</p>
+  </section>
+
+  <section class="home-actions" aria-label="System modules">
+    <a class="home-cta" href="/production-orders">Production</a>
+    <a class="home-cta" href="/b2b/orders">Sales</a>
   </section>
 {% endblock %}
