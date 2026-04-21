@@ -82,7 +82,7 @@
 
     {% if not is_closed %}
       <div class="actions">
-        <a role="button" href="/production-orders/{{ order.id }}/print" target="_blank" aria-label="Print worksheet" title="Print worksheet">🖨</a>
+        <a role="button" href="/production-orders/{{ order.id }}/print" target="_blank" aria-label="Print worksheet" title="Print worksheet">&#128424;</a>
         <a role="button" href="/production-orders/{{ order.id }}/bom/edit">Edit BOM</a>
         {% if order.status == "draft" %}
           <form method="post" action="/production-orders/{{ order.id }}/start">
@@ -100,6 +100,70 @@
     {% endif %}
   </section>
 
+  {% if inventory_readiness %}
+    <section>
+      <h2>Loyverse Inventory Readiness</h2>
+      <p><strong>Status:</strong> {{ inventory_readiness.status }}</p>
+      <p>{{ inventory_readiness.sync_model_note }}</p>
+      <p><strong>Cost limitation:</strong> {{ inventory_readiness.cost_limitation }}</p>
+      <p><strong>Concurrency warning:</strong> {{ inventory_readiness.concurrency_warning }}</p>
+      <dl class="summary">
+        <div><dt>Order closed</dt><dd>{{ "yes" if inventory_readiness.order_closed else "no" }}</dd></div>
+        <div><dt>Token</dt><dd>{{ "configured" if inventory_readiness.token_present else "missing" }}</dd></div>
+        <div><dt>Store ID</dt><dd>{{ inventory_readiness.store_id_preview if inventory_readiness.store_id_present else "missing" }}</dd></div>
+        <div><dt>Output quantity</dt><dd>{{ fmt.number_3(inventory_readiness.output_qty.value) if inventory_readiness.output_qty.value is not none else "" }}</dd></div>
+        <div><dt>Real unit cost</dt><dd>{{ fmt.money_crc(inventory_readiness.real_unit_cost.value) if inventory_readiness.real_unit_cost.value is not none else "" }}</dd></div>
+        <div><dt>Sync status</dt><dd>{{ order.loyverse_inventory_sync_status or "not_synced" }}</dd></div>
+        <div><dt>Attempted at</dt><dd>{{ order.loyverse_inventory_sync_attempted_at or "" }}</dd></div>
+        <div><dt>Synced at</dt><dd>{{ order.loyverse_inventory_synced_at or "" }}</dd></div>
+        <div><dt>Attempt count</dt><dd>{{ order.loyverse_inventory_sync_attempt_count or 0 }}</dd></div>
+        <div><dt>Store snapshot</dt><dd>{{ order.loyverse_inventory_store_id_snapshot or "" }}</dd></div>
+        <div><dt>Sync error</dt><dd>{{ order.loyverse_inventory_sync_error or "" }}</dd></div>
+      </dl>
+
+      {% if inventory_readiness.ready %}
+        <p><a role="button" href="/production-orders/{{ order.id }}/loyverse-inventory-preview">Preview Loyverse inventory sync</a></p>
+      {% endif %}
+
+      {% if inventory_readiness.blockers %}
+        <h3>Blockers</h3>
+        <ul>
+          {% for blocker in inventory_readiness.blockers %}
+            <li>{{ blocker }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      <table>
+        <thead>
+          <tr>
+            <th>Check</th>
+            <th>Result</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Finished good mapping</td>
+            <td>{{ "Ready" if inventory_readiness.finished_good.ready else "Missing" }}</td>
+            <td>{{ inventory_readiness.finished_good.message }}{% if inventory_readiness.finished_good.variant_id %} Variant: {{ inventory_readiness.finished_good.variant_id }}{% endif %}</td>
+          </tr>
+          <tr>
+            <td>Final required component quantities</td>
+            <td>{{ "Ready" if inventory_readiness.required_quantities.ready else "Missing" }}</td>
+            <td>{{ inventory_readiness.required_quantities.message }}</td>
+          </tr>
+          {% for material in inventory_readiness.materials %}
+            <tr>
+              <td>Material mapping {{ material.component_sku }}</td>
+              <td>{{ "Ready" if material.ready else "Missing" }}</td>
+              <td>{{ material.message }}{% if material.variant_id %} Variant: {{ material.variant_id }}{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
   <section>
     <h2>Yield Capture</h2>
     {% if not is_closed %}
@@ -197,7 +261,7 @@
           <th>Component SKU</th>
           <th>Component name</th>
           <th>Quantity standard</th>
-          <th>Requirement quantity</th>
+          <th>Required quantity</th>
           <th>Unit cost snapshot</th>
           <th>Line cost snapshot</th>
           <th>Type</th>
@@ -206,12 +270,11 @@
       </thead>
       <tbody>
         {% for material in materials %}
-          {% set requirement_quantity = order.planned_qty * material.quantity_standard if order.planned_qty is not none and material.quantity_standard is not none else none %}
           <tr>
             <td>{{ material.component_sku or "" }}</td>
             <td>{{ material.component_name or "" }}</td>
             <td>{{ fmt.number_3(material.quantity_standard) }}</td>
-            <td>{{ fmt.number_3(requirement_quantity) }}</td>
+            <td>{{ fmt.number_3(material.required_quantity) }}</td>
             <td>{{ fmt.money_crc(material.unit_cost_snapshot) }}</td>
             <td>{{ fmt.money_crc(material.line_cost) }}</td>
             <td>{{ material.component_type }}</td>

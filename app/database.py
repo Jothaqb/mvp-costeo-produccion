@@ -182,6 +182,35 @@ def ensure_sprint6_loyverse_cost_sync_columns() -> None:
         )
 
 
+def ensure_production_loyverse_inventory_sync_columns() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "production_orders",
+            {
+                "loyverse_inventory_sync_status": "VARCHAR(50)",
+                "loyverse_inventory_sync_error": "TEXT",
+                "loyverse_inventory_sync_attempted_at": "DATETIME",
+                "loyverse_inventory_synced_at": "DATETIME",
+                "loyverse_inventory_sync_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "loyverse_inventory_store_id_snapshot": "VARCHAR(100)",
+                "loyverse_inventory_response_summary": "TEXT",
+                "loyverse_inventory_request_fingerprint": "VARCHAR(128)",
+                "loyverse_inventory_payload_summary": "TEXT",
+            },
+        )
+        _ensure_columns(
+            connection,
+            "production_order_materials",
+            {
+                "required_quantity": "NUMERIC(12, 4)",
+            },
+        )
+
+
 def ensure_b2b_sales_followup_columns() -> None:
     if engine.dialect.name != "sqlite":
         return

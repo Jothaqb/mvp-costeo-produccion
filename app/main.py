@@ -17,6 +17,7 @@ from app.database import (
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
     ensure_product_loyverse_mapping_columns,
+    ensure_production_loyverse_inventory_sync_columns,
     ensure_sprint4_costing_columns,
     ensure_sprint5_comparison_columns,
     ensure_sprint6_loyverse_cost_sync_columns,
@@ -77,6 +78,15 @@ from app.services.config_service import (
 )
 from app.services.import_service import import_loyverse_csv
 from app.services.loyverse_service import sync_closed_order_cost_to_loyverse
+from app.services.production_loyverse_inventory_preview_service import (
+    ProductionInventoryPreviewError,
+    build_production_inventory_preview,
+)
+from app.services.production_loyverse_inventory_readiness_service import build_production_inventory_readiness
+from app.services.production_loyverse_inventory_sync_service import (
+    ProductionInventorySyncError,
+    sync_production_inventory_to_loyverse,
+)
 from app.services.production_order_service import (
     ProductionOrderValidationError,
     close_order,
@@ -97,6 +107,7 @@ ensure_app_sequences_table()
 ensure_sprint4_costing_columns()
 ensure_sprint5_comparison_columns()
 ensure_sprint6_loyverse_cost_sync_columns()
+ensure_production_loyverse_inventory_sync_columns()
 ensure_sprint7c_lot_columns_and_tables()
 ensure_b2b_sales_followup_columns()
 ensure_b2b_loyverse_mapping_tables()
@@ -181,6 +192,7 @@ def _production_order_detail_response(
             "materials": materials,
             "activities": activities,
             "activity_permissions": activity_permissions,
+            "inventory_readiness": build_production_inventory_readiness(db, order_id),
             "error": error,
             "is_closed": order.status == "closed",
         },
@@ -1345,6 +1357,50 @@ def create_production_order_route(
 def production_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     return _production_order_detail_response(order_id, request, db)
 
+
+@app.get("/production-orders/{order_id}/loyverse-inventory-preview", response_class=HTMLResponse)
+def production_order_inventory_preview(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    readiness = build_production_inventory_readiness(db, order_id)
+    preview = None
+    error = None
+    if readiness["ready"]:
+        try:
+            preview = build_production_inventory_preview(db, order_id)
+        except ProductionInventoryPreviewError as exc:
+            error = str(exc)
+    else:
+        error = "Production Order is not ready for Loyverse inventory preview."
+
+    return templates.TemplateResponse(
+        request=request,
+        name="production_loyverse_inventory_preview.html",
+        context={
+            "title": "Loyverse Inventory Preview",
+            "order": order,
+            "readiness": readiness,
+            "preview": preview,
+            "error": error,
+        },
+    )
+
+@app.post("/production-orders/{order_id}/loyverse-inventory-sync")
+def sync_production_order_inventory(
+    order_id: int,
+    request: Request,
+    preview_token: str = Form(""),
+    preview_fingerprint: str = Form(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        sync_production_inventory_to_loyverse(db, order_id, preview_token, preview_fingerprint)
+        return _redirect(f"/production-orders/{order_id}")
+    except ProductionInventorySyncError as exc:
+        return _production_order_detail_response(order_id, request, db, str(exc))
 
 @app.get("/production-orders/{order_id}/print", response_class=HTMLResponse)
 def production_order_print(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:

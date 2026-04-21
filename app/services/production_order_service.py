@@ -219,6 +219,7 @@ def update_order_bom(
                 )
             material.unit_cost_snapshot = component_product.standard_cost
         material.quantity_standard = quantity_standard
+        material.required_quantity = _calculate_required_quantity(order, quantity_standard)
 
     new_component_sku = (new_material.get("component_sku") or "").strip()
     new_quantity_text = (new_material.get("quantity_standard") or "").strip()
@@ -239,6 +240,7 @@ def update_order_bom(
                 component_sku=component_product.sku,
                 component_name=component_product.name,
                 quantity_standard=quantity_standard,
+                required_quantity=_calculate_required_quantity(order, quantity_standard),
                 unit_cost_snapshot=component_product.standard_cost,
                 line_cost=None,
                 component_type="material",
@@ -363,6 +365,12 @@ def _sku_lot_fragment(product_sku: str) -> str:
     return (product_sku or "")[-4:].zfill(4)
 
 
+def _calculate_required_quantity(order: ProductionOrder, quantity_standard: Decimal | None) -> Decimal | None:
+    if order.planned_qty is None or quantity_standard is None:
+        return None
+    return order.planned_qty * quantity_standard
+
+
 def _resolve_component_product(db: Session, component_sku: str | None) -> Product:
     sku = (component_sku or "").strip()
     if not sku:
@@ -429,6 +437,7 @@ def _copy_bom(db: Session, order: ProductionOrder, bom_header: ImportedBomHeader
                 component_sku=line.component_sku,
                 component_name=component_product.name if component_product else line.component_name,
                 quantity_standard=quantity_standard,
+                required_quantity=_calculate_required_quantity(order, quantity_standard),
                 unit_cost_snapshot=unit_cost_snapshot,
                 line_cost=line_cost,
                 component_type=line.component_type,

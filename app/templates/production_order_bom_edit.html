@@ -14,13 +14,12 @@
             <th>Component SKU</th>
             <th>Component name</th>
             <th>Quantity standard</th>
-            <th>Requirement quantity</th>
+            <th>Required quantity</th>
             <th>Delete</th>
           </tr>
         </thead>
         <tbody>
           {% for material in materials %}
-            {% set requirement_quantity = order.planned_qty * material.quantity_standard if order.planned_qty is not none and material.quantity_standard is not none else none %}
             <tr>
               <td>
                 <input type="hidden" name="material_id" value="{{ material.id }}">
@@ -35,7 +34,7 @@
               </td>
               <td>{{ material.component_name or "" }}</td>
               <td><input name="quantity_standard_{{ material.id }}" value="{{ material.quantity_standard if material.quantity_standard is not none else '' }}"></td>
-              <td>{{ fmt.number_3(requirement_quantity) }}</td>
+              <td>{{ fmt.number_3(material.required_quantity) }}</td>
               <td><input type="checkbox" name="delete_material_id" value="{{ material.id }}"></td>
             </tr>
           {% endfor %}

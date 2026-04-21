@@ -1,0 +1,148 @@
+﻿{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>Loyverse Inventory Preview</h1>
+    <p><a href="/production-orders/{{ order.id }}">Back to Production Order</a></p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <dl class="summary">
+      <div><dt>Order</dt><dd>{{ order.internal_order_number }}</dd></div>
+      <div><dt>Status</dt><dd>{{ order.status }}</dd></div>
+      <div><dt>Product</dt><dd>{{ order.product_sku_snapshot }} - {{ order.product_name_snapshot }}</dd></div>
+      <div><dt>Production date</dt><dd>{{ order.production_date }}</dd></div>
+      <div><dt>Output quantity</dt><dd>{{ fmt.number_3(order.output_qty) }}</dd></div>
+      <div><dt>Real unit cost</dt><dd>{{ fmt.money_crc(order.real_unit_cost) }}</dd></div>
+      <div><dt>Store ID</dt><dd>{{ preview.store_id if preview else readiness.store_id_preview }}</dd></div>
+      <div><dt>Preview calculated at</dt><dd>{{ preview.previewed_at if preview else "" }}</dd></div>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Safety Notes</h2>
+    <p><strong>Read-only preview:</strong> this page calls GET /inventory only. It does not write to Loyverse and does not update sync metadata.</p>
+    <p><strong>Concurrency warning:</strong> {{ preview.concurrency_warning if preview else readiness.concurrency_warning }}</p>
+    <p><strong>Cost limitation:</strong> {{ preview.cost_limitation if preview else readiness.cost_limitation }}</p>
+  </section>
+
+  {% if readiness.blockers %}
+    <section>
+      <h2>Readiness Blockers</h2>
+      <ul>
+        {% for blocker in readiness.blockers %}
+          <li>{{ blocker }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if preview %}
+    <section>
+      <h2>GET /inventory Scope</h2>
+      <dl class="summary">
+        <div><dt>Strategy</dt><dd>{{ preview.get_scope.strategy }}</dd></div>
+        <div><dt>Store ID</dt><dd>{{ preview.get_scope.store_id }}</dd></div>
+        <div><dt>Variant count</dt><dd>{{ preview.get_scope.variant_count }}</dd></div>
+        <div><dt>Completed scope</dt><dd>{{ "yes" if preview.get_scope.completed else "no" }}</dd></div>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Inventory Preview</h2>
+      {% if preview.zero_floor_rows %}
+        <p><strong>Inventory inconsistencies detected:</strong> some Loyverse rows have negative current stock. For sync calculation only, those rows use zero as the effective current stock.</p>
+      {% endif %}
+      {% if preview.excluded_rows %}
+        <p><strong>Physical inventory review recommended:</strong> some rows are excluded from the sync batch and will remain pending until their inventory data can be reviewed.</p>
+      {% endif %}
+      {% if preview.already_synced_rows %}
+        <p><strong>Partial-sync retry:</strong> rows already synced in a previous partial run are shown for traceability and will not be submitted again.</p>
+      {% endif %}
+      <table>
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>SKU</th>
+            <th>Name</th>
+            <th>Variant ID</th>
+            <th>Current stock</th>
+            <th>Effective stock</th>
+            <th>Stock source</th>
+            <th>Movement quantity</th>
+            <th>Proposed stock_after</th>
+            <th>Sync action</th>
+            <th>Warning / note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preview.rows %}
+            <tr>
+              <td>{{ row.label }}</td>
+              <td>{{ row.sku }}</td>
+              <td>{{ row.name }}</td>
+              <td>{{ row.variant_id }}</td>
+              <td>{{ fmt.number_3(row.current_stock) }}</td>
+              <td>{{ fmt.number_3(row.effective_current_stock) }}</td>
+              <td>{{ row.stock_source }}</td>
+              <td>{{ fmt.number_3(row.movement_quantity) }}</td>
+              <td>{{ fmt.number_3(row.proposed_stock_after) }}</td>
+              <td>
+                {% if row.sync_category == "included" %}
+                  Included
+                {% elif row.sync_category == "already_synced" %}
+                  Already synced
+                {% else %}
+                  Excluded
+                {% endif %}
+              </td>
+              <td>
+                {% if row.stock_warning %}{{ row.stock_warning }} {% endif %}
+                {{ row.sync_note }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Sync Batch</h2>
+      <dl class="summary">
+        <div><dt>Rows included now</dt><dd>{{ preview.included_rows|length }}</dd></div>
+        <div><dt>Rows excluded / pending</dt><dd>{{ preview.excluded_rows|length }}</dd></div>
+        <div><dt>Rows already synced</dt><dd>{{ preview.already_synced_rows|length }}</dd></div>
+        <div><dt>Zero-floor rows</dt><dd>{{ preview.zero_floor_rows|length }}</dd></div>
+      </dl>
+      {% if preview.excluded_rows %}
+        <h3>Excluded Rows</h3>
+        <ul>
+          {% for row in preview.excluded_rows %}
+            <li>{{ row.sku }} - {{ row.sync_note }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Manual Sync</h2>
+      {% if preview.write_blockers %}
+        <p><strong>Sync is blocked.</strong></p>
+        <ul>
+          {% for blocker in preview.write_blockers %}
+            <li>{{ blocker }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p><strong>Final warning:</strong> this will write absolute stock_after values to Loyverse for the included rows only. Local Production remains the source of truth and will not be rolled back if Loyverse later needs manual review.</p>
+        {% if preview.excluded_rows %}
+          <p><strong>Partial sync warning:</strong> only eligible rows will be submitted. Excluded rows will remain pending and require physical inventory review before a later retry.</p>
+        {% endif %}
+        <form method="post" action="/production-orders/{{ order.id }}/loyverse-inventory-sync" onsubmit="return confirm('Sync only the included inventory rows to Loyverse using the displayed stock_after values?');">
+          <input type="hidden" name="preview_token" value="{{ preview.preview_token }}">
+          <input type="hidden" name="preview_fingerprint" value="{{ preview.fingerprint }}">
+          <button type="submit">Sync included inventory rows to Loyverse</button>
+        </form>
+      {% endif %}
+    </section>
+  {% endif %}
+{% endblock %}
