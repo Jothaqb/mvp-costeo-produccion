@@ -400,3 +400,57 @@ button:focus,
     padding: 28px 18px 44px;
   }
 }
+.success {
+  color: #0f766e;
+  font-weight: 800;
+}
+
+.filter-form,
+.wide-form {
+  max-width: none;
+}
+
+.form-actions {
+  margin-top: 16px;
+}
+
+.status-pill {
+  display: inline-flex;
+  min-width: 86px;
+  justify-content: center;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.status-red {
+  color: #fff;
+  background: #b42318;
+}
+
+.status-yellow {
+  color: #17212b;
+  background: #f4c430;
+}
+
+.status-green {
+  color: #fff;
+  background: #0f766e;
+}
+
+.status-incomplete {
+  color: #53636f;
+  background: #e6ecef;
+}
+.filter-form input[type="checkbox"] {
+  display: inline-block;
+  width: auto;
+  max-width: none;
+  margin: 0 8px 0 0;
+}
+
+.wide-form table input {
+  max-width: 140px;
+  margin-bottom: 0;
+}

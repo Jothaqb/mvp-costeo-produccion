@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>Inventory Planning</h1>
+    <p class="lead">Maintain planning parameters and review simple replenishment suggestions from the latest imported product snapshot.</p>
+  </section>
+
+  <section class="module-grid" aria-label="Planning sections">
+    <a class="module-card module-link-card" href="/planning/inventory-parameters" aria-label="Open Inventory Parameters">
+      <div>
+        <p class="eyebrow">Setup</p>
+        <h2>Inventory Parameters</h2>
+        <p>Review manufactured and purchased products, maintain MOQ, and inspect red, yellow, and green zones.</p>
+      </div>
+      <span class="module-entry">Open Parameters</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/planning/suggestions" aria-label="Open Planning Suggestions">
+      <div>
+        <p class="eyebrow">Action</p>
+        <h2>Planning</h2>
+        <p>Review inventory status and suggested quantities for products that need production or purchase attention.</p>
+      </div>
+      <span class="module-entry">Open Planning</span>
+    </a>
+  </section>
+{% endblock %}

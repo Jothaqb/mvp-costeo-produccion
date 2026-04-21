@@ -1,4 +1,4 @@
-import csv
+﻿import csv
 import io
 import re
 import unicodedata
@@ -80,6 +80,11 @@ PACKAGING_PATTERNS = (
 LOYVERSE_PARENT_SKU_INDEX = 1
 LOYVERSE_PARENT_NAME_INDEX = 2
 LOYVERSE_AVERAGE_COST_INDEX = 12
+LOYVERSE_SUPPLIER_INDEX = 18
+LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX = 20
+LOYVERSE_INVENTORY_INDEX = 22
+LOYVERSE_LOW_STOCK_INDEX = 23
+LOYVERSE_OPTIMAL_STOCK_INDEX = 24
 LOYVERSE_BOM_INCLUDED_SKU_INDEX = 14
 LOYVERSE_BOM_QUANTITY_INDEX = 15
 LOYVERSE_USE_PRODUCTION_INDEX = 17
@@ -206,6 +211,7 @@ def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSu
                 current_header = _create_parent_records_from_loyverse_row(db, batch, row)
                 imported_products.add(current_header.product_sku)
             else:
+                _upsert_non_manufactured_product_from_loyverse_row(db, row)
                 current_header = None
 
         component = _extract_component_from_loyverse_row(row)
@@ -289,6 +295,7 @@ def _create_parent_records_from_loyverse_row(
     product.standard_cost = standard_cost
     product.is_manufactured = True
     product.active = True
+    _apply_planning_snapshot_fields(product, row)
 
     header = ImportedBomHeader(
         import_batch=batch,
@@ -301,6 +308,37 @@ def _create_parent_records_from_loyverse_row(
     db.flush()
     return header
 
+
+def _upsert_non_manufactured_product_from_loyverse_row(db: Session, row: list[str]) -> None:
+    sku = _cell(row, LOYVERSE_PARENT_SKU_INDEX)
+    if not sku:
+        return
+
+    use_production = normalize_text(_cell(row, LOYVERSE_USE_PRODUCTION_INDEX))
+    available_for_sale = parse_bool(_cell(row, LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX))
+    is_planning_purchased = available_for_sale and use_production in {"n", ""}
+    product = db.query(Product).filter(Product.sku == sku).one_or_none()
+    if not is_planning_purchased:
+        if product is not None and not available_for_sale:
+            product.available_for_sale_gc = False
+        return
+    if product is None:
+        product = Product(sku=sku, name=_cell(row, LOYVERSE_PARENT_NAME_INDEX) or sku)
+        db.add(product)
+
+    product.name = _cell(row, LOYVERSE_PARENT_NAME_INDEX) or sku
+    product.standard_cost = parse_decimal(_cell(row, LOYVERSE_AVERAGE_COST_INDEX))
+    product.is_manufactured = False
+    product.active = True
+    _apply_planning_snapshot_fields(product, row)
+
+
+def _apply_planning_snapshot_fields(product: Product, row: list[str]) -> None:
+    product.available_for_sale_gc = parse_bool(_cell(row, LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX))
+    product.supplier = _cell(row, LOYVERSE_SUPPLIER_INDEX) or None
+    product.current_inventory_qty = parse_decimal(_cell(row, LOYVERSE_INVENTORY_INDEX))
+    product.low_stock_qty = parse_decimal(_cell(row, LOYVERSE_LOW_STOCK_INDEX))
+    product.optimal_stock_qty = parse_decimal(_cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX))
 
 def _extract_component_from_loyverse_row(row: list[str]) -> dict[str, str | Decimal | None]:
     component_sku = _cell(row, LOYVERSE_BOM_INCLUDED_SKU_INDEX)

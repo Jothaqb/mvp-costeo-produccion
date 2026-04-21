@@ -53,6 +53,24 @@ def ensure_product_is_manufactured_column() -> None:
             )
 
 
+def ensure_product_planning_columns() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "products",
+            {
+                "available_for_sale_gc": "BOOLEAN NOT NULL DEFAULT 0",
+                "supplier": "VARCHAR(255)",
+                "current_inventory_qty": "NUMERIC(12, 4)",
+                "low_stock_qty": "NUMERIC(12, 4)",
+                "optimal_stock_qty": "NUMERIC(12, 4)",
+                "planning_moq": "NUMERIC(12, 4)",
+            },
+        )
+
 def ensure_product_loyverse_mapping_columns() -> None:
     if engine.dialect.name != "sqlite":
         return

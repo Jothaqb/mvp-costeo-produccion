@@ -20,6 +20,12 @@ class Product(Base):
     loyverse_variant_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     default_route_id: Mapped[int | None] = mapped_column(ForeignKey("routes.id"), nullable=True)
     is_manufactured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    available_for_sale_gc: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    supplier: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    current_inventory_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    low_stock_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    optimal_stock_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    planning_moq: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

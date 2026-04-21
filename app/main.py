@@ -17,6 +17,7 @@ from app.database import (
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
     ensure_product_loyverse_mapping_columns,
+    ensure_product_planning_columns,
     ensure_production_loyverse_inventory_sync_columns,
     ensure_sprint4_costing_columns,
     ensure_sprint5_comparison_columns,
@@ -78,6 +79,17 @@ from app.services.config_service import (
 )
 from app.services.import_service import import_loyverse_csv
 from app.services.loyverse_service import sync_closed_order_cost_to_loyverse
+from app.services.planning_service import (
+    PRODUCT_TYPE_MANUFACTURED,
+    PRODUCT_TYPE_PURCHASED,
+    PlanningValidationError,
+    build_planning_rows,
+    list_inventory_parameter_products,
+    list_routes_for_filter,
+    list_suppliers_for_filter,
+    normalize_product_type,
+    update_product_moqs,
+)
 from app.services.production_loyverse_inventory_preview_service import (
     ProductionInventoryPreviewError,
     build_production_inventory_preview,
@@ -103,6 +115,7 @@ Base.metadata.create_all(bind=engine)
 ensure_product_default_route_column()
 ensure_product_is_manufactured_column()
 ensure_product_loyverse_mapping_columns()
+ensure_product_planning_columns()
 ensure_app_sequences_table()
 ensure_sprint4_costing_columns()
 ensure_sprint5_comparison_columns()
@@ -207,6 +220,132 @@ def dashboard(request: Request) -> HTMLResponse:
         context={"title": "Production Costing MVP"},
     )
 
+
+@app.get("/planning", response_class=HTMLResponse)
+def planning_home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="planning_home.html",
+        context={"title": "Planning"},
+    )
+
+
+@app.get("/planning/inventory-parameters", response_class=HTMLResponse)
+def inventory_parameters(
+    request: Request,
+    product_type: str = Query(PRODUCT_TYPE_MANUFACTURED),
+    sku: str = Query(""),
+    route_id: str = Query(""),
+    supplier: str = Query(""),
+    error: str | None = Query(default=None),
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    normalized_type = normalize_product_type(product_type)
+    products = list_inventory_parameter_products(
+        db,
+        normalized_type,
+        sku=sku,
+        route_id=route_id,
+        supplier=supplier,
+    )
+    routes = list_routes_for_filter(db)
+    suppliers = list_suppliers_for_filter(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="inventory_parameters.html",
+        context={
+            "title": "Inventory Parameters",
+            "product_type": normalized_type,
+            "products": products,
+            "routes": routes,
+            "suppliers": suppliers,
+            "filters": {
+                "sku": sku.strip(),
+                "route_id": route_id.strip(),
+                "supplier": supplier.strip(),
+            },
+            "sku": sku.strip(),
+            "error": error,
+            "message": message,
+        },
+    )
+
+
+@app.post("/planning/inventory-parameters")
+async def update_inventory_parameters(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    product_type = normalize_product_type(str(form.get("product_type", PRODUCT_TYPE_MANUFACTURED)))
+    sku = str(form.get("sku", "")).strip()
+    route_id = str(form.get("route_id", "")).strip()
+    supplier = str(form.get("supplier", "")).strip()
+    moq_inputs: dict[int, str] = {}
+    for key, value in form.items():
+        key_text = str(key)
+        if not key_text.startswith("moq_"):
+            continue
+        product_id = int(key_text.replace("moq_", "", 1))
+        moq_inputs[product_id] = str(value)
+    try:
+        update_product_moqs(db, moq_inputs)
+        query = f"product_type={quote(product_type)}&message={quote('MOQ values saved.')}"
+        if sku:
+            query += f"&sku={quote(sku)}"
+        if route_id:
+            query += f"&route_id={quote(route_id)}"
+        if supplier:
+            query += f"&supplier={quote(supplier)}"
+        return _redirect(f"/planning/inventory-parameters?{query}")
+    except PlanningValidationError as exc:
+        db.rollback()
+        query = f"product_type={quote(product_type)}&error={quote(str(exc))}"
+        if sku:
+            query += f"&sku={quote(sku)}"
+        if route_id:
+            query += f"&route_id={quote(route_id)}"
+        if supplier:
+            query += f"&supplier={quote(supplier)}"
+        return _redirect(f"/planning/inventory-parameters?{query}")
+
+
+@app.get("/planning/suggestions", response_class=HTMLResponse)
+def planning_suggestions(
+    request: Request,
+    product_type: str = Query(PRODUCT_TYPE_MANUFACTURED),
+    sku: str = Query(""),
+    route_id: str = Query(""),
+    supplier: str = Query(""),
+    needs_action: bool = Query(False),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    normalized_type = normalize_product_type(product_type)
+    rows = build_planning_rows(
+        db,
+        normalized_type,
+        sku=sku,
+        route_id=route_id,
+        supplier=supplier,
+        needs_action=needs_action,
+    )
+    routes = list_routes_for_filter(db)
+    suppliers = list_suppliers_for_filter(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="planning_suggestions.html",
+        context={
+            "title": "Planning Suggestions",
+            "product_type": normalized_type,
+            "rows": rows,
+            "routes": routes,
+            "suppliers": suppliers,
+            "filters": {
+                "sku": sku.strip(),
+                "route_id": route_id.strip(),
+                "supplier": supplier.strip(),
+                "needs_action": needs_action,
+            },
+        },
+    )
 
 @app.get("/b2b/customers", response_class=HTMLResponse)
 def b2b_customers(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:

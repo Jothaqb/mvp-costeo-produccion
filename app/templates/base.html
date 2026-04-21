@@ -9,6 +9,7 @@
   <body>
     {% set path = request.url.path %}
     {% set is_sales = path == "/b2b" or path.startswith("/b2b/") %}
+    {% set is_planning = path == "/planning" or path.startswith("/planning/") %}
     {% set is_production = path == "/imports" or path.startswith("/imports/") or path == "/activities" or path.startswith("/activities/") or path == "/machines" or path.startswith("/machines/") or path == "/routes" or path.startswith("/routes/") or path == "/product-routes" or path.startswith("/product-routes/") or path == "/rates" or path.startswith("/rates/") or path == "/production-orders" or path.startswith("/production-orders/") %}
     <header class="site-header">
       <nav class="top-nav" aria-label="Main navigation">
@@ -29,6 +30,10 @@
             <span class="nav-context">Sales</span>
             <a class="nav-link" href="/b2b/orders">B2B Sales</a>
             <a class="nav-link" href="/b2b/loyverse-mappings">B2B Loyverse</a>
+          {% elif is_planning %}
+            <span class="nav-context">Planning</span>
+            <a class="nav-link" href="/planning/inventory-parameters">Inventory Parameters</a>
+            <a class="nav-link" href="/planning/suggestions">Planning</a>
           {% endif %}
         </div>
       </nav>

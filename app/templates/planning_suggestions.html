@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>Planning Suggestions</h1>
+    <p class="lead">Review simple replenishment signals from current inventory, zones, and MOQ.</p>
+  </section>
+
+  <section class="actions">
+    <a class="button{% if product_type != 'manufactured' %} secondary{% endif %}" href="/planning/suggestions?product_type=manufactured">Manufactured Products</a>
+    <a class="button{% if product_type != 'purchased' %} secondary{% endif %}" href="/planning/suggestions?product_type=purchased">Purchased Products</a>
+  </section>
+
+  <section>
+    <form method="get" action="/planning/suggestions" class="filter-form">
+      <input type="hidden" name="product_type" value="{{ product_type }}">
+      <label for="sku">SKU filter</label>
+      <input id="sku" name="sku" value="{{ filters.sku }}" placeholder="Search SKU">
+      {% if product_type == 'manufactured' %}
+        <label for="route_id">Route</label>
+        <select id="route_id" name="route_id">
+          <option value="">All routes</option>
+          {% for route in routes %}
+            <option value="{{ route.id }}" {% if filters.route_id == route.id|string %}selected{% endif %}>{{ route.code }} - {{ route.name }}</option>
+          {% endfor %}
+        </select>
+        <label><input type="checkbox" name="needs_action" value="true" {% if filters.needs_action %}checked{% endif %}> Needs production only</label>
+      {% else %}
+        <label for="supplier">Supplier</label>
+        <select id="supplier" name="supplier">
+          <option value="">All suppliers</option>
+          {% for supplier in suppliers %}
+            <option value="{{ supplier }}" {% if filters.supplier == supplier %}selected{% endif %}>{{ supplier }}</option>
+          {% endfor %}
+        </select>
+      {% endif %}
+      <button type="submit">Filter</button>
+    </form>
+  </section>
+
+  <section>
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Description</th>
+          {% if product_type == 'manufactured' %}<th>Route</th>{% else %}<th>Supplier</th>{% endif %}
+          <th>Cost</th>
+          <th>MOQ</th>
+          <th>Red zone</th>
+          <th>Yellow zone</th>
+          <th>Green zone</th>
+          <th>Inventory</th>
+          <th>Status</th>
+          <th>Suggested quantity</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          {% set product = row.product %}
+          <tr>
+            <td>{{ product.sku }}</td>
+            <td>{{ product.name }}</td>
+            {% if product_type == 'manufactured' %}
+              <td>{{ product.default_route.code ~ ' - ' ~ product.default_route.name if product.default_route else '' }}</td>
+            {% else %}
+              <td>{{ product.supplier or '' }}</td>
+            {% endif %}
+            <td>{{ fmt.money_crc(product.standard_cost) }}</td>
+            <td>{{ fmt.number_3(product.planning_moq) }}</td>
+            <td>{{ fmt.number_3(product.low_stock_qty) }}</td>
+            <td>{{ fmt.number_3(product.optimal_stock_qty) }}</td>
+            <td>{{ fmt.number_3(row.green_zone) }}</td>
+            <td>{{ fmt.number_3(product.current_inventory_qty) }}</td>
+            <td><span class="status-pill status-{{ row.status|lower }}">{{ row.status }}</span></td>
+            <td>{{ fmt.number_3(row.suggested_quantity) }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="11">No products found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

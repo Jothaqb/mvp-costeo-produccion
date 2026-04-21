@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>Inventory Parameters</h1>
+    <p class="lead">Maintain MOQ values. Imported inventory, cost, supplier, and zone values come from the latest CSV snapshot.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if message %}<p class="success">{{ message }}</p>{% endif %}
+
+  <section class="actions">
+    <a class="button{% if product_type != 'manufactured' %} secondary{% endif %}" href="/planning/inventory-parameters?product_type=manufactured">Manufactured Products</a>
+    <a class="button{% if product_type != 'purchased' %} secondary{% endif %}" href="/planning/inventory-parameters?product_type=purchased">Purchased Products</a>
+  </section>
+
+  <section>
+    <form method="get" action="/planning/inventory-parameters" class="filter-form">
+      <input type="hidden" name="product_type" value="{{ product_type }}">
+      <label for="sku">SKU filter</label>
+      <input id="sku" name="sku" value="{{ filters.sku }}" placeholder="Search SKU">
+
+      {% if product_type == 'manufactured' %}
+        <label for="route_id">Route</label>
+        <select id="route_id" name="route_id">
+          <option value="">All routes</option>
+          {% for route in routes %}
+            <option value="{{ route.id }}" {% if filters.route_id == route.id|string %}selected{% endif %}>{{ route.code }} - {{ route.name }}</option>
+          {% endfor %}
+        </select>
+        <a class="button secondary" href="/planning/inventory-parameters?product_type=manufactured">Clear filters</a>
+      {% else %}
+        <label for="supplier">Supplier</label>
+        <select id="supplier" name="supplier">
+          <option value="">All suppliers</option>
+          {% for supplier in suppliers %}
+            <option value="{{ supplier }}" {% if filters.supplier == supplier %}selected{% endif %}>{{ supplier }}</option>
+          {% endfor %}
+        </select>
+        <a class="button secondary" href="/planning/inventory-parameters?product_type=purchased">Clear filters</a>
+      {% endif %}
+      <button type="submit">Filter</button>
+    </form>
+  </section>
+
+  <section>
+    <form method="post" action="/planning/inventory-parameters" class="wide-form">
+      <input type="hidden" name="product_type" value="{{ product_type }}">
+      <input type="hidden" name="sku" value="{{ filters.sku }}">
+      <input type="hidden" name="route_id" value="{{ filters.route_id }}">
+      <input type="hidden" name="supplier" value="{{ filters.supplier }}">
+      <table>
+        <thead>
+          <tr>
+            <th>SKU</th>
+            <th>Description / Average Cost</th>
+            {% if product_type == 'manufactured' %}<th>Route</th>{% else %}<th>Supplier</th>{% endif %}
+            <th>MOQ</th>
+            <th>Red zone</th>
+            <th>Yellow zone</th>
+            <th>Green zone</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for product in products %}
+            <tr>
+              <td>{{ product.sku }}</td>
+              <td>{{ product.name }}<br><small>{{ fmt.money_crc(product.standard_cost) }}</small></td>
+              {% if product_type == 'manufactured' %}
+                <td>{{ product.default_route.code ~ ' - ' ~ product.default_route.name if product.default_route else '' }}</td>
+              {% else %}
+                <td>{{ product.supplier or '' }}</td>
+              {% endif %}
+              <td><input name="moq_{{ product.id }}" value="{{ product.planning_moq if product.planning_moq is not none else '' }}" inputmode="decimal"></td>
+              <td>{{ fmt.number_3(product.low_stock_qty) }}</td>
+              <td>{{ fmt.number_3(product.optimal_stock_qty) }}</td>
+              <td>{{ fmt.number_3(product.low_stock_qty + product.planning_moq) if product.low_stock_qty is not none and product.planning_moq is not none else '' }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7">No products found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="actions form-actions">
+        <button type="submit">Save MOQ</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}
