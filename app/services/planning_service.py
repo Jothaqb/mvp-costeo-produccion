@@ -9,6 +9,7 @@ from app.models import Product, Route
 PRODUCT_TYPE_MANUFACTURED = "manufactured"
 PRODUCT_TYPE_PURCHASED = "purchased"
 VALID_PRODUCT_TYPES = {PRODUCT_TYPE_MANUFACTURED, PRODUCT_TYPE_PURCHASED}
+PLANNING_STATUSES = {"Red", "Yellow", "Green", "Incomplete"}
 ZERO = Decimal("0")
 
 
@@ -63,6 +64,7 @@ def build_planning_rows(
     route_id: str = "",
     supplier: str = "",
     needs_action: bool = False,
+    status: str = "",
 ) -> list[PlanningProductRow]:
     query = _base_planning_query(db, product_type)
     search = (sku or "").strip()
@@ -79,6 +81,9 @@ def build_planning_rows(
             query = query.filter(Product.supplier == supplier_filter)
 
     rows = [_build_row(product) for product in query.order_by(Product.sku).all()]
+    status_filter = (status or "").strip()
+    if status_filter in PLANNING_STATUSES:
+        rows = [row for row in rows if row.status == status_filter]
     if needs_action:
         rows = [row for row in rows if row.status in {"Red", "Yellow"}]
     return rows

@@ -88,6 +88,7 @@ from app.services.planning_service import (
     list_routes_for_filter,
     list_suppliers_for_filter,
     normalize_product_type,
+    parse_moq,
     update_product_moqs,
 )
 from app.services.production_loyverse_inventory_preview_service import (
@@ -315,7 +316,9 @@ def planning_suggestions(
     sku: str = Query(""),
     route_id: str = Query(""),
     supplier: str = Query(""),
+    status: str = Query(""),
     needs_action: bool = Query(False),
+    error: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     normalized_type = normalize_product_type(product_type)
@@ -326,6 +329,7 @@ def planning_suggestions(
         route_id=route_id,
         supplier=supplier,
         needs_action=needs_action,
+        status=status,
     )
     routes = list_routes_for_filter(db)
     suppliers = list_suppliers_for_filter(db)
@@ -338,14 +342,51 @@ def planning_suggestions(
             "rows": rows,
             "routes": routes,
             "suppliers": suppliers,
+            "statuses": ["Red", "Yellow", "Green", "Incomplete"],
+            "error": error,
             "filters": {
                 "sku": sku.strip(),
                 "route_id": route_id.strip(),
                 "supplier": supplier.strip(),
+                "status": status.strip(),
                 "needs_action": needs_action,
             },
         },
     )
+
+
+@app.get("/planning/suggestions/create-production-order")
+def create_production_order_from_planning(
+    product_id: int = Query(...),
+    planner_qty: str = Query(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    quantity_error = "Planner quantity must be numeric and greater than 0."
+    try:
+        quantity = parse_moq(planner_qty)
+    except PlanningValidationError:
+        return _redirect(f"/planning/suggestions?product_type=manufactured&error={quote(quantity_error)}")
+
+    if quantity is None or quantity <= 0:
+        return _redirect(f"/planning/suggestions?product_type=manufactured&error={quote(quantity_error)}")
+
+    product = (
+        db.query(Product)
+        .filter(
+            Product.id == product_id,
+            Product.is_manufactured.is_(True),
+            Product.active.is_(True),
+            Product.available_for_sale_gc.is_(True),
+        )
+        .one_or_none()
+    )
+    if product is None:
+        return _redirect(
+            "/planning/suggestions?product_type=manufactured&error="
+            f"{quote('Selected product is not available for manufactured planning.')}"
+        )
+
+    return _redirect(f"/production-orders/new?product_id={product.id}&planned_qty={quote(str(quantity))}")
 
 @app.get("/b2b/customers", response_class=HTMLResponse)
 def b2b_customers(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
@@ -1439,18 +1480,30 @@ def list_production_orders(
 def new_production_order(
     request: Request,
     q: str = Query(""),
+    product_id: int | None = Query(default=None),
+    planned_qty: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     search = q.strip()
     product_query = db.query(Product).filter(Product.is_manufactured.is_(True), Product.active.is_(True))
-    if search:
+    selected_product_id = product_id
+    if selected_product_id is not None:
+        product_query = product_query.filter(Product.id == selected_product_id)
+    elif search:
         like_search = f"%{search}%"
         product_query = product_query.filter(Product.sku.ilike(like_search) | Product.name.ilike(like_search))
     products = product_query.order_by(Product.sku).limit(50).all()
     return templates.TemplateResponse(
         request=request,
         name="production_order_form.html",
-        context={"title": "New Production Order", "products": products, "error": None, "search": search},
+        context={
+            "title": "New Production Order",
+            "products": products,
+            "error": None,
+            "search": search,
+            "selected_product_id": selected_product_id,
+            "prefill_planned_qty": planned_qty.strip(),
+        },
     )
 
 

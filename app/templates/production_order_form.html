@@ -19,7 +19,7 @@
       <label for="product_id">Product</label>
       <select id="product_id" name="product_id" required>
         {% for product in products %}
-          <option value="{{ product.id }}">{{ product.sku }} - {{ product.name }}</option>
+          <option value="{{ product.id }}" {% if selected_product_id == product.id %}selected{% endif %}>{{ product.sku }} - {{ product.name }}</option>
         {% endfor %}
       </select>
       {% if not products %}
@@ -27,7 +27,7 @@
       {% endif %}
 
       <label for="planned_qty">Planned quantity</label>
-      <input id="planned_qty" name="planned_qty">
+      <input id="planned_qty" name="planned_qty" value="{{ prefill_planned_qty or '' }}">
 
       <label for="notes">Notes</label>
       <textarea id="notes" name="notes"></textarea>
