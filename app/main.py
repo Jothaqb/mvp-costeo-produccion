@@ -154,13 +154,16 @@ def _b2b_statuses() -> list[str]:
     return ["draft", "in_process", "invoiced"]
 
 
-def _line_inputs_from_form(form, prefix: str, count: int) -> list[dict[str, str]]:
+def _line_inputs_from_form(form, prefix: str, count: int | None = None) -> list[dict[str, str]]:
+    indexes = [str(index).strip() for index in form.getlist(f"{prefix}_index") if str(index).strip()]
+    if not indexes and count is not None:
+        indexes = [str(index) for index in range(1, count + 1)]
     return [
         {
             "sku": str(form.get(f"{prefix}_sku_{index}", "")),
             "quantity": str(form.get(f"{prefix}_quantity_{index}", "")),
         }
-        for index in range(1, count + 1)
+        for index in indexes
     ]
 
 
@@ -748,7 +751,7 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
     form = await request.form()
     customer_id = int(str(form.get("customer_id", "0") or "0"))
     delivery_date = datetime.strptime(str(form.get("delivery_date")), "%Y-%m-%d").date()
-    line_inputs = _line_inputs_from_form(form, "line", 5)
+    line_inputs = _line_inputs_from_form(form, "line")
     observations = str(form.get("observations", ""))
     b2b_channel_id = str(form.get("b2b_channel_id", ""))
     try:

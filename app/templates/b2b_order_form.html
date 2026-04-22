@@ -58,13 +58,16 @@
               <th>Quantity</th>
               <th>Unit price</th>
               <th>Amount</th>
+              <th>Action</th>
             </tr>
           </thead>
-          <tbody>
-            {% for index in range(1, 6) %}
+          <tbody id="b2b-lines-body">
+            {% set initial_line_count = submitted_lines|length if submitted_lines is defined and submitted_lines else 5 %}
+            {% for index in range(1, initial_line_count + 1) %}
               {% set submitted_line = submitted_lines[index - 1] if submitted_lines is defined and submitted_lines|length >= index else none %}
-              <tr>
+              <tr class="b2b-order-line">
                 <td>
+                  <input type="hidden" name="line_index" value="{{ index }}">
                   <select class="b2b-product-select" name="line_sku_{{ index }}">
                     <option value="">Select product...</option>
                     {% for product in catalog %}
@@ -75,15 +78,36 @@
                 <td><input class="b2b-quantity-input" name="line_quantity_{{ index }}" value="{{ submitted_line.quantity if submitted_line else '' }}"></td>
                 <td class="b2b-unit-price"></td>
                 <td class="b2b-line-amount"></td>
+                <td><button type="button" class="b2b-remove-line">Remove</button></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
 
+        <button type="button" id="b2b-add-line">Add product</button>
+
         <p><strong>Order Total:</strong> <span id="b2b-order-total">&#8353;0</span></p>
 
         <button type="submit">Create draft order</button>
       </form>
+
+      <template id="b2b-line-template">
+        <tr class="b2b-order-line">
+          <td>
+            <input type="hidden" name="line_index" value="__index__">
+            <select class="b2b-product-select" name="line_sku___index__">
+              <option value="">Select product...</option>
+              {% for product in catalog %}
+                <option value="{{ product.sku }}" data-price="{{ product.distributor_price }}">{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td><input class="b2b-quantity-input" name="line_quantity___index__"></td>
+          <td class="b2b-unit-price"></td>
+          <td class="b2b-line-amount"></td>
+          <td><button type="button" class="b2b-remove-line">Remove</button></td>
+        </tr>
+      </template>
     </section>
   {% endif %}
 
@@ -97,9 +121,19 @@
       return "\u20a1" + Math.round(value).toLocaleString("en-US");
     }
 
+    function b2bUpdateRemoveButtons() {
+      const rows = document.querySelectorAll("#b2b-lines-body .b2b-order-line");
+      rows.forEach((row) => {
+        const button = row.querySelector(".b2b-remove-line");
+        if (button) {
+          button.disabled = rows.length <= 1;
+        }
+      });
+    }
+
     function b2bRecalculate() {
       let total = 0;
-      document.querySelectorAll("tbody tr").forEach((row) => {
+      document.querySelectorAll("#b2b-lines-body .b2b-order-line").forEach((row) => {
         const select = row.querySelector(".b2b-product-select");
         const quantityInput = row.querySelector(".b2b-quantity-input");
         const unitCell = row.querySelector(".b2b-unit-price");
@@ -119,12 +153,54 @@
       if (totalElement) {
         totalElement.textContent = b2bFormatMoney(total);
       }
+      b2bUpdateRemoveButtons();
     }
 
-    document.querySelectorAll(".b2b-product-select, .b2b-quantity-input").forEach((input) => {
-      input.addEventListener("change", b2bRecalculate);
-      input.addEventListener("input", b2bRecalculate);
+    const b2bLinesBody = document.getElementById("b2b-lines-body");
+    const b2bLineTemplate = document.getElementById("b2b-line-template");
+    const b2bAddLineButton = document.getElementById("b2b-add-line");
+    let b2bNextLineIndex = 1;
+
+    document.querySelectorAll('input[name="line_index"]').forEach((input) => {
+      const value = Number(input.value);
+      if (Number.isFinite(value) && value >= b2bNextLineIndex) {
+        b2bNextLineIndex = value + 1;
+      }
     });
+
+    if (b2bLinesBody) {
+      b2bLinesBody.addEventListener("change", (event) => {
+        if (event.target.matches(".b2b-product-select, .b2b-quantity-input")) {
+          b2bRecalculate();
+        }
+      });
+      b2bLinesBody.addEventListener("input", (event) => {
+        if (event.target.matches(".b2b-product-select, .b2b-quantity-input")) {
+          b2bRecalculate();
+        }
+      });
+      b2bLinesBody.addEventListener("click", (event) => {
+        if (!event.target.matches(".b2b-remove-line")) {
+          return;
+        }
+        const row = event.target.closest(".b2b-order-line");
+        if (row && b2bLinesBody.querySelectorAll(".b2b-order-line").length > 1) {
+          row.remove();
+          b2bRecalculate();
+        }
+      });
+    }
+
+    if (b2bAddLineButton && b2bLineTemplate && b2bLinesBody) {
+      b2bAddLineButton.addEventListener("click", () => {
+        const index = String(b2bNextLineIndex);
+        const html = b2bLineTemplate.innerHTML.replace(/__index__/g, index);
+        b2bLinesBody.insertAdjacentHTML("beforeend", html);
+        b2bNextLineIndex += 1;
+        b2bRecalculate();
+      });
+    }
+
     b2bRecalculate();
   </script>
 {% endblock %}
