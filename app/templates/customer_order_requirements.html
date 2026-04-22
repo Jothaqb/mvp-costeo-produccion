@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>Req. Pedidos Clientes</h1>
+    <p class="lead">Open B2B demand from draft and in-process orders, consolidated with a two-level BOM explosion.</p>
+  </section>
+
+  {% if result.has_warnings %}
+    <section>
+      <p class="error">Customer order requirement contains warnings/omissions.</p>
+      <ul>
+        {% for warning in result.warnings %}
+          <li>{{ warning }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <section>
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Description</th>
+          <th>Product type</th>
+          <th>Inventory</th>
+          <th>Direct requirement</th>
+          <th>Exploded requirement</th>
+          <th>Total customer order requirement</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in result.rows %}
+          <tr>
+            <td>{{ row.sku }}</td>
+            <td>{{ row.description }}</td>
+            <td>{{ row.product_type }}</td>
+            <td>{{ fmt.number_3(row.inventory) }}</td>
+            <td>{{ fmt.number_3(row.direct_requirement) }}</td>
+            <td>{{ fmt.number_3(row.exploded_requirement) }}</td>
+            <td>{{ fmt.number_3(row.total_requirement) }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7">No open customer-order requirements found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

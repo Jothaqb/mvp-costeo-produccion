@@ -3,42 +3,89 @@
 {% block content %}
   <section>
     <h1>Product Routes</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+
     <form method="get" action="/product-routes" class="filters">
       <label for="product_sku">Product SKU</label>
-      <input id="product_sku" name="product_sku" value="{{ product_sku }}">
+      <input id="product_sku" name="product_sku" value="{{ filters.product_sku }}">
+
+      <label for="route_filter">Route</label>
+      <select id="route_filter" name="route_id">
+        <option value="">All routes</option>
+        {% for route in routes %}
+          <option value="{{ route.id }}" {% if filters.route_id == route.id|string %}selected{% endif %}>{{ route.code }} - {{ route.name }}</option>
+        {% endfor %}
+      </select>
+
+      <label><input type="checkbox" name="route_status" value="no_route" {% if filters.route_status == 'no_route' %}checked{% endif %}> No route assigned</label>
       <button type="submit">Filter</button>
       <a class="button" href="/product-routes">Clear</a>
     </form>
-    <table>
-      <thead>
-        <tr>
-          <th>SKU</th>
-          <th>Product</th>
-          <th>Default route</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for product in products %}
-          <tr>
-            <td>{{ product.sku }}</td>
-            <td>{{ product.name }}</td>
-            <td>
-              <form method="post" action="/product-routes/{{ product.id }}">
-                <input type="hidden" name="product_sku" value="{{ product_sku }}">
-                <select name="default_route_id">
-                  <option value="">None</option>
-                  {% for route in routes %}
-                    <option value="{{ route.id }}" {% if product.default_route_id == route.id %}selected{% endif %}>{{ route.code }} - {{ route.name }}</option>
-                  {% endfor %}
-                </select>
-                <button type="submit">Save</button>
-              </form>
-            </td>
-            <td>{{ product.default_route.code if product.default_route else "" }}</td>
-          </tr>
+
+    <form id="bulk-route-form" method="post" action="/product-routes/bulk-assign" class="filters">
+      <input type="hidden" name="product_sku" value="{{ filters.product_sku }}">
+      <input type="hidden" name="route_id" value="{{ filters.route_id }}">
+      <input type="hidden" name="route_status" value="{{ filters.route_status }}">
+
+      <label for="bulk_route_id">Bulk route assignment</label>
+      <select id="bulk_route_id" name="bulk_route_id">
+        <option value="">Choose route</option>
+        {% for route in routes %}
+          <option value="{{ route.id }}">{{ route.code }} - {{ route.name }}</option>
         {% endfor %}
-      </tbody>
+      </select>
+      <button type="submit">Apply selected</button>
+
+    </form>
+
+    <table>
+        <thead>
+          <tr>
+            <th><input id="select_all_visible" type="checkbox" aria-label="Select all visible products"></th>
+            <th>SKU</th>
+            <th>Product</th>
+            <th>Default route</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for product in products %}
+            <tr>
+              <td><input form="bulk-route-form" class="product-route-checkbox" type="checkbox" name="product_ids" value="{{ product.id }}" aria-label="Select {{ product.sku }}"></td>
+              <td>{{ product.sku }}</td>
+              <td>{{ product.name }}</td>
+              <td>
+                <form method="post" action="/product-routes/{{ product.id }}">
+                  <input type="hidden" name="product_sku" value="{{ filters.product_sku }}">
+                  <input type="hidden" name="route_id" value="{{ filters.route_id }}">
+                  <input type="hidden" name="route_status" value="{{ filters.route_status }}">
+                  <select name="default_route_id">
+                    <option value="">None</option>
+                    {% for route in routes %}
+                      <option value="{{ route.id }}" {% if product.default_route_id == route.id %}selected{% endif %}>{{ route.code }} - {{ route.name }}</option>
+                    {% endfor %}
+                  </select>
+                  <button type="submit">Save</button>
+                </form>
+              </td>
+              <td>{{ product.default_route.code if product.default_route else "" }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5">No products found.</td></tr>
+          {% endfor %}
+        </tbody>
     </table>
   </section>
+
+  <script>
+    const selectAllVisible = document.getElementById('select_all_visible');
+    if (selectAllVisible) {
+      selectAllVisible.addEventListener('change', () => {
+        document.querySelectorAll('.product-route-checkbox').forEach((checkbox) => {
+          checkbox.checked = selectAllVisible.checked;
+        });
+      });
+    }
+  </script>
 {% endblock %}

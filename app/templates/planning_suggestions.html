@@ -9,6 +9,7 @@
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if requirement_has_warnings %}<p class="error">Customer order requirement contains warnings/omissions. Review <a href="/planning/customer-order-requirements">Req. Pedidos Clientes</a>.</p>{% endif %}
 
   <section class="actions">
     <a class="button{% if product_type != 'manufactured' %} secondary{% endif %}" href="/planning/suggestions?product_type=manufactured">Manufactured Products</a>
@@ -70,6 +71,8 @@
           <th>Yellow zone</th>
           <th>Green zone</th>
           <th>Inventory</th>
+          <th>Req. Pedidos Clientes</th>
+          <th>Inventory disponible</th>
           <th>Status</th>
           <th>Suggested quantity</th>
           <th>Planner quantity</th>
@@ -93,6 +96,8 @@
             <td>{{ fmt.number_3(product.optimal_stock_qty) }}</td>
             <td>{{ fmt.number_3(row.green_zone) }}</td>
             <td>{{ fmt.number_3(product.current_inventory_qty) }}</td>
+            <td>{{ fmt.number_3(row.customer_order_requirement) }}</td>
+            <td>{{ fmt.number_3(row.inventory_available) }}</td>
             <td><span class="status-pill status-{{ row.status|lower }}">{{ row.status }}</span></td>
             <td>{{ fmt.number_3(row.suggested_quantity) }}</td>
             {% if product_type == 'manufactured' %}
@@ -109,7 +114,7 @@
             {% endif %}
           </tr>
         {% else %}
-          <tr><td colspan="{% if product_type == 'manufactured' %}13{% else %}12{% endif %}">No products found.</td></tr>
+          <tr><td colspan="{% if product_type == 'manufactured' %}15{% else %}14{% endif %}">No products found.</td></tr>
         {% endfor %}
       </tbody>
     </table>

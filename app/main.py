@@ -83,6 +83,7 @@ from app.services.planning_service import (
     PRODUCT_TYPE_MANUFACTURED,
     PRODUCT_TYPE_PURCHASED,
     PlanningValidationError,
+    build_customer_order_requirements,
     build_planning_rows,
     list_inventory_parameter_products,
     list_routes_for_filter,
@@ -231,6 +232,19 @@ def planning_home(request: Request) -> HTMLResponse:
     )
 
 
+
+@app.get("/planning/customer-order-requirements", response_class=HTMLResponse)
+def customer_order_requirements(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    requirement_result = build_customer_order_requirements(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="customer_order_requirements.html",
+        context={
+            "title": "Req. Pedidos Clientes",
+            "result": requirement_result,
+        },
+    )
+
 @app.get("/planning/inventory-parameters", response_class=HTMLResponse)
 def inventory_parameters(
     request: Request,
@@ -322,6 +336,7 @@ def planning_suggestions(
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     normalized_type = normalize_product_type(product_type)
+    requirement_result = build_customer_order_requirements(db)
     rows = build_planning_rows(
         db,
         normalized_type,
@@ -330,6 +345,7 @@ def planning_suggestions(
         supplier=supplier,
         needs_action=needs_action,
         status=status,
+        requirement_result=requirement_result,
     )
     routes = list_routes_for_filter(db)
     suppliers = list_suppliers_for_filter(db)
@@ -343,6 +359,7 @@ def planning_suggestions(
             "routes": routes,
             "suppliers": suppliers,
             "statuses": ["Red", "Yellow", "Green", "Incomplete"],
+            "requirement_has_warnings": requirement_result.has_warnings,
             "error": error,
             "filters": {
                 "sku": sku.strip(),
@@ -1384,22 +1401,112 @@ def delete_route_activity(
     return _redirect(f"/routes/{route_id}")
 
 
+def _product_routes_redirect_url(
+    product_sku: str = "",
+    route_id: str = "",
+    route_status: str = "",
+    message: str = "",
+    error: str = "",
+) -> str:
+    params: list[str] = []
+    if product_sku.strip():
+        params.append(f"product_sku={quote(product_sku.strip())}")
+    if route_status.strip() == "no_route":
+        params.append("route_status=no_route")
+    elif route_id.strip():
+        params.append(f"route_id={quote(route_id.strip())}")
+    if message:
+        params.append(f"message={quote(message)}")
+    if error:
+        params.append(f"error={quote(error)}")
+    return "/product-routes" + (f"?{'&'.join(params)}" if params else "")
+
+
 @app.get("/product-routes", response_class=HTMLResponse)
 def product_routes(
     request: Request,
     product_sku: str = Query(""),
+    route_id: str = Query(""),
+    route_status: str = Query(""),
+    message: str | None = Query(default=None),
+    error: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     search_sku = product_sku.strip()
+    selected_route_id = route_id.strip()
+    selected_route_status = route_status.strip()
     product_query = db.query(Product).filter(Product.is_manufactured.is_(True))
     if search_sku:
         product_query = product_query.filter(Product.sku.ilike(f"%{search_sku}%"))
+    if selected_route_status == "no_route":
+        product_query = product_query.filter(Product.default_route_id.is_(None))
+        selected_route_id = ""
+    elif selected_route_id.isdigit():
+        product_query = product_query.filter(Product.default_route_id == int(selected_route_id))
     products = product_query.order_by(Product.sku).all()
     routes = db.query(Route).filter(Route.active.is_(True)).order_by(Route.code).all()
     return templates.TemplateResponse(
         request=request,
         name="product_routes.html",
-        context={"title": "Product Routes", "products": products, "routes": routes, "product_sku": search_sku},
+        context={
+            "title": "Product Routes",
+            "products": products,
+            "routes": routes,
+            "filters": {
+                "product_sku": search_sku,
+                "route_id": selected_route_id,
+                "route_status": selected_route_status,
+            },
+            "product_sku": search_sku,
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@app.post("/product-routes/bulk-assign")
+def bulk_assign_product_routes(
+    product_ids: list[int] = Form(default=[]),
+    bulk_route_id: str = Form(""),
+    product_sku: str = Form(""),
+    route_id: str = Form(""),
+    route_status: str = Form(""),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    if not product_ids:
+        return _redirect(
+            _product_routes_redirect_url(product_sku, route_id, route_status, error="Select at least one product.")
+        )
+    if not bulk_route_id.strip():
+        return _redirect(
+            _product_routes_redirect_url(product_sku, route_id, route_status, error="Choose a route to assign.")
+        )
+    if not bulk_route_id.strip().isdigit():
+        return _redirect(
+            _product_routes_redirect_url(product_sku, route_id, route_status, error="Selected route is not available.")
+        )
+
+    route = db.query(Route).filter(Route.id == int(bulk_route_id), Route.active.is_(True)).one_or_none()
+    if route is None:
+        return _redirect(
+            _product_routes_redirect_url(product_sku, route_id, route_status, error="Selected route is not available.")
+        )
+
+    products = (
+        db.query(Product)
+        .filter(Product.id.in_(product_ids), Product.is_manufactured.is_(True))
+        .all()
+    )
+    for product in products:
+        product.default_route_id = route.id
+    db.commit()
+    return _redirect(
+        _product_routes_redirect_url(
+            product_sku,
+            route_id,
+            route_status,
+            message=f"Route assigned to {len(products)} selected products.",
+        )
     )
 
 
@@ -1408,15 +1515,14 @@ def update_product_route(
     product_id: int,
     default_route_id: str = Form(""),
     product_sku: str = Form(""),
+    route_id: str = Form(""),
+    route_status: str = Form(""),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     product = db.query(Product).filter(Product.id == product_id).one()
     product.default_route_id = int(default_route_id) if default_route_id else None
     db.commit()
-    search_sku = product_sku.strip()
-    if search_sku:
-        return _redirect(f"/product-routes?product_sku={quote(search_sku)}")
-    return _redirect("/product-routes")
+    return _redirect(_product_routes_redirect_url(product_sku, route_id, route_status))
 
 
 @app.get("/production-orders", response_class=HTMLResponse)
