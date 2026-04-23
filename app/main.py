@@ -84,13 +84,18 @@ from app.services.planning_service import (
     PRODUCT_TYPE_PURCHASED,
     PlanningValidationError,
     build_customer_order_requirements,
+    build_mps_groups,
+    build_mrp_result,
     build_planning_rows,
+    clear_planner_quantities,
     list_inventory_parameter_products,
     list_routes_for_filter,
     list_suppliers_for_filter,
     normalize_product_type,
     parse_moq,
+    parse_planner_quantity,
     update_product_moqs,
+    update_product_planner_quantities,
 )
 from app.services.production_loyverse_inventory_preview_service import (
     ProductionInventoryPreviewError,
@@ -235,7 +240,6 @@ def planning_home(request: Request) -> HTMLResponse:
     )
 
 
-
 @app.get("/planning/customer-order-requirements", response_class=HTMLResponse)
 def customer_order_requirements(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     requirement_result = build_customer_order_requirements(db)
@@ -243,10 +247,11 @@ def customer_order_requirements(request: Request, db: Session = Depends(get_db))
         request=request,
         name="customer_order_requirements.html",
         context={
-            "title": "Req. Pedidos Clientes",
+            "title": "Customer Order Requirements",
             "result": requirement_result,
         },
     )
+
 
 @app.get("/planning/inventory-parameters", response_class=HTMLResponse)
 def inventory_parameters(
@@ -336,10 +341,12 @@ def planning_suggestions(
     status: str = Query(""),
     needs_action: bool = Query(False),
     error: str | None = Query(default=None),
+    message: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     normalized_type = normalize_product_type(product_type)
     requirement_result = build_customer_order_requirements(db)
+    mrp_result = build_mrp_result(db)
     rows = build_planning_rows(
         db,
         normalized_type,
@@ -349,6 +356,7 @@ def planning_suggestions(
         needs_action=needs_action,
         status=status,
         requirement_result=requirement_result,
+        mrp_result=mrp_result,
     )
     routes = list_routes_for_filter(db)
     suppliers = list_suppliers_for_filter(db)
@@ -356,14 +364,16 @@ def planning_suggestions(
         request=request,
         name="planning_suggestions.html",
         context={
-            "title": "Planning Suggestions",
+            "title": "Open DDMRP",
             "product_type": normalized_type,
             "rows": rows,
             "routes": routes,
             "suppliers": suppliers,
             "statuses": ["Red", "Yellow", "Green", "Incomplete"],
             "requirement_has_warnings": requirement_result.has_warnings,
+            "mrp_has_warnings": mrp_result.has_warnings,
             "error": error,
+            "message": message,
             "filters": {
                 "sku": sku.strip(),
                 "route_id": route_id.strip(),
@@ -375,6 +385,50 @@ def planning_suggestions(
     )
 
 
+@app.post("/planning/suggestions/planner-quantities")
+async def update_planner_quantities(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    product_type = normalize_product_type(str(form.get("product_type", PRODUCT_TYPE_MANUFACTURED)))
+    sku = str(form.get("sku", "")).strip()
+    route_id = str(form.get("route_id", "")).strip()
+    supplier = str(form.get("supplier", "")).strip()
+    status = str(form.get("status", "")).strip()
+    needs_action = str(form.get("needs_action", "")).lower() in {"1", "true", "yes", "on"}
+    quantity_inputs: dict[int, str] = {}
+    for key, value in form.items():
+        key_text = str(key)
+        if not key_text.startswith("planner_qty_"):
+            continue
+        product_id = int(key_text.replace("planner_qty_", "", 1))
+        quantity_inputs[product_id] = str(value)
+    try:
+        update_product_planner_quantities(db, quantity_inputs)
+        query = _planning_suggestions_query(product_type, sku, route_id, supplier, status, needs_action)
+        query += f"&message={quote('Planner quantities saved.')}"
+        return _redirect(f"/planning/suggestions?{query}")
+    except PlanningValidationError as exc:
+        db.rollback()
+        query = _planning_suggestions_query(product_type, sku, route_id, supplier, status, needs_action)
+        query += f"&error={quote(str(exc))}"
+        return _redirect(f"/planning/suggestions?{query}")
+
+
+@app.post("/planning/suggestions/clear-planner-quantities")
+def clear_planning_quantities(
+    product_type: str = Form(PRODUCT_TYPE_MANUFACTURED),
+    sku: str = Form(""),
+    route_id: str = Form(""),
+    supplier: str = Form(""),
+    status: str = Form(""),
+    needs_action: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Response:
+    clear_planner_quantities(db)
+    query = _planning_suggestions_query(product_type, sku, route_id, supplier, status, needs_action)
+    query += f"&message={quote('Planner quantities cleared.')}"
+    return _redirect(f"/planning/suggestions?{query}")
+
+
 @app.get("/planning/suggestions/create-production-order")
 def create_production_order_from_planning(
     product_id: int = Query(...),
@@ -383,7 +437,7 @@ def create_production_order_from_planning(
 ) -> Response:
     quantity_error = "Planner quantity must be numeric and greater than 0."
     try:
-        quantity = parse_moq(planner_qty)
+        quantity = parse_planner_quantity(planner_qty)
     except PlanningValidationError:
         return _redirect(f"/planning/suggestions?product_type=manufactured&error={quote(quantity_error)}")
 
@@ -407,6 +461,59 @@ def create_production_order_from_planning(
         )
 
     return _redirect(f"/production-orders/new?product_id={product.id}&planned_qty={quote(str(quantity))}")
+
+
+@app.get("/planning/mps", response_class=HTMLResponse)
+def mps_report(
+    request: Request,
+    sku: str = Query(""),
+    route_id: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    groups = build_mps_groups(db, sku=sku, route_id=route_id)
+    routes = list_routes_for_filter(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="mps_report.html",
+        context={
+            "title": "MPS",
+            "groups": groups,
+            "routes": routes,
+            "filters": {"sku": sku.strip(), "route_id": route_id.strip()},
+        },
+    )
+
+
+@app.get("/planning/mrp", response_class=HTMLResponse)
+def mrp_report(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    result = build_mrp_result(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="mrp_report.html",
+        context={"title": "MRP", "result": result},
+    )
+
+
+def _planning_suggestions_query(
+    product_type: str,
+    sku: str,
+    route_id: str,
+    supplier: str,
+    status: str,
+    needs_action: bool,
+) -> str:
+    query = f"product_type={quote(normalize_product_type(product_type))}"
+    if sku:
+        query += f"&sku={quote(sku)}"
+    if route_id:
+        query += f"&route_id={quote(route_id)}"
+    if supplier:
+        query += f"&supplier={quote(supplier)}"
+    if status:
+        query += f"&status={quote(status)}"
+    if needs_action:
+        query += "&needs_action=true"
+    return query
 
 @app.get("/b2b/customers", response_class=HTMLResponse)
 def b2b_customers(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:

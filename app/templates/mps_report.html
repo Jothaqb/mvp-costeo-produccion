@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>MPS</h1>
+    <p class="lead">Master Production Schedule from saved planner quantities for manufactured products.</p>
+  </section>
+
+  <section class="actions">
+    <a class="button" href="/planning/mrp">MRP</a>
+    <a class="button secondary" href="/planning/suggestions?product_type=manufactured">Open DDMRP</a>
+  </section>
+
+  <section>
+    <form method="get" action="/planning/mps" class="filter-form">
+      <label for="sku">SKU filter</label>
+      <input id="sku" name="sku" value="{{ filters.sku }}" placeholder="Search SKU">
+
+      <label for="route_id">Route</label>
+      <select id="route_id" name="route_id">
+        <option value="">All routes</option>
+        {% for route in routes %}
+          <option value="{{ route.id }}" {% if filters.route_id == route.id|string %}selected{% endif %}>{{ route.code }} - {{ route.name }}</option>
+        {% endfor %}
+      </select>
+
+      <a class="button secondary" href="/planning/mps">Clear filters</a>
+      <button type="submit">Filter</button>
+    </form>
+  </section>
+
+  {% for group in groups %}
+    <section>
+      <h2>{{ group.route_label }}</h2>
+      {% if group.has_route_warning %}<p class="error">Products in this group do not have a route assigned.</p>{% endif %}
+      <table>
+        <thead>
+          <tr>
+            <th>SKU</th>
+            <th>Description</th>
+            <th>Cost</th>
+            <th>MOQ</th>
+            <th>Planner quantity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in group.rows %}
+            <tr>
+              <td>{{ row.product.sku }}</td>
+              <td>{{ row.product.name }}</td>
+              <td>{{ fmt.money_crc(row.product.standard_cost) }}</td>
+              <td>{{ fmt.number_3(row.product.planning_moq) }}</td>
+              <td>{{ fmt.number_3(row.product.planning_quantity) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% else %}
+    <section><p>No manufactured products with saved planner quantity found.</p></section>
+  {% endfor %}
+{% endblock %}

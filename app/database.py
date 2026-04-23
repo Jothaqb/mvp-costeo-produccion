@@ -68,6 +68,7 @@ def ensure_product_planning_columns() -> None:
                 "low_stock_qty": "NUMERIC(12, 4)",
                 "optimal_stock_qty": "NUMERIC(12, 4)",
                 "planning_moq": "NUMERIC(12, 4)",
+                "planning_quantity": "NUMERIC(12, 4)",
             },
         )
 

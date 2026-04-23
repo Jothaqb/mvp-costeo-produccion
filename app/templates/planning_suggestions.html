@@ -4,16 +4,19 @@
 {% block content %}
   <section class="page-hero">
     <p class="eyebrow">Planning</p>
-    <h1>Planning Suggestions</h1>
-    <p class="lead">Review simple replenishment signals from current inventory, zones, and MOQ.</p>
+    <h1>Open DDMRP</h1>
+    <p class="lead">Review replenishment signals from current inventory, direct customer demand, MRP demand, zones, MOQ, and saved planner quantities.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
-  {% if requirement_has_warnings %}<p class="error">Customer order requirement contains warnings/omissions. Review <a href="/planning/customer-order-requirements">Req. Pedidos Clientes</a>.</p>{% endif %}
+  {% if message %}<p>{{ message }}</p>{% endif %}
+  {% if requirement_has_warnings %}<p class="error">Customer Order Requirements contain warnings/omissions. Review <a href="/planning/customer-order-requirements">Customer Order Requirements</a>.</p>{% endif %}
+  {% if product_type == 'purchased' and mrp_has_warnings %}<p class="error">MRP contains warnings/omissions. Review <a href="/planning/mrp">MRP</a>.</p>{% endif %}
 
   <section class="actions">
     <a class="button{% if product_type != 'manufactured' %} secondary{% endif %}" href="/planning/suggestions?product_type=manufactured">Manufactured Products</a>
     <a class="button{% if product_type != 'purchased' %} secondary{% endif %}" href="/planning/suggestions?product_type=purchased">Purchased Products</a>
+    <a class="button secondary" href="/planning/mps">MPS</a>
   </section>
 
   <section>
@@ -48,14 +51,33 @@
         {% endfor %}
       </select>
 
-      {% if product_type == 'manufactured' %}
-        <label><input type="checkbox" name="needs_action" value="true" {% if filters.needs_action %}checked{% endif %}> Needs production only</label>
-        <a class="button secondary" href="/planning/suggestions?product_type=manufactured">Clear filters</a>
-      {% else %}
-        <a class="button secondary" href="/planning/suggestions?product_type=purchased">Clear filters</a>
-      {% endif %}
+      <label><input type="checkbox" name="needs_action" value="true" {% if filters.needs_action %}checked{% endif %}> Needs action only</label>
+      <a class="button secondary" href="/planning/suggestions?product_type={{ product_type }}">Clear filters</a>
       <button type="submit">Filter</button>
     </form>
+  </section>
+
+  <form id="planner-quantity-form" method="post" action="/planning/suggestions/planner-quantities">
+    <input type="hidden" name="product_type" value="{{ product_type }}">
+    <input type="hidden" name="sku" value="{{ filters.sku }}">
+    <input type="hidden" name="route_id" value="{{ filters.route_id }}">
+    <input type="hidden" name="supplier" value="{{ filters.supplier }}">
+    <input type="hidden" name="status" value="{{ filters.status }}">
+    {% if filters.needs_action %}<input type="hidden" name="needs_action" value="true">{% endif %}
+  </form>
+
+  <form id="clear-planner-quantities-form" method="post" action="/planning/suggestions/clear-planner-quantities" onsubmit="return confirm('Clear all saved planner quantities? MOQ and filters will not be changed.');">
+    <input type="hidden" name="product_type" value="{{ product_type }}">
+    <input type="hidden" name="sku" value="{{ filters.sku }}">
+    <input type="hidden" name="route_id" value="{{ filters.route_id }}">
+    <input type="hidden" name="supplier" value="{{ filters.supplier }}">
+    <input type="hidden" name="status" value="{{ filters.status }}">
+    {% if filters.needs_action %}<input type="hidden" name="needs_action" value="true">{% endif %}
+  </form>
+
+  <section class="actions">
+    <button type="submit" form="planner-quantity-form">Save planner quantities</button>
+    <button type="submit" form="clear-planner-quantities-form" class="secondary">Clear planner quantities</button>
   </section>
 
   <section>
@@ -71,8 +93,9 @@
           <th>Yellow zone</th>
           <th>Green zone</th>
           <th>Inventory</th>
-          <th>Req. Pedidos Clientes</th>
-          <th>Inventory disponible</th>
+          <th>Customer Order Requirements</th>
+          {% if product_type == 'purchased' %}<th>MRP</th>{% endif %}
+          <th>Inventory Available</th>
           <th>Status</th>
           <th>Suggested quantity</th>
           <th>Planner quantity</th>
@@ -97,11 +120,12 @@
             <td>{{ fmt.number_3(row.green_zone) }}</td>
             <td>{{ fmt.number_3(product.current_inventory_qty) }}</td>
             <td>{{ fmt.number_3(row.customer_order_requirement) }}</td>
+            {% if product_type == 'purchased' %}<td>{{ fmt.number_3(row.mrp_requirement) }}</td>{% endif %}
             <td>{{ fmt.number_3(row.inventory_available) }}</td>
             <td><span class="status-pill status-{{ row.status|lower }}">{{ row.status }}</span></td>
             <td>{{ fmt.number_3(row.suggested_quantity) }}</td>
+            <td><input id="planner_qty_{{ product.id }}" form="planner-quantity-form" name="planner_qty_{{ product.id }}" inputmode="decimal" value="{{ fmt.number_3(product.planning_quantity) }}" placeholder="Quantity"></td>
             {% if product_type == 'manufactured' %}
-              <td><input id="planner_qty_{{ product.id }}" inputmode="decimal" placeholder="Quantity" required></td>
               <td>
                 <form method="get" action="/planning/suggestions/create-production-order" onsubmit="this.planner_qty.value = document.getElementById('planner_qty_{{ product.id }}').value;">
                   <input type="hidden" name="product_id" value="{{ product.id }}">
@@ -109,12 +133,10 @@
                   <button type="submit">Create OP</button>
                 </form>
               </td>
-            {% else %}
-              <td><input name="planner_qty_{{ product.id }}" inputmode="decimal" placeholder="Quantity"></td>
             {% endif %}
           </tr>
         {% else %}
-          <tr><td colspan="{% if product_type == 'manufactured' %}15{% else %}14{% endif %}">No products found.</td></tr>
+          <tr><td colspan="{% if product_type == 'manufactured' %}15{% else %}15{% endif %}">No products found.</td></tr>
         {% endfor %}
       </tbody>
     </table>

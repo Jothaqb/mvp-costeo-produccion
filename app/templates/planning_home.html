@@ -4,7 +4,7 @@
   <section class="page-hero">
     <p class="eyebrow">Planning</p>
     <h1>Inventory Planning</h1>
-    <p class="lead">Maintain planning parameters and review simple replenishment suggestions from the latest imported product snapshot.</p>
+    <p class="lead">Maintain planning parameters, review open demand, and prepare light MPS and MRP reports from saved planner quantities.</p>
   </section>
 
   <section class="module-grid" aria-label="Planning sections">
@@ -20,19 +20,28 @@
     <a class="module-card module-link-card" href="/planning/customer-order-requirements" aria-label="Open Customer Order Requirements">
       <div>
         <p class="eyebrow">Demand</p>
-        <h2>Req. Pedidos Clientes</h2>
-        <p>Review open B2B demand, direct requirements, and two-level BOM exploded requirements.</p>
+        <h2>Customer Order Requirements</h2>
+        <p>Review direct open B2B demand consolidated by ordered SKU.</p>
       </div>
       <span class="module-entry">Open Requirements</span>
     </a>
 
-    <a class="module-card module-link-card" href="/planning/suggestions" aria-label="Open Planning Suggestions">
+    <a class="module-card module-link-card" href="/planning/suggestions" aria-label="Open DDMRP">
       <div>
         <p class="eyebrow">Action</p>
-        <h2>Planning</h2>
-        <p>Review inventory status and suggested quantities for products that need production or purchase attention.</p>
+        <h2>Open DDMRP</h2>
+        <p>Review inventory status, customer demand, MRP demand, and suggested quantities.</p>
       </div>
-      <span class="module-entry">Open Planning</span>
+      <span class="module-entry">Open DDMRP</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/planning/mps" aria-label="Open MPS">
+      <div>
+        <p class="eyebrow">Schedule</p>
+        <h2>MPS</h2>
+        <p>Group manufactured products with saved planner quantities by production route.</p>
+      </div>
+      <span class="module-entry">Open MPS</span>
     </a>
   </section>
 {% endblock %}
