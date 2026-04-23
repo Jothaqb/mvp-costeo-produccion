@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Production</p>
+    <h1>Production</h1>
+    <p class="lead">Access import, production orders, and route configuration from one clean production workspace.</p>
+  </section>
+
+  <section class="module-grid" aria-label="Production sections">
+    <article class="module-card">
+      <div>
+        <p class="eyebrow">Input</p>
+        <h2>Import CSV</h2>
+        <p>Import the latest CSV data and review imported records from the same entry flow.</p>
+      </div>
+      <div class="module-card-actions">
+        <a class="module-entry" href="/imports/new">Open Import CSV</a>
+        <a class="button secondary" href="/imports">Open Imported Data</a>
+      </div>
+    </article>
+
+    <a class="module-card module-link-card" href="/production-orders" aria-label="Open Production Orders">
+      <div>
+        <p class="eyebrow">Execution</p>
+        <h2>Production Orders</h2>
+        <p>Review, create, and manage production orders from the operational production flow.</p>
+      </div>
+      <span class="module-entry">Open Production Orders</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/production/routes" aria-label="Open Production Routes">
+      <div>
+        <p class="eyebrow">Configuration</p>
+        <h2>Production Routes</h2>
+        <p>Open the route-configuration area for resources, activities, routes, product routes, and rates.</p>
+      </div>
+      <span class="module-entry">Open Production Routes</span>
+    </a>
+  </section>
+{% endblock %}

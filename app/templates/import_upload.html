@@ -1,8 +1,17 @@
 {% extends "base.html" %}
 
 {% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Production</p>
+    <h1>Import CSV</h1>
+    <p class="lead">Import the latest CSV file and jump directly to imported records from the same flow.</p>
+  </section>
+
+  <section class="actions">
+    <a class="button secondary" href="/imports">Open Imported Data</a>
+  </section>
+
   <section>
-    <h1>Import Loyverse CSV</h1>
     <form action="/imports" method="post" enctype="multipart/form-data">
       <label for="file">CSV file</label>
       <input id="file" name="file" type="file" accept=".csv,text/csv" required>

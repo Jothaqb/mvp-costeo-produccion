@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Production</p>
+    <h1>Production Routes</h1>
+    <p class="lead">Open the route-building resources and configuration areas from a single production routes workspace.</p>
+  </section>
+
+  <section class="module-grid" aria-label="Production route sections">
+    <a class="module-card module-link-card" href="/machines" aria-label="Open Resources">
+      <div>
+        <p class="eyebrow">Resources</p>
+        <h2>Resources</h2>
+        <p>Manage the production resources used across routes and operational setup.</p>
+      </div>
+      <span class="module-entry">Open Resources</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/activities" aria-label="Open Activities">
+      <div>
+        <p class="eyebrow">Activities</p>
+        <h2>Activities</h2>
+        <p>Maintain the activity catalog used across routes and production costing flows.</p>
+      </div>
+      <span class="module-entry">Open Activities</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/routes" aria-label="Open Routes">
+      <div>
+        <p class="eyebrow">Routes</p>
+        <h2>Routes</h2>
+        <p>Review and maintain route definitions for the production process.</p>
+      </div>
+      <span class="module-entry">Open Routes</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/product-routes" aria-label="Open Product Routes">
+      <div>
+        <p class="eyebrow">Assignments</p>
+        <h2>Product Routes</h2>
+        <p>Assign and review route selection for production products.</p>
+      </div>
+      <span class="module-entry">Open Product Routes</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/rates" aria-label="Open Rates">
+      <div>
+        <p class="eyebrow">Rates</p>
+        <h2>Rates</h2>
+        <p>Maintain labor, overhead, and machine rate settings used by production costing.</p>
+      </div>
+      <span class="module-entry">Open Rates</span>
+    </a>
+  </section>
+{% endblock %}

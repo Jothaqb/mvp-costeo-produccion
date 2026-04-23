@@ -231,6 +231,33 @@ def dashboard(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/production", response_class=HTMLResponse)
+def production_home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="production_home.html",
+        context={"title": "Production"},
+    )
+
+
+@app.get("/production/routes", response_class=HTMLResponse)
+def production_routes_home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="production_routes_home.html",
+        context={"title": "Production Routes"},
+    )
+
+
+@app.get("/sales", response_class=HTMLResponse)
+def sales_home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="sales_home.html",
+        context={"title": "Sales"},
+    )
+
+
 @app.get("/planning", response_class=HTMLResponse)
 def planning_home(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(

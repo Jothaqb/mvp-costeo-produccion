@@ -8,9 +8,10 @@
   </head>
   <body>
     {% set path = request.url.path %}
-    {% set is_sales = path == "/b2b" or path.startswith("/b2b/") %}
+    {% set is_sales = path == "/sales" or path.startswith("/sales/") or path == "/b2b" or path.startswith("/b2b/") %}
     {% set is_planning = path == "/planning" or path.startswith("/planning/") %}
-    {% set is_production = path == "/imports" or path.startswith("/imports/") or path == "/activities" or path.startswith("/activities/") or path == "/machines" or path.startswith("/machines/") or path == "/routes" or path.startswith("/routes/") or path == "/product-routes" or path.startswith("/product-routes/") or path == "/rates" or path.startswith("/rates/") or path == "/production-orders" or path.startswith("/production-orders/") %}
+    {% set is_production_routes = path == "/production/routes" or path.startswith("/production/routes/") or path == "/activities" or path.startswith("/activities/") or path == "/machines" or path.startswith("/machines/") or path == "/routes" or path.startswith("/routes/") or path == "/product-routes" or path.startswith("/product-routes/") or path == "/rates" or path.startswith("/rates/") %}
+    {% set is_production = path == "/production" or path.startswith("/production/") or path == "/imports" or path.startswith("/imports/") or path == "/production-orders" or path.startswith("/production-orders/") or is_production_routes %}
     <header class="site-header">
       <nav class="top-nav" aria-label="Main navigation">
         <a class="brand" href="/">Green Corner</a>
@@ -18,17 +19,22 @@
           <a class="nav-link" href="/">Home</a>
           {% if is_production %}
             <span class="nav-context">Production</span>
+            <a class="nav-link" href="/production">Production</a>
             <a class="nav-link" href="/imports/new">Import CSV</a>
-            <a class="nav-link" href="/imports">Imported Data</a>
-            <a class="nav-link" href="/activities">Activities</a>
-            <a class="nav-link" href="/machines">Machines</a>
-            <a class="nav-link" href="/routes">Routes</a>
-            <a class="nav-link" href="/product-routes">Product Routes</a>
-            <a class="nav-link" href="/rates">Rates</a>
             <a class="nav-link" href="/production-orders">Production Orders</a>
+            <a class="nav-link" href="/production/routes">Production Routes</a>
+            {% if is_production_routes %}
+              <a class="nav-link" href="/machines">Resources</a>
+              <a class="nav-link" href="/activities">Activities</a>
+              <a class="nav-link" href="/routes">Routes</a>
+              <a class="nav-link" href="/product-routes">Product Routes</a>
+              <a class="nav-link" href="/rates">Rates</a>
+            {% endif %}
           {% elif is_sales %}
             <span class="nav-context">Sales</span>
-            <a class="nav-link" href="/b2b/orders">B2B Sales</a>
+            <a class="nav-link" href="/sales">Sales</a>
+            <a class="nav-link" href="/b2b/orders">B2B Sales Orders</a>
+            <a class="nav-link" href="/b2b/customers">B2B Customers</a>
             <a class="nav-link" href="/b2b/loyverse-mappings">B2B Loyverse</a>
           {% elif is_planning %}
             <span class="nav-context">Planning</span>

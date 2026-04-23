@@ -454,3 +454,10 @@ button:focus,
   max-width: 140px;
   margin-bottom: 0;
 }
+
+.module-card-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}

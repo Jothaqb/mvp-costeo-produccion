@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Sales</p>
+    <h1>Sales</h1>
+    <p class="lead">Open the main B2B sales areas from one clean commercial workspace.</p>
+  </section>
+
+  <section class="module-grid" aria-label="Sales sections">
+    <a class="module-card module-link-card" href="/b2b/orders" aria-label="Open B2B Sales Orders">
+      <div>
+        <p class="eyebrow">Orders</p>
+        <h2>B2B Sales Orders</h2>
+        <p>Review and manage B2B sales orders from the current commercial workflow.</p>
+      </div>
+      <span class="module-entry">Open B2B Sales Orders</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/b2b/customers" aria-label="Open B2B Customers">
+      <div>
+        <p class="eyebrow">Customers</p>
+        <h2>B2B Customers</h2>
+        <p>Maintain customer master data and access customer-specific commercial setup.</p>
+      </div>
+      <span class="module-entry">Open B2B Customers</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/b2b/loyverse-mappings" aria-label="Open B2B Loyverse">
+      <div>
+        <p class="eyebrow">Integration</p>
+        <h2>B2B Loyverse</h2>
+        <p>Review mappings and invoicing readiness for the B2B Loyverse integration flow.</p>
+      </div>
+      <span class="module-entry">Open B2B Loyverse</span>
+    </a>
+  </section>
+{% endblock %}
