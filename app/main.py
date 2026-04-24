@@ -89,6 +89,7 @@ from app.services.planning_loyverse_refresh_service import (
 from app.services.purchase_order_service import (
     PurchaseOrderValidationError,
     build_purchase_order_prefill,
+    close_purchase_order,
     create_purchase_order,
     list_all_product_suppliers,
     list_purchase_order_suppliers,
@@ -770,7 +771,12 @@ def purchase_order_detail(request: Request, po_id: int, db: Session = Depends(ge
     return templates.TemplateResponse(
         request=request,
         name="purchase_order_detail.html",
-        context={"title": f"Purchase Order {order.po_number}", "order": order, "error": None},
+        context={
+            "title": f"Purchase Order {order.po_number}",
+            "order": order,
+            "error": request.query_params.get("error"),
+            "message": request.query_params.get("message"),
+        },
     )
 
 
@@ -786,7 +792,7 @@ def edit_purchase_order(request: Request, po_id: int, db: Session = Depends(get_
     )
     if order.status != "draft":
         return _redirect(
-            f"/planning/purchase-orders/{order.id}?error={quote('Issued purchase orders are read-only.')}"
+            f"/planning/purchase-orders/{order.id}?error={quote(f'Purchase orders in status {order.status} are read-only.')}"
         )
     order_data = {
         "supplier": order.supplier_name_snapshot,
@@ -867,6 +873,16 @@ async def update_purchase_order_route(request: Request, po_id: int, db: Session 
                 error=str(exc),
             ),
         )
+
+
+@app.post("/planning/purchase-orders/{po_id}/close")
+def close_purchase_order_route(po_id: int, db: Session = Depends(get_db)) -> Response:
+    try:
+        order = close_purchase_order(db, po_id)
+        return _redirect(f"/planning/purchase-orders/{order.id}?message={quote('Purchase Order closed.')}")
+    except PurchaseOrderValidationError as exc:
+        db.rollback()
+        return _redirect(f"/planning/purchase-orders/{po_id}?error={quote(str(exc))}")
 @app.get("/planning/mps", response_class=HTMLResponse)
 def mps_report(
     request: Request,

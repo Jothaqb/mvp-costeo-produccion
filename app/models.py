@@ -225,7 +225,7 @@ class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft', 'issued')",
+            "status IN ('draft', 'issued', 'closed')",
             name="ck_purchase_orders_status",
         ),
     )

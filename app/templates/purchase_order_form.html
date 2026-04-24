@@ -23,11 +23,9 @@
       <label for="po_date">Date</label>
       <input id="po_date" name="po_date" type="date" value="{{ order_data.po_date }}" required>
 
-      <label for="status">Status</label>
-      <select id="status" name="status">
-        <option value="draft" {% if order_data.status == 'draft' %}selected{% endif %}>Draft</option>
-        <option value="issued" {% if order_data.status == 'issued' %}selected{% endif %}>Issued</option>
-      </select>
+      <label>Status</label>
+      <p class="muted-inline">Draft</p>
+      <input type="hidden" name="status" value="draft">
 
       <label for="notes">Notes</label>
       <textarea id="notes" name="notes">{{ order_data.notes or '' }}</textarea>
@@ -52,6 +50,8 @@
             {% if line and (line.sku or line.description) %}
               {% set line_lookup = ((line.sku or '') ~ ' - ' ~ (line.description or '')).strip(' -') %}
             {% endif %}
+            {% set line_quantity_value = '{:.3f}'.format(line.quantity) if line and line.quantity is not none else '' %}
+            {% set line_unit_cost_value = '{:.3f}'.format(line.unit_cost) if line and line.unit_cost is not none else '' %}
             <tr class="po-order-line">
               <td class="lookup-cell">
                 <input
@@ -67,8 +67,8 @@
                 <input class="po-sku-input" name="line_sku_{{ index }}" value="{{ line.sku if line else '' }}" required>
               </td>
               <td><input class="po-description-input" name="line_description_{{ index }}" value="{{ line.description if line else '' }}" required></td>
-              <td><input class="po-quantity-input" name="line_quantity_{{ index }}" inputmode="decimal" value="{{ fmt.number_3(line.quantity) if line and line.quantity is not none else '' }}" required></td>
-              <td><input class="po-unit-cost-input" name="line_unit_cost_{{ index }}" inputmode="decimal" value="{{ fmt.number_3(line.unit_cost) if line and line.unit_cost is not none else '' }}" required></td>
+              <td><input class="po-quantity-input" name="line_quantity_{{ index }}" inputmode="decimal" value="{{ line_quantity_value }}" required></td>
+              <td><input class="po-unit-cost-input" name="line_unit_cost_{{ index }}" inputmode="decimal" value="{{ line_unit_cost_value }}" required></td>
               <td class="po-line-total"></td>
               <td><button type="button" class="po-remove-line secondary">Remove</button></td>
             </tr>
@@ -82,7 +82,7 @@
             value="{{ product.lookup_label }}"
             data-sku="{{ product.sku }}"
             data-name="{{ product.name }}"
-            data-unit-cost="{{ fmt.number_3(product.unit_cost) if product.unit_cost is not none else '' }}"
+            data-unit-cost="{{ '{:.3f}'.format(product.unit_cost) if product.unit_cost is not none else '' }}"
           ></option>
         {% endfor %}
       </datalist>
@@ -122,7 +122,21 @@
 
   <script>
     function poNumber(value) {
-      const parsed = Number(String(value || "").replace(",", "."));
+      const raw = String(value || "").trim().replace(/\s+/g, "");
+      if (!raw) {
+        return 0;
+      }
+      let normalized = raw;
+      if (normalized.includes(",") && normalized.includes(".")) {
+        normalized = normalized.replace(/,/g, "");
+      } else if (normalized.includes(",")) {
+        normalized = normalized.replace(/,/g, ".");
+      }
+      const dotParts = normalized.split(".");
+      if (dotParts.length > 2) {
+        normalized = dotParts.slice(0, -1).join("") + "." + dotParts[dotParts.length - 1];
+      }
+      const parsed = Number(normalized);
       return Number.isFinite(parsed) ? parsed : 0;
     }
 
@@ -182,7 +196,7 @@
       skuInput.value = match.dataset.sku || "";
       descriptionInput.value = match.dataset.name || "";
       unitCostInput.value = match.dataset.unitCost || "";
-      poRecalculate();
+      window.requestAnimationFrame(poRecalculate);
     }
 
     document.querySelectorAll('input[name="line_index"]').forEach((input) => {
@@ -199,14 +213,23 @@
           return;
         }
         if (event.target.matches(".po-quantity-input, .po-unit-cost-input")) {
-          poRecalculate();
+          window.requestAnimationFrame(poRecalculate);
         }
       });
       poLinesBody.addEventListener("change", (event) => {
         if (event.target.matches(".po-product-lookup")) {
           poApplyLookupSelection(event.target.closest(".po-order-line"));
+          return;
+        }
+        if (event.target.matches(".po-quantity-input, .po-unit-cost-input")) {
+          window.requestAnimationFrame(poRecalculate);
         }
       });
+      poLinesBody.addEventListener("blur", (event) => {
+        if (event.target.matches(".po-quantity-input, .po-unit-cost-input")) {
+          poRecalculate();
+        }
+      }, true);
       poLinesBody.addEventListener("click", (event) => {
         if (!event.target.matches(".po-remove-line")) {
           return;

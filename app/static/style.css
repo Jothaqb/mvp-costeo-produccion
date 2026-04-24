@@ -443,6 +443,21 @@ button:focus,
   color: #53636f;
   background: #e6ecef;
 }
+
+.status-draft {
+  color: #fff;
+  background: #53636f;
+}
+
+.status-issued {
+  color: #17212b;
+  background: #d7dee3;
+}
+
+.status-closed {
+  color: #fff;
+  background: #17212b;
+}
 .filter-form input[type="checkbox"] {
   display: inline-block;
   width: auto;

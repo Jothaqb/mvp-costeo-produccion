@@ -8,7 +8,7 @@ from app.models import AppSequence, Product, PurchaseOrder, PurchaseOrderLine
 
 PURCHASE_ORDER_SEQUENCE_NAME = "purchase_order"
 PURCHASE_ORDER_PREFIX = "PO"
-PURCHASE_ORDER_STATUSES = {"draft", "issued"}
+PURCHASE_ORDER_STATUSES = {"draft", "issued", "closed"}
 EDITABLE_STATUSES = {"draft"}
 ZERO = Decimal("0")
 
@@ -35,7 +35,7 @@ def create_purchase_order(
     notes: str,
     line_inputs: list[dict[str, str]],
 ) -> PurchaseOrder:
-    normalized_status = _normalize_status(status)
+    normalized_status = _normalize_save_status(status)
     supplier_name = _normalize_supplier(supplier)
     line_data = _build_line_data(supplier_name, line_inputs, require_at_least_one=True)
     order = PurchaseOrder(
@@ -66,7 +66,7 @@ def update_purchase_order(
 ) -> PurchaseOrder:
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).one()
     _ensure_order_editable(order)
-    normalized_status = _normalize_status(status)
+    normalized_status = _normalize_save_status(status)
     supplier_name = _normalize_supplier(supplier)
     line_data = _build_line_data(supplier_name, line_inputs, require_at_least_one=True)
     order.supplier_name_snapshot = supplier_name
@@ -75,6 +75,16 @@ def update_purchase_order(
     order.notes = notes.strip() or None
     _replace_lines(order, line_data)
     _recalculate_order_total(order)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+def close_purchase_order(db: Session, order_id: int) -> PurchaseOrder:
+    order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).one()
+    if order.status != "draft":
+        raise PurchaseOrderValidationError("Only draft purchase orders can be closed.")
+    order.status = "closed"
     db.commit()
     db.refresh(order)
     return order
@@ -132,6 +142,13 @@ def _normalize_status(status: str) -> str:
     normalized = (status or "draft").strip().lower()
     if normalized not in PURCHASE_ORDER_STATUSES:
         raise PurchaseOrderValidationError("Invalid status.")
+    return normalized
+
+
+def _normalize_save_status(status: str) -> str:
+    normalized = _normalize_status(status)
+    if normalized != "draft":
+        raise PurchaseOrderValidationError("Purchase Orders can only be saved in Draft. Use Close Purchase Order to finalize.")
     return normalized
 
 
@@ -207,7 +224,7 @@ def _recalculate_order_total(order: PurchaseOrder) -> None:
 
 def _ensure_order_editable(order: PurchaseOrder) -> None:
     if order.status not in EDITABLE_STATUSES:
-        raise PurchaseOrderValidationError("Issued purchase orders are read-only.")
+        raise PurchaseOrderValidationError(f"Purchase orders in status {order.status} are read-only.")
 
 
 def _generate_purchase_order_number(db: Session) -> str:

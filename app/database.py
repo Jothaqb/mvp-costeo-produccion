@@ -297,6 +297,69 @@ def ensure_purchase_order_tables() -> None:
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_purchase_order_lines_purchase_order_id ON purchase_order_lines (purchase_order_id)"
         )
+        _ensure_purchase_order_status_supports_closed(connection)
+
+
+def _ensure_purchase_order_status_supports_closed(connection) -> None:
+    create_sql_row = connection.exec_driver_sql(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='purchase_orders'"
+    ).fetchone()
+    create_sql = (create_sql_row[0] or "") if create_sql_row else ""
+    if "'closed'" in create_sql:
+        return
+
+    connection.exec_driver_sql("ALTER TABLE purchase_orders RENAME TO purchase_orders_old")
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE purchase_orders (
+            id INTEGER NOT NULL PRIMARY KEY,
+            po_number VARCHAR(100) NOT NULL UNIQUE,
+            supplier_name_snapshot VARCHAR(255) NOT NULL,
+            po_date DATE NOT NULL,
+            status VARCHAR(50) NOT NULL,
+            notes TEXT,
+            estimated_total NUMERIC(12, 4) NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        INSERT INTO purchase_orders (
+            id,
+            po_number,
+            supplier_name_snapshot,
+            po_date,
+            status,
+            notes,
+            estimated_total,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            po_number,
+            supplier_name_snapshot,
+            po_date,
+            status,
+            notes,
+            estimated_total,
+            created_at,
+            updated_at
+        FROM purchase_orders_old
+        """
+    )
+    connection.exec_driver_sql("DROP TABLE purchase_orders_old")
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_purchase_orders_po_number ON purchase_orders (po_number)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_purchase_orders_po_date ON purchase_orders (po_date)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_purchase_orders_supplier_name_snapshot ON purchase_orders (supplier_name_snapshot)"
+    )
 
 def ensure_b2b_loyverse_mapping_tables() -> None:
     if engine.dialect.name != "sqlite":

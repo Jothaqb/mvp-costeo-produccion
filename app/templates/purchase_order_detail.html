@@ -9,6 +9,7 @@
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if message %}<p class="success">{{ message }}</p>{% endif %}
 
   <section>
     <dl class="summary">
@@ -25,6 +26,9 @@
     <a class="button secondary" href="/planning/purchase-orders">Back to Purchase Orders</a>
     {% if order.status == 'draft' %}
       <a class="button" href="/planning/purchase-orders/{{ order.id }}/edit">Edit Draft</a>
+      <form method="post" action="/planning/purchase-orders/{{ order.id }}/close" onsubmit="return confirm('Close this Purchase Order? It will become read-only and will not adjust inventory in this sprint.');">
+        <button type="submit" class="button secondary">Close Purchase Order</button>
+      </form>
     {% endif %}
   </section>
 
