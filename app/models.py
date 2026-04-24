@@ -23,6 +23,8 @@ class Product(Base):
     available_for_sale_gc: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     supplier: Mapped[str | None] = mapped_column(String(255), nullable=True)
     current_inventory_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    loyverse_inventory_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    loyverse_cost_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     low_stock_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     optimal_stock_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     planning_moq: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)

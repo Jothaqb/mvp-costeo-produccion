@@ -75,7 +75,30 @@
     {% if filters.needs_action %}<input type="hidden" name="needs_action" value="true">{% endif %}
   </form>
 
+  <form id="refresh-inventory-cost-form" method="post" action="/planning/suggestions/refresh-inventory-cost">
+    <input type="hidden" name="product_type" value="{{ product_type }}">
+    <input type="hidden" name="sku" value="{{ filters.sku }}">
+    <input type="hidden" name="route_id" value="{{ filters.route_id }}">
+    <input type="hidden" name="supplier" value="{{ filters.supplier }}">
+    <input type="hidden" name="status" value="{{ filters.status }}">
+    {% if filters.needs_action %}<input type="hidden" name="needs_action" value="true">{% endif %}
+  </form>
+
+  <section>
+    <dl class="summary">
+      <div>
+        <dt>Last inventory sync</dt>
+        <dd>{{ view_sync_summary.inventory_last_sync }}</dd>
+      </div>
+      <div>
+        <dt>Last cost sync</dt>
+        <dd>{{ view_sync_summary.cost_last_sync }}</dd>
+      </div>
+    </dl>
+  </section>
+
   <section class="actions">
+    <button type="submit" form="refresh-inventory-cost-form">Refresh inventory and cost</button>
     <button type="submit" form="planner-quantity-form">Save planner quantities</button>
     <button type="submit" form="clear-planner-quantities-form" class="secondary">Clear planner quantities</button>
   </section>

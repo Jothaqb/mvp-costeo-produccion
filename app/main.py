@@ -82,6 +82,10 @@ from app.services.config_service import (
 )
 from app.services.import_service import import_loyverse_csv
 from app.services.loyverse_service import sync_closed_order_cost_to_loyverse
+from app.services.planning_loyverse_refresh_service import (
+    PlanningLoyverseRefreshError,
+    refresh_planning_inventory_and_cost,
+)
 from app.services.purchase_order_service import (
     PurchaseOrderValidationError,
     build_purchase_order_prefill,
@@ -502,6 +506,7 @@ def planning_suggestions(
             "statuses": ["Red", "Yellow", "Green", "Incomplete"],
             "requirement_has_warnings": requirement_result.has_warnings,
             "mrp_has_warnings": mrp_result.has_warnings,
+            "view_sync_summary": _planning_view_sync_summary(rows),
             "error": error,
             "message": message,
             "filters": {
@@ -513,6 +518,38 @@ def planning_suggestions(
             },
         },
     )
+
+
+@app.post("/planning/suggestions/refresh-inventory-cost")
+def refresh_planning_inventory_and_cost_route(
+    product_type: str = Form(PRODUCT_TYPE_MANUFACTURED),
+    sku: str = Form(""),
+    route_id: str = Form(""),
+    supplier: str = Form(""),
+    status: str = Form(""),
+    needs_action: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Response:
+    query = _planning_suggestions_query(product_type, sku, route_id, supplier, status, needs_action)
+    try:
+        result = refresh_planning_inventory_and_cost(
+            db,
+            normalize_product_type(product_type),
+            sku=sku,
+            route_id=route_id,
+            supplier=supplier,
+            status=status,
+            needs_action=needs_action,
+        )
+        message = (
+            f"Inventory refreshed: {result.inventory_refreshed_count}. "
+            f"Cost refreshed: {result.cost_refreshed_count}. "
+            f"Warnings: {result.warning_count}."
+        )
+        return _redirect(f"/planning/suggestions?{query}&message={quote(message)}")
+    except PlanningLoyverseRefreshError as exc:
+        db.rollback()
+        return _redirect(f"/planning/suggestions?{query}&error={quote(str(exc))}")
 
 
 @app.post("/planning/suggestions/planner-quantities")
@@ -881,6 +918,29 @@ def _planning_suggestions_query(
     if needs_action:
         query += "&needs_action=true"
     return query
+
+
+def _format_sync_timestamp(value: datetime | None) -> str:
+    if value is None:
+        return "Not synced yet"
+    return value.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _planning_view_sync_summary(rows: list) -> dict[str, str]:
+    inventory_times = [
+        row.product.loyverse_inventory_refreshed_at
+        for row in rows
+        if getattr(row.product, "loyverse_inventory_refreshed_at", None) is not None
+    ]
+    cost_times = [
+        row.product.loyverse_cost_refreshed_at
+        for row in rows
+        if getattr(row.product, "loyverse_cost_refreshed_at", None) is not None
+    ]
+    return {
+        "inventory_last_sync": _format_sync_timestamp(max(inventory_times) if inventory_times else None),
+        "cost_last_sync": _format_sync_timestamp(max(cost_times) if cost_times else None),
+    }
 
 @app.get("/b2b/customers", response_class=HTMLResponse)
 def b2b_customers(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:

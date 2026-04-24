@@ -65,6 +65,8 @@ def ensure_product_planning_columns() -> None:
                 "available_for_sale_gc": "BOOLEAN NOT NULL DEFAULT 0",
                 "supplier": "VARCHAR(255)",
                 "current_inventory_qty": "NUMERIC(12, 4)",
+                "loyverse_inventory_refreshed_at": "DATETIME",
+                "loyverse_cost_refreshed_at": "DATETIME",
                 "low_stock_qty": "NUMERIC(12, 4)",
                 "optimal_stock_qty": "NUMERIC(12, 4)",
                 "planning_moq": "NUMERIC(12, 4)",
