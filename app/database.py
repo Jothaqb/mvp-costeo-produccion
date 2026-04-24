@@ -244,6 +244,58 @@ def ensure_b2b_sales_followup_columns() -> None:
         )
 
 
+
+def ensure_purchase_order_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_orders (
+                id INTEGER NOT NULL PRIMARY KEY,
+                po_number VARCHAR(100) NOT NULL UNIQUE,
+                supplier_name_snapshot VARCHAR(255) NOT NULL,
+                po_date DATE NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                notes TEXT,
+                estimated_total NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS purchase_order_lines (
+                id INTEGER NOT NULL PRIMARY KEY,
+                purchase_order_id INTEGER NOT NULL,
+                line_number INTEGER NOT NULL,
+                sku_snapshot VARCHAR(100) NOT NULL,
+                description_snapshot VARCHAR(255) NOT NULL,
+                supplier_name_snapshot VARCHAR(255) NOT NULL,
+                quantity NUMERIC(12, 4) NOT NULL,
+                unit_cost_snapshot NUMERIC(12, 4) NOT NULL,
+                line_total NUMERIC(12, 4) NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(purchase_order_id) REFERENCES purchase_orders (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_purchase_orders_po_number ON purchase_orders (po_number)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_purchase_orders_po_date ON purchase_orders (po_date)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_purchase_orders_supplier_name_snapshot ON purchase_orders (supplier_name_snapshot)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_purchase_order_lines_purchase_order_id ON purchase_order_lines (purchase_order_id)"
+        )
+
 def ensure_b2b_loyverse_mapping_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>Purchase Order {{ order.po_number }}</h1>
+    <p class="lead">Internal purchase order snapshot for supplier follow-up and manual execution.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <section>
+    <dl class="summary">
+      <div><dt>PO number</dt><dd>{{ order.po_number }}</dd></div>
+      <div><dt>Date</dt><dd>{{ order.po_date }}</dd></div>
+      <div><dt>Supplier</dt><dd>{{ order.supplier_name_snapshot }}</dd></div>
+      <div><dt>Status</dt><dd>{{ order.status|capitalize }}</dd></div>
+      <div><dt>Estimated total</dt><dd>{{ fmt.money_crc(order.estimated_total) }}</dd></div>
+      <div><dt>Notes</dt><dd>{{ order.notes or '' }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="actions">
+    <a class="button secondary" href="/planning/purchase-orders">Back to Purchase Orders</a>
+    {% if order.status == 'draft' %}
+      <a class="button" href="/planning/purchase-orders/{{ order.id }}/edit">Edit Draft</a>
+    {% endif %}
+  </section>
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>SKU</th>
+          <th>Description</th>
+          <th>Quantity</th>
+          <th>Unit cost</th>
+          <th>Line total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in order.lines %}
+          <tr>
+            <td>{{ line.line_number }}</td>
+            <td>{{ line.sku_snapshot }}</td>
+            <td>{{ line.description_snapshot }}</td>
+            <td>{{ fmt.number_3(line.quantity) }}</td>
+            <td>{{ fmt.money_crc(line.unit_cost_snapshot) }}</td>
+            <td>{{ fmt.money_crc(line.line_total) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>{{ title }}</h1>
+    <p class="lead">Review supplier, date, notes, and line snapshots before saving this internal purchase order.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <section>
+    <form method="post" action="{{ form_action }}">
+      <label for="supplier">Supplier</label>
+      <input id="supplier" name="supplier" value="{{ order_data.supplier or '' }}" required>
+
+      <label for="po_date">Date</label>
+      <input id="po_date" name="po_date" type="date" value="{{ order_data.po_date }}" required>
+
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="draft" {% if order_data.status == 'draft' %}selected{% endif %}>Draft</option>
+        <option value="issued" {% if order_data.status == 'issued' %}selected{% endif %}>Issued</option>
+      </select>
+
+      <label for="notes">Notes</label>
+      <textarea id="notes" name="notes">{{ order_data.notes or '' }}</textarea>
+
+      <table>
+        <thead>
+          <tr>
+            <th>SKU</th>
+            <th>Description</th>
+            <th>Quantity</th>
+            <th>Unit cost</th>
+            <th>Line total</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="po-lines-body">
+          {% set initial_line_count = order_data.lines|length if order_data.lines else 1 %}
+          {% for index in range(1, initial_line_count + 1) %}
+            {% set line = order_data.lines[index - 1] if order_data.lines|length >= index else none %}
+            <tr class="po-order-line">
+              <td>
+                <input type="hidden" name="line_index" value="{{ index }}">
+                <input name="line_sku_{{ index }}" value="{{ line.sku if line else '' }}" required>
+              </td>
+              <td><input name="line_description_{{ index }}" value="{{ line.description if line else '' }}" required></td>
+              <td><input class="po-quantity-input" name="line_quantity_{{ index }}" inputmode="decimal" value="{{ fmt.number_3(line.quantity) if line and line.quantity is not none else '' }}" required></td>
+              <td><input class="po-unit-cost-input" name="line_unit_cost_{{ index }}" inputmode="decimal" value="{{ fmt.number_3(line.unit_cost) if line and line.unit_cost is not none else '' }}" required></td>
+              <td class="po-line-total"></td>
+              <td><button type="button" class="po-remove-line secondary">Remove</button></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <button type="button" id="po-add-line" class="secondary">Add line</button>
+
+      <p><strong>Estimated total:</strong> <span id="po-estimated-total">&#8353;0</span></p>
+
+      <div class="inline-actions">
+        <button type="submit">Save Purchase Order</button>
+        <a class="button secondary" href="/planning/purchase-orders">Cancel</a>
+      </div>
+    </form>
+
+    <template id="po-line-template">
+      <tr class="po-order-line">
+        <td>
+          <input type="hidden" name="line_index" value="__index__">
+          <input name="line_sku___index__" required>
+        </td>
+        <td><input name="line_description___index__" required></td>
+        <td><input class="po-quantity-input" name="line_quantity___index__" inputmode="decimal" required></td>
+        <td><input class="po-unit-cost-input" name="line_unit_cost___index__" inputmode="decimal" required></td>
+        <td class="po-line-total"></td>
+        <td><button type="button" class="po-remove-line secondary">Remove</button></td>
+      </tr>
+    </template>
+  </section>
+
+  <script>
+    function poNumber(value) {
+      const parsed = Number(String(value || "").replace(",", "."));
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function poMoney(value) {
+      return "\u20a1" + Math.round(value).toLocaleString("en-US");
+    }
+
+    function poUpdateRemoveButtons() {
+      const rows = document.querySelectorAll("#po-lines-body .po-order-line");
+      rows.forEach((row) => {
+        const button = row.querySelector(".po-remove-line");
+        if (button) {
+          button.disabled = rows.length <= 1;
+        }
+      });
+    }
+
+    function poRecalculate() {
+      let total = 0;
+      document.querySelectorAll("#po-lines-body .po-order-line").forEach((row) => {
+        const quantityInput = row.querySelector(".po-quantity-input");
+        const costInput = row.querySelector(".po-unit-cost-input");
+        const totalCell = row.querySelector(".po-line-total");
+        if (!quantityInput || !costInput || !totalCell) {
+          return;
+        }
+        const lineTotal = poNumber(quantityInput.value) * poNumber(costInput.value);
+        totalCell.textContent = lineTotal ? poMoney(lineTotal) : "";
+        total += lineTotal;
+      });
+      const totalElement = document.getElementById("po-estimated-total");
+      if (totalElement) {
+        totalElement.textContent = poMoney(total);
+      }
+      poUpdateRemoveButtons();
+    }
+
+    const poLinesBody = document.getElementById("po-lines-body");
+    const poLineTemplate = document.getElementById("po-line-template");
+    const poAddLineButton = document.getElementById("po-add-line");
+    let poNextLineIndex = 1;
+
+    document.querySelectorAll('input[name="line_index"]').forEach((input) => {
+      const value = Number(input.value);
+      if (Number.isFinite(value) && value >= poNextLineIndex) {
+        poNextLineIndex = value + 1;
+      }
+    });
+
+    if (poLinesBody) {
+      poLinesBody.addEventListener("input", (event) => {
+        if (event.target.matches(".po-quantity-input, .po-unit-cost-input")) {
+          poRecalculate();
+        }
+      });
+      poLinesBody.addEventListener("click", (event) => {
+        if (!event.target.matches(".po-remove-line")) {
+          return;
+        }
+        const row = event.target.closest(".po-order-line");
+        if (row && poLinesBody.querySelectorAll(".po-order-line").length > 1) {
+          row.remove();
+          poRecalculate();
+        }
+      });
+    }
+
+    if (poAddLineButton && poLineTemplate && poLinesBody) {
+      poAddLineButton.addEventListener("click", () => {
+        const index = String(poNextLineIndex);
+        const html = poLineTemplate.innerHTML.replace(/__index__/g, index);
+        poLinesBody.insertAdjacentHTML("beforeend", html);
+        poNextLineIndex += 1;
+        poRecalculate();
+      });
+    }
+
+    poRecalculate();
+  </script>
+{% endblock %}

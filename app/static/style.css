@@ -461,3 +461,16 @@ button:focus,
   flex-wrap: wrap;
   align-items: center;
 }
+
+.inline-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.po-order-line input,
+#po-lines-body input {
+  max-width: none;
+  margin-bottom: 0;
+}

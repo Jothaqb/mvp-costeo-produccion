@@ -80,7 +80,7 @@
     <button type="submit" form="clear-planner-quantities-form" class="secondary">Clear planner quantities</button>
   </section>
 
-  <section>
+  <section class="table-wrap">
     <table>
       <thead>
         <tr>
@@ -99,7 +99,7 @@
           <th>Status</th>
           <th>Suggested quantity</th>
           <th>Planner quantity</th>
-          {% if product_type == 'manufactured' %}<th>Action</th>{% endif %}
+          <th>Action</th>
         </tr>
       </thead>
       <tbody>
@@ -125,18 +125,24 @@
             <td><span class="status-pill status-{{ row.status|lower }}">{{ row.status }}</span></td>
             <td>{{ fmt.number_3(row.suggested_quantity) }}</td>
             <td><input id="planner_qty_{{ product.id }}" form="planner-quantity-form" name="planner_qty_{{ product.id }}" inputmode="decimal" value="{{ fmt.number_3(product.planning_quantity) }}" placeholder="Quantity"></td>
-            {% if product_type == 'manufactured' %}
-              <td>
+            <td>
+              {% if product_type == 'manufactured' %}
                 <form method="get" action="/planning/suggestions/create-production-order" onsubmit="this.planner_qty.value = document.getElementById('planner_qty_{{ product.id }}').value;">
                   <input type="hidden" name="product_id" value="{{ product.id }}">
                   <input type="hidden" name="planner_qty" value="">
                   <button type="submit">Create OP</button>
                 </form>
-              </td>
-            {% endif %}
+              {% else %}
+                <form method="get" action="/planning/purchase-orders/new" onsubmit="this.quantity.value = document.getElementById('planner_qty_{{ product.id }}').value;">
+                  <input type="hidden" name="product_id" value="{{ product.id }}">
+                  <input type="hidden" name="quantity" value="">
+                  <button type="submit">Create PO</button>
+                </form>
+              {% endif %}
+            </td>
           </tr>
         {% else %}
-          <tr><td colspan="{% if product_type == 'manufactured' %}15{% else %}15{% endif %}">No products found.</td></tr>
+          <tr><td colspan="16">No products found.</td></tr>
         {% endfor %}
       </tbody>
     </table>

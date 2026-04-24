@@ -18,6 +18,7 @@ from app.database import (
     ensure_product_is_manufactured_column,
     ensure_product_loyverse_mapping_columns,
     ensure_product_planning_columns,
+    ensure_purchase_order_tables,
     ensure_production_loyverse_inventory_sync_columns,
     ensure_sprint4_costing_columns,
     ensure_sprint5_comparison_columns,
@@ -31,13 +32,13 @@ from app.models import (
     B2BCustomerProduct,
     B2BSalesOrder,
     B2BSalesOrderLine,
-    LoyverseCustomerMapping,
-    LoyversePaymentTypeMapping,
-    LoyverseVariantMapping,
     ImportBatch,
     ImportedBomHeader,
     ImportedBomLine,
     LaborRate,
+    LoyverseCustomerMapping,
+    LoyversePaymentTypeMapping,
+    LoyverseVariantMapping,
     Machine,
     MachineRate,
     OverheadRate,
@@ -45,6 +46,8 @@ from app.models import (
     ProductionOrder,
     ProductionOrderActivity,
     ProductionOrderMaterial,
+    PurchaseOrder,
+    PurchaseOrderLine,
     Route,
     RouteActivity,
 )
@@ -79,6 +82,13 @@ from app.services.config_service import (
 )
 from app.services.import_service import import_loyverse_csv
 from app.services.loyverse_service import sync_closed_order_cost_to_loyverse
+from app.services.purchase_order_service import (
+    PurchaseOrderValidationError,
+    build_purchase_order_prefill,
+    create_purchase_order,
+    list_purchase_order_suppliers,
+    update_purchase_order,
+)
 from app.services.planning_service import (
     PRODUCT_TYPE_MANUFACTURED,
     PRODUCT_TYPE_PURCHASED,
@@ -124,6 +134,7 @@ ensure_product_is_manufactured_column()
 ensure_product_loyverse_mapping_columns()
 ensure_product_planning_columns()
 ensure_app_sequences_table()
+ensure_purchase_order_tables()
 ensure_sprint4_costing_columns()
 ensure_sprint5_comparison_columns()
 ensure_sprint6_loyverse_cost_sync_columns()
@@ -172,6 +183,50 @@ def _line_inputs_from_form(form, prefix: str, count: int | None = None) -> list[
     ]
 
 
+
+def _purchase_order_line_inputs_from_form(form) -> list[dict[str, str]]:
+    indexes = [str(index).strip() for index in form.getlist("line_index") if str(index).strip()]
+    return [
+        {
+            "sku": str(form.get(f"line_sku_{index}", "")),
+            "description": str(form.get(f"line_description_{index}", "")),
+            "quantity": str(form.get(f"line_quantity_{index}", "")),
+            "unit_cost": str(form.get(f"line_unit_cost_{index}", "")),
+        }
+        for index in indexes
+    ]
+
+
+def _purchase_order_history_query(supplier: str, start_date: str, end_date: str) -> str:
+    query = []
+    if supplier:
+        query.append(f"supplier={quote(supplier)}")
+    if start_date:
+        query.append(f"start_date={quote(start_date)}")
+    if end_date:
+        query.append(f"end_date={quote(end_date)}")
+    return "&".join(query)
+
+
+def _purchase_order_form_context(
+    title: str,
+    form_action: str,
+    order_data: dict[str, object],
+    error: str | None = None,
+) -> dict[str, object]:
+    lines = order_data.get("lines") or [{"sku": "", "description": "", "quantity": None, "unit_cost": None}]
+    return {
+        "title": title,
+        "form_action": form_action,
+        "order_data": {
+            "supplier": order_data.get("supplier") or "",
+            "po_date": order_data.get("po_date") or date.today().isoformat(),
+            "status": order_data.get("status") or "draft",
+            "notes": order_data.get("notes") or "",
+            "lines": lines,
+        },
+        "error": error,
+    }
 def _production_order_detail_response(
     order_id: int,
     request: Request,
@@ -490,6 +545,227 @@ def create_production_order_from_planning(
     return _redirect(f"/production-orders/new?product_id={product.id}&planned_qty={quote(str(quantity))}")
 
 
+
+@app.get("/planning/purchase-orders", response_class=HTMLResponse)
+def purchase_orders(
+    request: Request,
+    supplier: str = Query(""),
+    start_date: str = Query(""),
+    end_date: str = Query(""),
+    error: str | None = Query(default=None),
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    query = db.query(PurchaseOrder).options(joinedload(PurchaseOrder.lines)).order_by(PurchaseOrder.po_date.desc(), PurchaseOrder.id.desc())
+    if supplier.strip():
+        query = query.filter(PurchaseOrder.supplier_name_snapshot == supplier.strip())
+    if start_date.strip():
+        query = query.filter(PurchaseOrder.po_date >= _parse_optional_date(start_date.strip()))
+    if end_date.strip():
+        query = query.filter(PurchaseOrder.po_date <= _parse_optional_date(end_date.strip()))
+    orders = query.all()
+    suppliers = list_purchase_order_suppliers(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="purchase_orders.html",
+        context={
+            "title": "Purchase Orders",
+            "orders": orders,
+            "suppliers": suppliers,
+            "filters": {
+                "supplier": supplier.strip(),
+                "start_date": start_date.strip(),
+                "end_date": end_date.strip(),
+            },
+            "error": error,
+            "message": message,
+        },
+    )
+
+
+@app.get("/planning/purchase-orders/new", response_class=HTMLResponse)
+def new_purchase_order(
+    request: Request,
+    product_id: int | None = Query(default=None),
+    quantity: str = Query(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    order_data = {
+        "supplier": "",
+        "po_date": date.today().isoformat(),
+        "status": "draft",
+        "notes": "",
+        "lines": [{"sku": "", "description": "", "quantity": None, "unit_cost": None}],
+    }
+    if product_id is not None or quantity.strip():
+        quantity_error = "Planner quantity must be numeric and greater than 0."
+        try:
+            order_data = {
+                **order_data,
+                **build_purchase_order_prefill(db, product_id or 0, quantity),
+            }
+        except PurchaseOrderValidationError as exc:
+            error_message = str(exc)
+            if "Planner quantity" in error_message:
+                error_message = quantity_error
+            return _redirect(
+                "/planning/suggestions?product_type=purchased&error="
+                f"{quote(error_message)}"
+            )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="purchase_order_form.html",
+        context=_purchase_order_form_context(
+            title="New Purchase Order",
+            form_action="/planning/purchase-orders",
+            order_data=order_data,
+        ),
+    )
+
+
+@app.post("/planning/purchase-orders")
+async def create_purchase_order_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    supplier = str(form.get("supplier", ""))
+    po_date_text = str(form.get("po_date", "")).strip()
+    status = str(form.get("status", "draft"))
+    notes = str(form.get("notes", ""))
+    line_inputs = _purchase_order_line_inputs_from_form(form)
+    order_data = {
+        "supplier": supplier,
+        "po_date": po_date_text,
+        "status": status,
+        "notes": notes,
+        "lines": line_inputs,
+    }
+    try:
+        po_date = _parse_optional_date(po_date_text)
+        if po_date is None:
+            raise PurchaseOrderValidationError("Date is required.")
+        order = create_purchase_order(
+            db=db,
+            supplier=supplier,
+            po_date=po_date,
+            status=status,
+            notes=notes,
+            line_inputs=line_inputs,
+        )
+        return _redirect(f"/planning/purchase-orders/{order.id}")
+    except PurchaseOrderValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="purchase_order_form.html",
+            context=_purchase_order_form_context(
+                title="New Purchase Order",
+                form_action="/planning/purchase-orders",
+                order_data=order_data,
+                error=str(exc),
+            ),
+        )
+
+
+@app.get("/planning/purchase-orders/{po_id}", response_class=HTMLResponse)
+def purchase_order_detail(request: Request, po_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
+    order = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.lines))
+        .filter(PurchaseOrder.id == po_id)
+        .one()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="purchase_order_detail.html",
+        context={"title": f"Purchase Order {order.po_number}", "order": order, "error": None},
+    )
+
+
+@app.get("/planning/purchase-orders/{po_id}/edit", response_class=HTMLResponse)
+def edit_purchase_order(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    order = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.lines))
+        .filter(PurchaseOrder.id == po_id)
+        .one()
+    )
+    if order.status != "draft":
+        return _redirect(
+            f"/planning/purchase-orders/{order.id}?error={quote('Issued purchase orders are read-only.')}"
+        )
+    order_data = {
+        "supplier": order.supplier_name_snapshot,
+        "po_date": order.po_date.isoformat(),
+        "status": order.status,
+        "notes": order.notes or "",
+        "lines": [
+            {
+                "sku": line.sku_snapshot,
+                "description": line.description_snapshot,
+                "quantity": line.quantity,
+                "unit_cost": line.unit_cost_snapshot,
+            }
+            for line in sorted(order.lines, key=lambda item: item.line_number)
+        ],
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="purchase_order_form.html",
+        context=_purchase_order_form_context(
+            title=f"Edit Purchase Order {order.po_number}",
+            form_action=f"/planning/purchase-orders/{order.id}",
+            order_data=order_data,
+        ),
+    )
+
+
+@app.post("/planning/purchase-orders/{po_id}")
+async def update_purchase_order_route(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    supplier = str(form.get("supplier", ""))
+    po_date_text = str(form.get("po_date", "")).strip()
+    status = str(form.get("status", "draft"))
+    notes = str(form.get("notes", ""))
+    line_inputs = _purchase_order_line_inputs_from_form(form)
+    order = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.lines))
+        .filter(PurchaseOrder.id == po_id)
+        .one()
+    )
+    order_data = {
+        "supplier": supplier,
+        "po_date": po_date_text,
+        "status": status,
+        "notes": notes,
+        "lines": line_inputs,
+    }
+    try:
+        po_date = _parse_optional_date(po_date_text)
+        if po_date is None:
+            raise PurchaseOrderValidationError("Date is required.")
+        updated_order = update_purchase_order(
+            db=db,
+            order_id=po_id,
+            supplier=supplier,
+            po_date=po_date,
+            status=status,
+            notes=notes,
+            line_inputs=line_inputs,
+        )
+        return _redirect(f"/planning/purchase-orders/{updated_order.id}")
+    except PurchaseOrderValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="purchase_order_form.html",
+            context=_purchase_order_form_context(
+                title=f"Edit Purchase Order {order.po_number}",
+                form_action=f"/planning/purchase-orders/{order.id}",
+                order_data=order_data,
+                error=str(exc),
+            ),
+        )
 @app.get("/planning/mps", response_class=HTMLResponse)
 def mps_report(
     request: Request,

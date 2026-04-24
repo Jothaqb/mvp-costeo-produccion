@@ -218,6 +218,59 @@ class B2BSalesOrderLine(Base):
     sales_order: Mapped[B2BSalesOrder] = relationship(back_populates="lines")
 
 
+
+class PurchaseOrder(Base):
+    __tablename__ = "purchase_orders"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'issued')",
+            name="ck_purchase_orders_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    po_number: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    supplier_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    po_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    estimated_total: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    lines: Mapped[list["PurchaseOrderLine"]] = relationship(
+        back_populates="purchase_order",
+        cascade="all, delete-orphan",
+    )
+
+
+class PurchaseOrderLine(Base):
+    __tablename__ = "purchase_order_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    purchase_order_id: Mapped[int] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    sku_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
+    description_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    supplier_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    unit_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    purchase_order: Mapped[PurchaseOrder] = relationship(back_populates="lines")
+
 class ImportBatch(Base):
     __tablename__ = "import_batches"
 

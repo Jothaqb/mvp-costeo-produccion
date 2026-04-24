@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>Purchase Orders</h1>
+    <p class="lead">Review internal purchase orders, filter history by supplier and PO date, and create new purchase orders for manual follow-up.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if message %}<p>{{ message }}</p>{% endif %}
+
+  <section class="actions">
+    <a class="button" href="/planning/purchase-orders/new">New Purchase Order</a>
+  </section>
+
+  <section>
+    <form method="get" action="/planning/purchase-orders" class="filter-form">
+      <label for="supplier">Supplier</label>
+      <select id="supplier" name="supplier">
+        <option value="">All suppliers</option>
+        {% for supplier_name in suppliers %}
+          <option value="{{ supplier_name }}" {% if filters.supplier == supplier_name %}selected{% endif %}>{{ supplier_name }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="start_date">Start date</label>
+      <input id="start_date" name="start_date" type="date" value="{{ filters.start_date }}">
+
+      <label for="end_date">End date</label>
+      <input id="end_date" name="end_date" type="date" value="{{ filters.end_date }}">
+
+      <a class="button secondary" href="/planning/purchase-orders">Clear filters</a>
+      <button type="submit">Filter</button>
+    </form>
+  </section>
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>PO number</th>
+          <th>Date</th>
+          <th>Supplier</th>
+          <th>Status</th>
+          <th>Lines</th>
+          <th>Estimated total</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for order in orders %}
+          <tr>
+            <td>{{ order.po_number }}</td>
+            <td>{{ order.po_date }}</td>
+            <td>{{ order.supplier_name_snapshot }}</td>
+            <td><span class="status-pill status-{{ order.status|lower }}">{{ order.status|capitalize }}</span></td>
+            <td>{{ order.lines|length }}</td>
+            <td>{{ fmt.money_crc(order.estimated_total) }}</td>
+            <td class="inline-actions">
+              <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}">View</a>
+              {% if order.status == 'draft' %}
+                <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/edit">Edit</a>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="7">No purchase orders found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}
