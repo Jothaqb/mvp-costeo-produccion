@@ -86,6 +86,7 @@ from app.services.purchase_order_service import (
     PurchaseOrderValidationError,
     build_purchase_order_prefill,
     create_purchase_order,
+    list_all_product_suppliers,
     list_purchase_order_suppliers,
     update_purchase_order,
 )
@@ -212,21 +213,68 @@ def _purchase_order_form_context(
     title: str,
     form_action: str,
     order_data: dict[str, object],
+    supplier_options: list[str],
+    product_options: list[dict[str, object]],
     error: str | None = None,
 ) -> dict[str, object]:
     lines = order_data.get("lines") or [{"sku": "", "description": "", "quantity": None, "unit_cost": None}]
+    selected_supplier = str(order_data.get("supplier") or "").strip()
+    normalized_suppliers = list(supplier_options)
+    if selected_supplier and selected_supplier not in normalized_suppliers:
+        normalized_suppliers.append(selected_supplier)
+        normalized_suppliers.sort()
     return {
         "title": title,
         "form_action": form_action,
         "order_data": {
-            "supplier": order_data.get("supplier") or "",
+            "supplier": selected_supplier,
             "po_date": order_data.get("po_date") or date.today().isoformat(),
             "status": order_data.get("status") or "draft",
             "notes": order_data.get("notes") or "",
             "lines": lines,
         },
+        "supplier_options": normalized_suppliers,
+        "product_options": product_options,
         "error": error,
     }
+
+
+def _po_product_options(db: Session) -> list[dict[str, object]]:
+    products = (
+        db.query(Product)
+        .filter(Product.is_manufactured.is_(False))
+        .order_by(Product.sku)
+        .all()
+    )
+    return [
+        {
+            "id": product.id,
+            "sku": product.sku,
+            "name": product.name,
+            "supplier": (product.supplier or "").strip(),
+            "unit_cost": product.standard_cost,
+            "lookup_label": f"{product.sku} - {product.name}",
+        }
+        for product in products
+    ]
+
+
+def _manufactured_product_options(db: Session) -> list[dict[str, object]]:
+    products = (
+        db.query(Product)
+        .filter(Product.is_manufactured.is_(True), Product.active.is_(True))
+        .order_by(Product.sku)
+        .all()
+    )
+    return [
+        {
+            "id": product.id,
+            "sku": product.sku,
+            "name": product.name,
+            "lookup_label": f"{product.sku} - {product.name}",
+        }
+        for product in products
+    ]
 def _production_order_detail_response(
     order_id: int,
     request: Request,
@@ -590,6 +638,8 @@ def new_purchase_order(
     quantity: str = Query(""),
     db: Session = Depends(get_db),
 ) -> Response:
+    supplier_options = list_all_product_suppliers(db)
+    product_options = _po_product_options(db)
     order_data = {
         "supplier": "",
         "po_date": date.today().isoformat(),
@@ -620,6 +670,8 @@ def new_purchase_order(
             title="New Purchase Order",
             form_action="/planning/purchase-orders",
             order_data=order_data,
+            supplier_options=supplier_options,
+            product_options=product_options,
         ),
     )
 
@@ -627,6 +679,8 @@ def new_purchase_order(
 @app.post("/planning/purchase-orders")
 async def create_purchase_order_route(request: Request, db: Session = Depends(get_db)) -> Response:
     form = await request.form()
+    supplier_options = list_all_product_suppliers(db)
+    product_options = _po_product_options(db)
     supplier = str(form.get("supplier", ""))
     po_date_text = str(form.get("po_date", "")).strip()
     status = str(form.get("status", "draft"))
@@ -661,6 +715,8 @@ async def create_purchase_order_route(request: Request, db: Session = Depends(ge
                 title="New Purchase Order",
                 form_action="/planning/purchase-orders",
                 order_data=order_data,
+                supplier_options=supplier_options,
+                product_options=product_options,
                 error=str(exc),
             ),
         )
@@ -683,6 +739,8 @@ def purchase_order_detail(request: Request, po_id: int, db: Session = Depends(ge
 
 @app.get("/planning/purchase-orders/{po_id}/edit", response_class=HTMLResponse)
 def edit_purchase_order(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    supplier_options = list_all_product_suppliers(db)
+    product_options = _po_product_options(db)
     order = (
         db.query(PurchaseOrder)
         .options(joinedload(PurchaseOrder.lines))
@@ -715,6 +773,8 @@ def edit_purchase_order(request: Request, po_id: int, db: Session = Depends(get_
             title=f"Edit Purchase Order {order.po_number}",
             form_action=f"/planning/purchase-orders/{order.id}",
             order_data=order_data,
+            supplier_options=supplier_options,
+            product_options=product_options,
         ),
     )
 
@@ -722,6 +782,8 @@ def edit_purchase_order(request: Request, po_id: int, db: Session = Depends(get_
 @app.post("/planning/purchase-orders/{po_id}")
 async def update_purchase_order_route(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
     form = await request.form()
+    supplier_options = list_all_product_suppliers(db)
+    product_options = _po_product_options(db)
     supplier = str(form.get("supplier", ""))
     po_date_text = str(form.get("po_date", "")).strip()
     status = str(form.get("status", "draft"))
@@ -763,6 +825,8 @@ async def update_purchase_order_route(request: Request, po_id: int, db: Session 
                 title=f"Edit Purchase Order {order.po_number}",
                 form_action=f"/planning/purchase-orders/{order.id}",
                 order_data=order_data,
+                supplier_options=supplier_options,
+                product_options=product_options,
                 error=str(exc),
             ),
         )
@@ -1946,18 +2010,20 @@ def list_production_orders(
     product_name: str = Query(""),
     process_type: str = Query(""),
     status: str = Query(""),
-    date_from: date | None = Query(None),
-    date_to: date | None = Query(None),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    date_from_value = _parse_optional_date(date_from.strip())
+    date_to_value = _parse_optional_date(date_to.strip())
     filters = {
         "order_number": order_number.strip(),
         "product_sku": product_sku.strip(),
         "product_name": product_name.strip(),
         "process_type": process_type.strip(),
         "status": status.strip(),
-        "date_from": date_from,
-        "date_to": date_to,
+        "date_from": date_from_value,
+        "date_to": date_to_value,
     }
     order_query = db.query(ProductionOrder)
     if filters["order_number"]:
@@ -2003,23 +2069,23 @@ def new_production_order(
     planned_qty: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    search = q.strip()
-    product_query = db.query(Product).filter(Product.is_manufactured.is_(True), Product.active.is_(True))
     selected_product_id = product_id
+    selected_product = None
     if selected_product_id is not None:
-        product_query = product_query.filter(Product.id == selected_product_id)
-    elif search:
-        like_search = f"%{search}%"
-        product_query = product_query.filter(Product.sku.ilike(like_search) | Product.name.ilike(like_search))
-    products = product_query.order_by(Product.sku).limit(50).all()
+        selected_product = (
+            db.query(Product)
+            .filter(Product.id == selected_product_id, Product.is_manufactured.is_(True), Product.active.is_(True))
+            .one_or_none()
+        )
+    product_options = _manufactured_product_options(db)
     return templates.TemplateResponse(
         request=request,
         name="production_order_form.html",
         context={
             "title": "New Production Order",
-            "products": products,
+            "product_options": product_options,
+            "selected_product": selected_product,
             "error": None,
-            "search": search,
             "selected_product_id": selected_product_id,
             "prefill_planned_qty": planned_qty.strip(),
         },
@@ -2033,14 +2099,14 @@ def create_production_order_route(
     product_id: int = Form(...),
     planned_qty: str = Form(""),
     notes: str = Form(""),
-    search: str = Form(""),
     db: Session = Depends(get_db),
 ) -> Response:
-    product_query = db.query(Product).filter(Product.is_manufactured.is_(True), Product.active.is_(True))
-    if search.strip():
-        like_search = f"%{search.strip()}%"
-        product_query = product_query.filter(Product.sku.ilike(like_search) | Product.name.ilike(like_search))
-    products = product_query.order_by(Product.sku).limit(50).all()
+    product_options = _manufactured_product_options(db)
+    selected_product = (
+        db.query(Product)
+        .filter(Product.id == product_id, Product.is_manufactured.is_(True), Product.active.is_(True))
+        .one_or_none()
+    )
     try:
         planned_qty_value = parse_optional_decimal(planned_qty, "Planned quantity")
         order = create_production_order(
@@ -2057,9 +2123,11 @@ def create_production_order_route(
             name="production_order_form.html",
             context={
                 "title": "New Production Order",
-                "products": products,
+                "product_options": product_options,
+                "selected_product": selected_product,
                 "error": str(exc),
-                "search": search.strip(),
+                "selected_product_id": product_id,
+                "prefill_planned_qty": planned_qty,
             },
         )
 

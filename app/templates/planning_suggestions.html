@@ -86,14 +86,13 @@
         <tr>
           <th>SKU</th>
           <th>Description</th>
-          {% if product_type == 'manufactured' %}<th>Route</th>{% else %}<th>Supplier</th>{% endif %}
           <th>Cost</th>
           <th>MOQ</th>
           <th>Red zone</th>
           <th>Yellow zone</th>
           <th>Green zone</th>
           <th>Inventory</th>
-          <th>Customer Order Requirements</th>
+          <th><span class="help-abbr" title="COR = Customer Order Requirement. It represents demand from customer orders that should be considered in replenishment and production decisions.">COR</span></th>
           {% if product_type == 'purchased' %}<th>MRP</th>{% endif %}
           <th>Inventory Available</th>
           <th>Status</th>
@@ -108,11 +107,6 @@
           <tr>
             <td>{{ product.sku }}</td>
             <td>{{ product.name }}</td>
-            {% if product_type == 'manufactured' %}
-              <td>{{ product.default_route.code ~ ' - ' ~ product.default_route.name if product.default_route else '' }}</td>
-            {% else %}
-              <td>{{ product.supplier or '' }}</td>
-            {% endif %}
             <td>{{ fmt.money_crc(product.standard_cost) }}</td>
             <td>{{ fmt.number_3(product.planning_moq) }}</td>
             <td>{{ fmt.number_3(product.low_stock_qty) }}</td>
@@ -142,7 +136,7 @@
             </td>
           </tr>
         {% else %}
-          <tr><td colspan="16">No products found.</td></tr>
+          <tr><td colspan="{% if product_type == 'purchased' %}13{% else %}12{% endif %}">No products found.</td></tr>
         {% endfor %}
       </tbody>
     </table>

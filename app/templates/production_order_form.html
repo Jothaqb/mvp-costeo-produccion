@@ -1,30 +1,43 @@
 {% extends "base.html" %}
 
 {% block content %}
-  <section>
+  <section class="page-hero">
+    <p class="eyebrow">Production</p>
     <h1>{{ title }}</h1>
+    <p class="lead">Search by SKU or description, choose the manufactured product, and create the draft production order.</p>
+  </section>
+
+  <section>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <form method="get" action="/production-orders/new">
-      <label for="q">Search manufactured product</label>
-      <input id="q" name="q" value="{{ search or '' }}" placeholder="SKU or partial product name">
-      <button type="submit">Search</button>
-      <a href="/production-orders/new">Clear</a>
-    </form>
 
     <form method="post" action="/production-orders">
-      <input type="hidden" name="search" value="{{ search or '' }}">
       <label for="production_date">Production date</label>
       <input id="production_date" name="production_date" type="date" required>
 
-      <label for="product_id">Product</label>
-      <select id="product_id" name="product_id" required>
-        {% for product in products %}
-          <option value="{{ product.id }}" {% if selected_product_id == product.id %}selected{% endif %}>{{ product.sku }} - {{ product.name }}</option>
+      <label for="product_lookup">Product</label>
+      <input
+        id="product_lookup"
+        name="product_lookup"
+        list="manufactured-product-options"
+        value="{% if selected_product %}{{ selected_product.sku }} - {{ selected_product.name }}{% endif %}"
+        placeholder="Type SKU or description"
+        autocomplete="off"
+        required
+      >
+      <datalist id="manufactured-product-options">
+        {% for product in product_options %}
+          <option
+            value="{{ product.lookup_label }}"
+            data-product-id="{{ product.id }}"
+            data-sku="{{ product.sku }}"
+            data-name="{{ product.name }}"
+          ></option>
         {% endfor %}
-      </select>
-      {% if not products %}
-        <p>No manufactured products matched your search.</p>
-      {% endif %}
+      </datalist>
+      <input id="product_id" name="product_id" type="hidden" value="{{ selected_product_id or '' }}">
+      <p id="selected-product-summary" class="muted-inline">
+        {% if selected_product %}Selected: {{ selected_product.sku }} - {{ selected_product.name }}{% endif %}
+      </p>
 
       <label for="planned_qty">Planned quantity</label>
       <input id="planned_qty" name="planned_qty" value="{{ prefill_planned_qty or '' }}">
@@ -32,7 +45,35 @@
       <label for="notes">Notes</label>
       <textarea id="notes" name="notes"></textarea>
 
-      <button type="submit">Create draft</button>
+      <div class="inline-actions">
+        <button type="submit">Create draft</button>
+        <a class="button secondary" href="/production-orders">Cancel</a>
+      </div>
     </form>
   </section>
+
+  <script>
+    const productionLookupInput = document.getElementById("product_lookup");
+    const productionProductIdInput = document.getElementById("product_id");
+    const productionSummary = document.getElementById("selected-product-summary");
+    const productionOptions = Array.from(document.querySelectorAll("#manufactured-product-options option"));
+
+    function syncProductionProductSelection() {
+      const value = (productionLookupInput.value || "").trim();
+      const match = productionOptions.find((option) => option.value === value);
+      if (!match) {
+        productionProductIdInput.value = "";
+        productionSummary.textContent = "";
+        return;
+      }
+      productionProductIdInput.value = match.dataset.productId || "";
+      productionSummary.textContent = "Selected: " + (match.dataset.sku || "") + " - " + (match.dataset.name || "");
+    }
+
+    if (productionLookupInput) {
+      productionLookupInput.addEventListener("change", syncProductionProductSelection);
+      productionLookupInput.addEventListener("input", syncProductionProductSelection);
+      syncProductionProductSelection();
+    }
+  </script>
 {% endblock %}

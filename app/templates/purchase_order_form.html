@@ -11,9 +11,14 @@
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
   <section>
-    <form method="post" action="{{ form_action }}">
+    <form method="post" action="{{ form_action }}" class="wide-form">
       <label for="supplier">Supplier</label>
-      <input id="supplier" name="supplier" value="{{ order_data.supplier or '' }}" required>
+      <select id="supplier" name="supplier" required>
+        <option value="">Select a supplier</option>
+        {% for supplier in supplier_options %}
+          <option value="{{ supplier }}" {% if order_data.supplier == supplier %}selected{% endif %}>{{ supplier }}</option>
+        {% endfor %}
+      </select>
 
       <label for="po_date">Date</label>
       <input id="po_date" name="po_date" type="date" value="{{ order_data.po_date }}" required>
@@ -30,6 +35,7 @@
       <table>
         <thead>
           <tr>
+            <th>Product search</th>
             <th>SKU</th>
             <th>Description</th>
             <th>Quantity</th>
@@ -42,12 +48,25 @@
           {% set initial_line_count = order_data.lines|length if order_data.lines else 1 %}
           {% for index in range(1, initial_line_count + 1) %}
             {% set line = order_data.lines[index - 1] if order_data.lines|length >= index else none %}
+            {% set line_lookup = '' %}
+            {% if line and (line.sku or line.description) %}
+              {% set line_lookup = ((line.sku or '') ~ ' - ' ~ (line.description or '')).strip(' -') %}
+            {% endif %}
             <tr class="po-order-line">
+              <td class="lookup-cell">
+                <input
+                  class="po-product-lookup"
+                  list="po-product-options"
+                  value="{{ line_lookup }}"
+                  placeholder="Type SKU or description"
+                  autocomplete="off"
+                >
+              </td>
               <td>
                 <input type="hidden" name="line_index" value="{{ index }}">
-                <input name="line_sku_{{ index }}" value="{{ line.sku if line else '' }}" required>
+                <input class="po-sku-input" name="line_sku_{{ index }}" value="{{ line.sku if line else '' }}" required>
               </td>
-              <td><input name="line_description_{{ index }}" value="{{ line.description if line else '' }}" required></td>
+              <td><input class="po-description-input" name="line_description_{{ index }}" value="{{ line.description if line else '' }}" required></td>
               <td><input class="po-quantity-input" name="line_quantity_{{ index }}" inputmode="decimal" value="{{ fmt.number_3(line.quantity) if line and line.quantity is not none else '' }}" required></td>
               <td><input class="po-unit-cost-input" name="line_unit_cost_{{ index }}" inputmode="decimal" value="{{ fmt.number_3(line.unit_cost) if line and line.unit_cost is not none else '' }}" required></td>
               <td class="po-line-total"></td>
@@ -56,6 +75,17 @@
           {% endfor %}
         </tbody>
       </table>
+
+      <datalist id="po-product-options">
+        {% for product in product_options %}
+          <option
+            value="{{ product.lookup_label }}"
+            data-sku="{{ product.sku }}"
+            data-name="{{ product.name }}"
+            data-unit-cost="{{ fmt.number_3(product.unit_cost) if product.unit_cost is not none else '' }}"
+          ></option>
+        {% endfor %}
+      </datalist>
 
       <button type="button" id="po-add-line" class="secondary">Add line</button>
 
@@ -69,11 +99,19 @@
 
     <template id="po-line-template">
       <tr class="po-order-line">
+        <td class="lookup-cell">
+          <input
+            class="po-product-lookup"
+            list="po-product-options"
+            placeholder="Type SKU or description"
+            autocomplete="off"
+          >
+        </td>
         <td>
           <input type="hidden" name="line_index" value="__index__">
-          <input name="line_sku___index__" required>
+          <input class="po-sku-input" name="line_sku___index__" required>
         </td>
-        <td><input name="line_description___index__" required></td>
+        <td><input class="po-description-input" name="line_description___index__" required></td>
         <td><input class="po-quantity-input" name="line_quantity___index__" inputmode="decimal" required></td>
         <td><input class="po-unit-cost-input" name="line_unit_cost___index__" inputmode="decimal" required></td>
         <td class="po-line-total"></td>
@@ -125,7 +163,27 @@
     const poLinesBody = document.getElementById("po-lines-body");
     const poLineTemplate = document.getElementById("po-line-template");
     const poAddLineButton = document.getElementById("po-add-line");
+    const poProductOptions = Array.from(document.querySelectorAll("#po-product-options option"));
     let poNextLineIndex = 1;
+
+    function poApplyLookupSelection(row) {
+      const lookupInput = row.querySelector(".po-product-lookup");
+      const skuInput = row.querySelector(".po-sku-input");
+      const descriptionInput = row.querySelector(".po-description-input");
+      const unitCostInput = row.querySelector(".po-unit-cost-input");
+      if (!lookupInput || !skuInput || !descriptionInput || !unitCostInput) {
+        return;
+      }
+      const value = (lookupInput.value || "").trim();
+      const match = poProductOptions.find((option) => option.value === value);
+      if (!match) {
+        return;
+      }
+      skuInput.value = match.dataset.sku || "";
+      descriptionInput.value = match.dataset.name || "";
+      unitCostInput.value = match.dataset.unitCost || "";
+      poRecalculate();
+    }
 
     document.querySelectorAll('input[name="line_index"]').forEach((input) => {
       const value = Number(input.value);
@@ -136,8 +194,17 @@
 
     if (poLinesBody) {
       poLinesBody.addEventListener("input", (event) => {
+        if (event.target.matches(".po-product-lookup")) {
+          poApplyLookupSelection(event.target.closest(".po-order-line"));
+          return;
+        }
         if (event.target.matches(".po-quantity-input, .po-unit-cost-input")) {
           poRecalculate();
+        }
+      });
+      poLinesBody.addEventListener("change", (event) => {
+        if (event.target.matches(".po-product-lookup")) {
+          poApplyLookupSelection(event.target.closest(".po-order-line"));
         }
       });
       poLinesBody.addEventListener("click", (event) => {

@@ -474,3 +474,18 @@ button:focus,
   max-width: none;
   margin-bottom: 0;
 }
+
+.lookup-cell {
+  min-width: 220px;
+}
+
+.muted-inline {
+  margin-top: -6px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.help-abbr {
+  border-bottom: 1px dotted rgba(23, 33, 43, 0.45);
+  cursor: help;
+}

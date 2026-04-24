@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
@@ -160,6 +161,7 @@ def build_planning_rows(
         if route_filter and route_filter.isdigit():
             query = query.filter(Product.default_route_id == int(route_filter))
     else:
+        query = query.filter(Product.supplier.is_not(None), func.trim(Product.supplier) != "")
         supplier_filter = (supplier or "").strip()
         if supplier_filter:
             query = query.filter(Product.supplier == supplier_filter)
@@ -400,7 +402,7 @@ def list_suppliers_for_filter(db: Session) -> list[str]:
             Product.is_manufactured.is_(False),
             Product.available_for_sale_gc.is_(True),
             Product.supplier.is_not(None),
-            Product.supplier != "",
+            func.trim(Product.supplier) != "",
         )
         .distinct()
         .order_by(Product.supplier)

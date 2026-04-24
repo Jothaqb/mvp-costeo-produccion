@@ -113,7 +113,12 @@ def build_purchase_order_prefill(db: Session, product_id: int, quantity_text: st
 
 def list_purchase_order_suppliers(db: Session) -> list[str]:
     values = db.query(PurchaseOrder.supplier_name_snapshot).order_by(PurchaseOrder.supplier_name_snapshot).all()
-    return [value for (value,) in values if value]
+    return sorted({value for (value,) in values if value})
+
+
+def list_all_product_suppliers(db: Session) -> list[str]:
+    values = db.query(Product.supplier).order_by(Product.supplier).all()
+    return sorted({(value or "").strip() for (value,) in values if (value or "").strip()})
 
 
 def _normalize_supplier(supplier: str) -> str:
