@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Inventory</p>
+    <h1>Initialize Opening Balances</h1>
+    <p class="lead">Run the one-time opening balance seed from current Product inventory and cost fields without posting any operational workflows yet.</p>
+  </section>
+
+  <section class="actions">
+    <a class="button secondary" href="/">Home</a>
+    <a class="button secondary" href="/inventory/balances">View Balances</a>
+    <a class="button secondary" href="/inventory/transactions">View Transactions</a>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  {% if result %}
+    <section>
+      <dl class="summary">
+        <div><dt>Products initialized</dt><dd>{{ result.initialized_count }}</dd></div>
+        <div><dt>Zero quantity</dt><dd>{{ result.zero_quantity_count }}</dd></div>
+        <div><dt>Zero cost</dt><dd>{{ result.zero_cost_count }}</dd></div>
+        <div><dt>Negative inventory zeroed</dt><dd>{{ result.negative_inventory_zeroed_count }}</dd></div>
+        <div><dt>Skipped</dt><dd>{{ result.skipped_count }}</dd></div>
+      </dl>
+    </section>
+
+    <section class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Warnings</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for warning in result.warning_messages %}
+            <tr><td>{{ warning }}</td></tr>
+          {% else %}
+            <tr><td>No warnings recorded.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% elif already_initialized %}
+    <p class="success">Opening balances are already initialized for this database.</p>
+  {% endif %}
+
+  {% if confirmation_required %}
+    <section>
+      <form method="post" action="/inventory/initialize-opening-balances" class="wide-form">
+        <label>
+          <input type="checkbox" name="confirm_initialize" value="yes" required>
+          I understand this will create one-time opening balances from current Product inventory and cost fields.
+        </label>
+        <div class="inline-actions">
+          <button type="submit">Run Opening Balance Initialization</button>
+          <a class="button secondary" href="/inventory/balances">Cancel</a>
+        </div>
+      </form>
+    </section>
+  {% endif %}
+{% endblock %}

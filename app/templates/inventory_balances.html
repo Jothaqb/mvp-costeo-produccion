@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Inventory</p>
+    <h1>Inventory Balances</h1>
+    <p class="lead">Review current on-hand balances and weighted average cost snapshots without changing any live workflows.</p>
+  </section>
+
+  <section class="actions">
+    <a class="button secondary" href="/">Home</a>
+    <a class="button secondary" href="/inventory/transactions">View Transactions</a>
+    <a class="button" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
+  </section>
+
+  {% if not opening_balances_initialized %}
+    <p class="error">Opening balances have not been initialized yet. Balances may be empty until the one-time initialization is completed.</p>
+  {% endif %}
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Product name</th>
+          <th>On hand qty</th>
+          <th>Average unit cost</th>
+          <th>Inventory value</th>
+          <th>Last transaction at</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for balance in balances %}
+          <tr>
+            <td>{{ balance.product.sku if balance.product else '' }}</td>
+            <td>{{ balance.product.name if balance.product else '' }}</td>
+            <td>{{ fmt.number_3(balance.on_hand_qty) }}</td>
+            <td>{{ fmt.money_crc(balance.average_unit_cost) }}</td>
+            <td>{{ fmt.money_crc(balance.inventory_value) }}</td>
+            <td>{{ balance.last_transaction_at or '' }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6">No inventory balances found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

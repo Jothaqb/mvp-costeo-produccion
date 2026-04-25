@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Inventory</p>
+    <h1>Inventory Transactions</h1>
+    <p class="lead">Review the permanent kardex trail that will support future inventory, COGS, and margin posting.</p>
+  </section>
+
+  <section class="actions">
+    <a class="button secondary" href="/">Home</a>
+    <a class="button secondary" href="/inventory/balances">View Balances</a>
+    <a class="button" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
+  </section>
+
+  {% if not opening_balances_initialized %}
+    <p class="error">Opening balances have not been initialized yet. Transactions may be empty until the one-time initialization is completed.</p>
+  {% endif %}
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>SKU</th>
+          <th>Transaction type</th>
+          <th>Source</th>
+          <th>Quantity in</th>
+          <th>Quantity out</th>
+          <th>Unit cost</th>
+          <th>Total cost</th>
+          <th>Running qty</th>
+          <th>Running avg cost</th>
+          <th>Running inventory value</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for transaction in transactions %}
+          <tr>
+            <td>{{ transaction.transaction_date }}</td>
+            <td>{{ transaction.product.sku if transaction.product else '' }}</td>
+            <td>{{ transaction.transaction_type }}</td>
+            <td>
+              {% if transaction.source_type or transaction.source_id %}
+                {{ transaction.source_type or '' }}{% if transaction.source_id %} #{{ transaction.source_id }}{% endif %}
+              {% endif %}
+            </td>
+            <td>{{ fmt.number_3(transaction.quantity_in) }}</td>
+            <td>{{ fmt.number_3(transaction.quantity_out) }}</td>
+            <td>{{ fmt.money_crc(transaction.unit_cost) if transaction.unit_cost is not none else '' }}</td>
+            <td>{{ fmt.money_crc(transaction.total_cost) if transaction.total_cost is not none else '' }}</td>
+            <td>{{ fmt.number_3(transaction.running_quantity) }}</td>
+            <td>{{ fmt.money_crc(transaction.running_average_cost) }}</td>
+            <td>{{ fmt.money_crc(transaction.running_inventory_value) }}</td>
+            <td>{{ transaction.notes or '' }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="12">No inventory transactions found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

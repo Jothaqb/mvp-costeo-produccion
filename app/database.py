@@ -302,6 +302,62 @@ def ensure_purchase_order_tables() -> None:
         _ensure_purchase_order_lines_received_quantity(connection)
 
 
+def ensure_inventory_ledger_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_transactions (
+                id INTEGER NOT NULL PRIMARY KEY,
+                product_id INTEGER NOT NULL,
+                transaction_date DATETIME NOT NULL,
+                transaction_type VARCHAR(50) NOT NULL,
+                source_type VARCHAR(50),
+                source_id INTEGER,
+                source_line_id INTEGER,
+                quantity_in NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                quantity_out NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                unit_cost NUMERIC(12, 4),
+                total_cost NUMERIC(12, 4),
+                running_quantity NUMERIC(12, 4) NOT NULL,
+                running_average_cost NUMERIC(12, 4) NOT NULL,
+                running_inventory_value NUMERIC(12, 4) NOT NULL,
+                notes TEXT,
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(product_id) REFERENCES products (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_balances (
+                id INTEGER NOT NULL PRIMARY KEY,
+                product_id INTEGER NOT NULL UNIQUE,
+                on_hand_qty NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                average_unit_cost NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                inventory_value NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                last_transaction_id INTEGER,
+                last_transaction_at DATETIME,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(product_id) REFERENCES products (id),
+                FOREIGN KEY(last_transaction_id) REFERENCES inventory_transactions (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_inventory_balances_product_id ON inventory_balances (product_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_inventory_transactions_product_date_id ON inventory_transactions (product_id, transaction_date, id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_inventory_transactions_source ON inventory_transactions (source_type, source_id)"
+        )
+
+
 def _ensure_purchase_order_status_supports_receive_workflow(connection) -> None:
     create_sql_row = connection.exec_driver_sql(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='purchase_orders'"

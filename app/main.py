@@ -14,6 +14,7 @@ from app.database import (
     ensure_b2b_sales_followup_columns,
     ensure_b2b_loyverse_mapping_tables,
     ensure_app_sequences_table,
+    ensure_inventory_ledger_tables,
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
     ensure_product_loyverse_mapping_columns,
@@ -35,6 +36,8 @@ from app.models import (
     ImportBatch,
     ImportedBomHeader,
     ImportedBomLine,
+    InventoryBalance,
+    InventoryTransaction,
     LaborRate,
     LoyverseCustomerMapping,
     LoyversePaymentTypeMapping,
@@ -81,7 +84,11 @@ from app.services.config_service import (
     validate_unique_code,
 )
 from app.services.import_service import import_loyverse_csv
-from app.services.loyverse_service import sync_closed_order_cost_to_loyverse
+from app.services.inventory_ledger_service import (
+    InventoryInitializationResult,
+    InventoryLedgerValidationError,
+    initialize_inventory_opening_balances,
+)
 from app.services.planning_loyverse_refresh_service import (
     PlanningLoyverseRefreshError,
     refresh_planning_inventory_and_cost,
@@ -127,7 +134,7 @@ from app.services.production_loyverse_inventory_sync_service import (
 )
 from app.services.production_order_service import (
     ProductionOrderValidationError,
-    close_order,
+    close_order_with_inventory_posting,
     create_production_order,
     parse_optional_decimal,
     start_order,
@@ -143,6 +150,7 @@ ensure_product_is_manufactured_column()
 ensure_product_loyverse_mapping_columns()
 ensure_product_planning_columns()
 ensure_app_sequences_table()
+ensure_inventory_ledger_tables()
 ensure_purchase_order_tables()
 ensure_sprint4_costing_columns()
 ensure_sprint5_comparison_columns()
@@ -279,6 +287,30 @@ def _purchase_order_form_context(
     }
 
 
+def _inventory_opening_balance_exists(db: Session) -> bool:
+    return (
+        db.query(InventoryTransaction.id)
+        .filter(InventoryTransaction.transaction_type == "opening_balance")
+        .first()
+        is not None
+    )
+
+
+def _inventory_init_context(
+    result: InventoryInitializationResult | None = None,
+    error: str | None = None,
+    confirmation_required: bool = True,
+    already_initialized: bool = False,
+) -> dict[str, object]:
+    return {
+        "title": "Initialize Opening Balances",
+        "result": result,
+        "error": error,
+        "confirmation_required": confirmation_required,
+        "already_initialized": already_initialized,
+    }
+
+
 def _po_product_options(db: Session) -> list[dict[str, object]]:
     products = (
         db.query(Product)
@@ -408,6 +440,114 @@ def planning_home(request: Request) -> HTMLResponse:
         name="planning_home.html",
         context={"title": "Planning"},
     )
+
+
+@app.get("/inventory/balances", response_class=HTMLResponse)
+def inventory_balances_report(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    balances = (
+        db.query(InventoryBalance)
+        .options(joinedload(InventoryBalance.product))
+        .order_by(InventoryBalance.last_transaction_at.desc(), InventoryBalance.id.desc())
+        .all()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="inventory_balances.html",
+        context={
+            "title": "Inventory Balances",
+            "balances": balances,
+            "opening_balances_initialized": _inventory_opening_balance_exists(db),
+        },
+    )
+
+
+@app.get("/inventory/transactions", response_class=HTMLResponse)
+def inventory_transactions_report(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    transactions = (
+        db.query(InventoryTransaction)
+        .options(joinedload(InventoryTransaction.product))
+        .order_by(InventoryTransaction.transaction_date.desc(), InventoryTransaction.id.desc())
+        .all()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="inventory_transactions.html",
+        context={
+            "title": "Inventory Transactions",
+            "transactions": transactions,
+            "opening_balances_initialized": _inventory_opening_balance_exists(db),
+        },
+    )
+
+
+@app.get("/inventory/initialize-opening-balances", response_class=HTMLResponse)
+def inventory_initialize_opening_balances_page(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    already_initialized = _inventory_opening_balance_exists(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="inventory_initialize.html",
+        context=_inventory_init_context(
+            already_initialized=already_initialized,
+            confirmation_required=not already_initialized,
+        ),
+    )
+
+
+@app.post("/inventory/initialize-opening-balances")
+async def inventory_initialize_opening_balances_route(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    form = await request.form()
+    already_initialized = _inventory_opening_balance_exists(db)
+    if already_initialized:
+        return templates.TemplateResponse(
+            request=request,
+            name="inventory_initialize.html",
+            context=_inventory_init_context(
+                error="Opening balances have already been initialized.",
+                already_initialized=True,
+                confirmation_required=False,
+            ),
+        )
+
+    confirmation = str(form.get("confirm_initialize", "")).strip().lower()
+    if confirmation != "yes":
+        return templates.TemplateResponse(
+            request=request,
+            name="inventory_initialize.html",
+            context=_inventory_init_context(
+                error="Explicit confirmation is required to initialize opening balances.",
+                already_initialized=False,
+                confirmation_required=True,
+            ),
+        )
+
+    try:
+        result = initialize_inventory_opening_balances(db)
+        return templates.TemplateResponse(
+            request=request,
+            name="inventory_initialize.html",
+            context=_inventory_init_context(
+                result=result,
+                already_initialized=True,
+                confirmation_required=False,
+            ),
+        )
+    except InventoryLedgerValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="inventory_initialize.html",
+            context=_inventory_init_context(
+                error=str(exc),
+                already_initialized=_inventory_opening_balance_exists(db),
+                confirmation_required=not _inventory_opening_balance_exists(db),
+            ),
+        )
 
 
 @app.get("/planning/customer-order-requirements", response_class=HTMLResponse)
@@ -2526,12 +2666,10 @@ def start_production_order(order_id: int, request: Request, db: Session = Depend
 @app.post("/production-orders/{order_id}/close")
 def close_production_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
     try:
-        order_before_close = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
-        status_before_close = order_before_close.status
-        close_order(db, order_id)
-        order_after_close = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
-        if status_before_close != "closed" and order_after_close.status == "closed":
-            sync_closed_order_cost_to_loyverse(db, order_after_close.id)
+        close_order_with_inventory_posting(db, order_id)
+        # Loyverse cost sync is intentionally disabled here.
+        # The ERP is now the source of truth for production cost,
+        # so Production Close should not push cost updates to Loyverse.
         return _redirect(f"/production-orders/{order_id}")
     except ProductionOrderValidationError as exc:
         return _production_order_detail_response(order_id, request, db, str(exc))

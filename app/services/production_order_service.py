@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
@@ -8,6 +9,7 @@ from app.models import (
     AppSequence,
     ImportedBomHeader,
     ImportedBomLine,
+    InventoryTransaction,
     ImportBatch,
     LotSequence,
     Product,
@@ -18,7 +20,17 @@ from app.models import (
     RouteActivity,
 )
 from app.schemas import ProductionOrderStatus
-from app.services.costing_service import CostingValidationError, calculate_order_cost
+from app.services.costing_service import (
+    INPUT_SCALED_PROCESS_TYPES,
+    CostingValidationError,
+    calculate_order_cost,
+)
+from app.services.inventory_ledger_service import (
+    InventoryLedgerValidationError,
+    get_or_create_inventory_balance,
+    post_incoming_movement,
+    post_outgoing_movement,
+)
 
 
 class ProductionOrderValidationError(Exception):
@@ -28,6 +40,21 @@ class ProductionOrderValidationError(Exception):
 PRODUCTION_ORDER_SEQUENCE_NAME = "production_order"
 PRODUCTION_ORDER_PREFIX = "OP"
 LOT_SEQUENCE_START = 1
+ZERO = Decimal("0")
+ONE = Decimal("1")
+LEDGER_PRODUCTION_SOURCE_TYPE = "production_order"
+LEDGER_COMPONENT_CONSUMPTION_TYPE = "production_component_consumption"
+LEDGER_PRODUCTION_RECEIPT_TYPE = "production_receipt"
+LEDGER_PRODUCTION_RECEIPT_NOTE = (
+    "Ledger production receipt cost calculated from ledger component consumption + "
+    "labor/overhead/machine. ProductionOrder.real_unit_cost remains unchanged."
+)
+
+
+@dataclass(frozen=True)
+class ProductionOrderClosePostingResult:
+    order: ProductionOrder
+    warnings: list[str]
 
 
 def parse_optional_decimal(value: str | Decimal | None, field_name: str) -> Decimal | None:
@@ -266,25 +293,34 @@ def start_order(db: Session, order_id: int) -> ProductionOrder:
 
 def close_order(db: Session, order_id: int) -> ProductionOrder:
     order = get_order(db, order_id)
-    if order.status != ProductionOrderStatus.IN_PROGRESS.value:
-        raise ProductionOrderValidationError("Only in-progress orders can be closed.")
-    if order.input_qty is None or order.input_qty <= 0:
-        raise ProductionOrderValidationError("Input quantity must be greater than 0 before closing.")
-    if order.output_qty is None or order.output_qty <= 0:
-        raise ProductionOrderValidationError("Output quantity must be greater than 0 before closing.")
-
-    order.yield_percent = order.output_qty / order.input_qty
     try:
-        calculate_order_cost(db, order)
-    except CostingValidationError as exc:
+        _prepare_order_close(db, order)
+        db.commit()
+    except ProductionOrderValidationError:
         db.rollback()
-        raise ProductionOrderValidationError(str(exc)) from exc
-
-    order.status = ProductionOrderStatus.CLOSED.value
-    order.closed_at = datetime.utcnow()
-    db.commit()
+        raise
     db.refresh(order)
     return order
+
+
+def close_order_with_inventory_posting(db: Session, order_id: int) -> ProductionOrderClosePostingResult:
+    order = get_order(db, order_id)
+    try:
+        _ensure_no_existing_production_ledger_posting(db, order)
+        _prepare_order_close(db, order)
+        warnings = _post_production_close_inventory(db, order)
+        db.commit()
+    except ProductionOrderValidationError:
+        db.rollback()
+        raise
+    except InventoryLedgerValidationError as exc:
+        db.rollback()
+        raise ProductionOrderValidationError(str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(order)
+    return ProductionOrderClosePostingResult(order=order, warnings=warnings)
 
 
 def get_order(db: Session, order_id: int) -> ProductionOrder:
@@ -369,6 +405,162 @@ def _calculate_required_quantity(order: ProductionOrder, quantity_standard: Deci
     if order.planned_qty is None or quantity_standard is None:
         return None
     return order.planned_qty * quantity_standard
+
+
+def _prepare_order_close(db: Session, order: ProductionOrder) -> None:
+    if order.status != ProductionOrderStatus.IN_PROGRESS.value:
+        raise ProductionOrderValidationError("Only in-progress orders can be closed.")
+    if order.input_qty is None or order.input_qty <= ZERO:
+        raise ProductionOrderValidationError("Input quantity must be greater than 0 before closing.")
+    if order.output_qty is None or order.output_qty <= ZERO:
+        raise ProductionOrderValidationError("Output quantity must be greater than 0 before closing.")
+
+    order.yield_percent = order.output_qty / order.input_qty
+    try:
+        calculate_order_cost(db, order)
+    except CostingValidationError as exc:
+        raise ProductionOrderValidationError(str(exc)) from exc
+
+    order.status = ProductionOrderStatus.CLOSED.value
+    order.closed_at = datetime.utcnow()
+
+
+def _ensure_no_existing_production_ledger_posting(db: Session, order: ProductionOrder) -> None:
+    existing_transaction = (
+        db.query(InventoryTransaction.id)
+        .filter(
+            InventoryTransaction.source_type == LEDGER_PRODUCTION_SOURCE_TYPE,
+            InventoryTransaction.source_id == order.id,
+            InventoryTransaction.transaction_type.in_(
+                [LEDGER_COMPONENT_CONSUMPTION_TYPE, LEDGER_PRODUCTION_RECEIPT_TYPE]
+            ),
+        )
+        .first()
+    )
+    if existing_transaction is not None:
+        raise ProductionOrderValidationError(
+            f"Production order {order.internal_order_number} already has inventory ledger postings."
+        )
+
+
+def _post_production_close_inventory(db: Session, order: ProductionOrder) -> list[str]:
+    warnings: list[str] = []
+    component_consumption_total = ZERO
+
+    for material in sorted(order.materials, key=lambda item: item.id):
+        if not (material.component_sku or "").strip():
+            raise ProductionOrderValidationError(
+                f"Production order material line {material.id} has no component SKU and cannot be posted to inventory."
+            )
+        component_product = _resolve_component_product(db, material.component_sku)
+        consumed_qty = _calculate_ledger_material_consumption_quantity(order, material)
+        if consumed_qty <= ZERO:
+            continue
+
+        component_warnings = _component_consumption_warnings(db, component_product, consumed_qty)
+        result = post_outgoing_movement(
+            db,
+            product_id=component_product.id,
+            transaction_type=LEDGER_COMPONENT_CONSUMPTION_TYPE,
+            outgoing_qty=consumed_qty,
+            transaction_date=order.closed_at,
+            source_type=LEDGER_PRODUCTION_SOURCE_TYPE,
+            source_id=order.id,
+            source_line_id=material.id,
+            notes=_build_component_consumption_note(order, component_product.sku, component_warnings),
+        )
+        component_consumption_total += result.transaction.total_cost or ZERO
+        warnings = _merge_warnings(warnings, component_warnings)
+
+    receipt_unit_cost = _calculate_ledger_receipt_unit_cost(order, component_consumption_total)
+    post_incoming_movement(
+        db,
+        product_id=order.product_id,
+        transaction_type=LEDGER_PRODUCTION_RECEIPT_TYPE,
+        incoming_qty=order.output_qty,
+        incoming_unit_cost=receipt_unit_cost,
+        transaction_date=order.closed_at,
+        source_type=LEDGER_PRODUCTION_SOURCE_TYPE,
+        source_id=order.id,
+        notes=LEDGER_PRODUCTION_RECEIPT_NOTE,
+    )
+    return warnings
+
+
+def _calculate_ledger_material_consumption_quantity(
+    order: ProductionOrder,
+    material: ProductionOrderMaterial,
+) -> Decimal:
+    component_label = material.component_sku or material.component_name or f"material line {material.id}"
+    # Production ledger consumption uses the persisted required_quantity snapshot when
+    # available, because it represents the component quantity required for this
+    # Production Order. The older quantity_standard logic is only a fallback for
+    # legacy rows without required_quantity.
+    if material.required_quantity is not None and material.required_quantity > ZERO:
+        return material.required_quantity
+    if material.quantity_standard is None:
+        raise ProductionOrderValidationError(
+            f"Production component {component_label} has no standard quantity."
+        )
+    # Must stay aligned with costing_service material quantity logic.
+    scaling_factor = order.input_qty if order.process_type in INPUT_SCALED_PROCESS_TYPES else ONE
+    return material.quantity_standard * scaling_factor
+
+
+def _component_consumption_warnings(
+    db: Session,
+    component_product: Product,
+    consumed_qty: Decimal,
+) -> list[str]:
+    balance = get_or_create_inventory_balance(db, component_product.id)
+    current_qty = balance.on_hand_qty if balance.on_hand_qty is not None else ZERO
+    current_average_cost = balance.average_unit_cost if balance.average_unit_cost is not None else ZERO
+    warnings: list[str] = []
+    if current_average_cost == ZERO:
+        warnings.append(f"Component {component_product.sku} was consumed with zero average cost.")
+    projected_qty = current_qty - consumed_qty
+    if projected_qty < ZERO:
+        warnings.append(
+            f"Production close leaves component {component_product.sku} with negative on-hand quantity {projected_qty}."
+        )
+    return warnings
+
+
+def _build_component_consumption_note(
+    order: ProductionOrder,
+    component_sku: str,
+    warning_messages: list[str],
+) -> str:
+    note = f"Production order {order.internal_order_number} component consumption for {component_sku}."
+    if warning_messages:
+        note = f"{note} Warnings: {' '.join(warning_messages)}"
+    return note
+
+
+def _calculate_ledger_receipt_unit_cost(
+    order: ProductionOrder,
+    component_consumption_total: Decimal,
+) -> Decimal:
+    output_qty = order.output_qty if order.output_qty is not None else ZERO
+    if output_qty <= ZERO:
+        raise ProductionOrderValidationError("Output quantity must be greater than 0 before posting ledger receipt.")
+
+    labor_total = order.real_labor_cost_total if order.real_labor_cost_total is not None else ZERO
+    overhead_total = order.real_overhead_cost_total if order.real_overhead_cost_total is not None else ZERO
+    machine_total = order.real_machine_cost_total if order.real_machine_cost_total is not None else ZERO
+    receipt_total_cost = component_consumption_total + labor_total + overhead_total + machine_total
+    receipt_unit_cost = receipt_total_cost / output_qty
+    if receipt_unit_cost < ZERO:
+        raise ProductionOrderValidationError("Ledger production receipt unit cost cannot be negative.")
+    return receipt_unit_cost
+
+
+def _merge_warnings(existing: list[str], new_messages: list[str]) -> list[str]:
+    merged = list(existing)
+    for message in new_messages:
+        if message not in merged:
+            merged.append(message)
+    return merged
 
 
 def _resolve_component_product(db: Session, component_sku: str | None) -> Product:

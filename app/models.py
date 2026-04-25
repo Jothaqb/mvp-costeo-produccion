@@ -274,6 +274,55 @@ class PurchaseOrderLine(Base):
 
     purchase_order: Mapped[PurchaseOrder] = relationship(back_populates="lines")
 
+
+class InventoryTransaction(Base):
+    __tablename__ = "inventory_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False, index=True)
+    transaction_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    transaction_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_line_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quantity_in: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    quantity_out: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    total_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    running_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    running_average_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    running_inventory_value: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    product: Mapped[Product] = relationship()
+
+
+class InventoryBalance(Base):
+    __tablename__ = "inventory_balances"
+    __table_args__ = (
+        UniqueConstraint("product_id", name="uq_inventory_balances_product_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False, index=True)
+    on_hand_qty: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    average_unit_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    inventory_value: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    last_transaction_id: Mapped[int | None] = mapped_column(ForeignKey("inventory_transactions.id"), nullable=True)
+    last_transaction_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    product: Mapped[Product] = relationship(foreign_keys=[product_id])
+    last_transaction: Mapped[InventoryTransaction | None] = relationship(foreign_keys=[last_transaction_id])
+
+
 class ImportBatch(Base):
     __tablename__ = "import_batches"
 
