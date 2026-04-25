@@ -24,11 +24,12 @@
 
   <section class="actions">
     <a class="button secondary" href="/planning/purchase-orders">Back to Purchase Orders</a>
-    {% if order.status == 'draft' %}
+    <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/print" target="_blank" rel="noopener">Print Purchase Order</a>
+    {% if can_edit %}
       <a class="button" href="/planning/purchase-orders/{{ order.id }}/edit">Edit Draft</a>
-      <form method="post" action="/planning/purchase-orders/{{ order.id }}/close" onsubmit="return confirm('Close this Purchase Order? It will become read-only and will not adjust inventory in this sprint.');">
-        <button type="submit" class="button secondary">Close Purchase Order</button>
-      </form>
+    {% endif %}
+    {% if can_receive %}
+      <a class="button" href="/planning/purchase-orders/{{ order.id }}/receive">Receive</a>
     {% endif %}
   </section>
 
@@ -39,7 +40,9 @@
           <th>#</th>
           <th>SKU</th>
           <th>Description</th>
-          <th>Quantity</th>
+          <th>Ordered quantity</th>
+          <th>Received to date</th>
+          <th>Pending quantity</th>
           <th>Unit cost</th>
           <th>Line total</th>
         </tr>
@@ -51,6 +54,8 @@
             <td>{{ line.sku_snapshot }}</td>
             <td>{{ line.description_snapshot }}</td>
             <td>{{ fmt.number_3(line.quantity) }}</td>
+            <td>{{ fmt.number_3(line.received_quantity) }}</td>
+            <td>{{ fmt.number_3(pending_quantities[line.id]) }}</td>
             <td>{{ fmt.money_crc(line.unit_cost_snapshot) }}</td>
             <td>{{ fmt.money_crc(line.line_total) }}</td>
           </tr>

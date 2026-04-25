@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Planning</p>
+    <h1>Receive Purchase Order {{ order.po_number }}</h1>
+    <p class="lead">Record partial or full receipts without affecting inventory in this sprint.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <section class="summary">
+    <div><strong>Supplier:</strong> {{ order.supplier_name_snapshot }}</div>
+    <div><strong>Date:</strong> {{ order.po_date }}</div>
+    <div><strong>Status:</strong> {{ order.status|capitalize }}</div>
+    <div><strong>Estimated total:</strong> {{ fmt.money_crc(order.estimated_total) }}</div>
+  </section>
+
+  <section>
+    <form method="post" action="/planning/purchase-orders/{{ order.id }}/receive" class="wide-form">
+      <table>
+        <thead>
+          <tr>
+            <th>SKU</th>
+            <th>Description</th>
+            <th>Ordered quantity</th>
+            <th>Received to date</th>
+            <th>Receive now</th>
+            <th>Pending quantity</th>
+          </tr>
+        </thead>
+        <tbody id="po-receive-lines">
+          {% for row in line_rows %}
+            <tr class="po-receive-line">
+              <td>
+                <input type="hidden" name="line_id" value="{{ row.line.id }}">
+                {{ row.line.sku_snapshot }}
+              </td>
+              <td>{{ row.line.description_snapshot }}</td>
+              <td class="po-receive-ordered" data-value="{{ '{:.4f}'.format(row.ordered_quantity) }}">{{ fmt.number_3(row.ordered_quantity) }}</td>
+              <td class="po-receive-received" data-value="{{ '{:.4f}'.format(row.received_quantity) }}">{{ fmt.number_3(row.received_quantity) }}</td>
+              <td>
+                <input
+                  class="po-receive-now-input"
+                  name="receive_now_{{ row.line.id }}"
+                  inputmode="decimal"
+                  value="{{ row.receive_now }}"
+                  placeholder="0"
+                >
+              </td>
+              <td class="po-receive-pending">{{ fmt.number_3(row.pending_quantity) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="inline-actions">
+        <button type="submit">Save Receipt</button>
+        <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}">Cancel</a>
+      </div>
+    </form>
+  </section>
+
+  <script>
+    function poReceiveNumber(value) {
+      const raw = String(value || "").trim().replace(/\s+/g, "");
+      if (!raw) {
+        return 0;
+      }
+      let normalized = raw;
+      if (normalized.includes(",") && normalized.includes(".")) {
+        normalized = normalized.replace(/,/g, "");
+      } else if (normalized.includes(",")) {
+        normalized = normalized.replace(/,/g, ".");
+      }
+      const parsed = Number(normalized);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function poReceiveFormat(value) {
+      return value.toLocaleString("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+    }
+
+    function poRecalculatePending() {
+      document.querySelectorAll("#po-receive-lines .po-receive-line").forEach((row) => {
+        const ordered = poReceiveNumber(row.querySelector(".po-receive-ordered")?.dataset.value);
+        const received = poReceiveNumber(row.querySelector(".po-receive-received")?.dataset.value);
+        const receiveNow = poReceiveNumber(row.querySelector(".po-receive-now-input")?.value);
+        const pending = Math.max(ordered - received - receiveNow, 0);
+        const pendingCell = row.querySelector(".po-receive-pending");
+        if (pendingCell) {
+          pendingCell.textContent = poReceiveFormat(pending);
+        }
+      });
+    }
+
+    document.getElementById("po-receive-lines")?.addEventListener("input", (event) => {
+      if (event.target.matches(".po-receive-now-input")) {
+        poRecalculatePending();
+      }
+    });
+
+    poRecalculatePending();
+  </script>
+{% endblock %}

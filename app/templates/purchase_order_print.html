@@ -1,0 +1,80 @@
+{% import "_formatting.html" as fmt %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Purchase Order {{ order.po_number }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+  </head>
+  <body class="po-print-page">
+    <main class="po-print-main">
+      <section class="actions print-hide">
+        <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}">Back to Purchase Order</a>
+        <button type="button" class="button" onclick="window.print()">Download / Print PO</button>
+      </section>
+
+      <section class="po-print-sheet">
+        <header class="po-print-header">
+          <div>
+            <p class="eyebrow">Purchase Order</p>
+            <h1>{{ order.po_number }}</h1>
+            <p><strong>Company:</strong> Esquina Verde Productos Naturales</p>
+            <p><strong>Brand:</strong> Green Corner</p>
+            <p><strong>Legal ID:</strong> 3102848795</p>
+          </div>
+          <div class="po-print-meta">
+            <p><strong>PO date:</strong> {{ order.po_date }}</p>
+            <p><strong>Status:</strong> {{ order.status|capitalize }}</p>
+            <p><strong>Email:</strong> {{ company_email or '[Add company email]' }}</p>
+            <p><strong>Address:</strong> {{ company_address or '[Add company address]' }}</p>
+          </div>
+        </header>
+
+        <section class="po-print-grid">
+          <div>
+            <h2>Supplier</h2>
+            <p><strong>Name:</strong> {{ order.supplier_name_snapshot }}</p>
+            <p><strong>Supplier number:</strong> {{ supplier_number or '[Pending]' }}</p>
+            <p><strong>Supplier address:</strong> {{ supplier_address or '[Pending]' }}</p>
+          </div>
+          <div>
+            <h2>Notes</h2>
+            <p>{{ order.notes or '-' }}</p>
+          </div>
+        </section>
+
+        <section class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>SKU</th>
+                <th>Description</th>
+                <th>Ordered quantity</th>
+                <th>Unit cost</th>
+                <th>Line total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for line in order.lines %}
+                <tr>
+                  <td>{{ line.line_number }}</td>
+                  <td>{{ line.sku_snapshot }}</td>
+                  <td>{{ line.description_snapshot }}</td>
+                  <td>{{ fmt.number_3(line.quantity) }}</td>
+                  <td>{{ fmt.money_crc(line.unit_cost_snapshot) }}</td>
+                  <td>{{ fmt.money_crc(line.line_total) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </section>
+
+        <footer class="po-print-footer">
+          <p><strong>Estimated total:</strong> {{ fmt.money_crc(order.estimated_total) }}</p>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>

@@ -225,7 +225,7 @@ class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft', 'issued', 'closed')",
+            "status IN ('draft', 'issued', 'incomplete', 'closed')",
             name="ck_purchase_orders_status",
         ),
     )
@@ -261,6 +261,7 @@ class PurchaseOrderLine(Base):
     description_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
     supplier_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    received_quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
     unit_cost_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

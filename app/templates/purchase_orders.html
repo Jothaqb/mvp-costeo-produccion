@@ -60,8 +60,12 @@
             <td>{{ fmt.money_crc(order.estimated_total) }}</td>
             <td class="inline-actions">
               <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}">View</a>
+              <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/print" target="_blank" rel="noopener">Print</a>
               {% if order.status == 'draft' %}
                 <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/edit">Edit</a>
+              {% endif %}
+              {% if order.status in ['draft', 'incomplete'] %}
+                <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/receive">Receive</a>
               {% endif %}
             </td>
           </tr>

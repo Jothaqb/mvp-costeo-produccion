@@ -454,6 +454,11 @@ button:focus,
   background: #d7dee3;
 }
 
+.status-incomplete {
+  color: #3b2400;
+  background: #ffd57a;
+}
+
 .status-closed {
   color: #fff;
   background: #17212b;
@@ -482,6 +487,53 @@ button:focus,
   gap: 10px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.po-print-sheet {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 24px;
+}
+
+.po-print-page {
+  background: #f4f7f5;
+}
+
+.po-print-main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.po-print-header,
+.po-print-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 18px;
+}
+
+.po-print-meta,
+.po-print-footer {
+  text-align: right;
+}
+
+.po-print-grid {
+  margin: 24px 0;
+}
+
+@media print {
+  .print-hide,
+  .site-header,
+  .site-nav,
+  .actions {
+    display: none !important;
+  }
+
+  .po-print-sheet {
+    border: 0;
+    padding: 0;
+  }
 }
 
 .po-order-line input,

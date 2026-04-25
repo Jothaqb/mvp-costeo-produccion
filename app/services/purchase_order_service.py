@@ -8,8 +8,10 @@ from app.models import AppSequence, Product, PurchaseOrder, PurchaseOrderLine
 
 PURCHASE_ORDER_SEQUENCE_NAME = "purchase_order"
 PURCHASE_ORDER_PREFIX = "PO"
-PURCHASE_ORDER_STATUSES = {"draft", "issued", "closed"}
+PURCHASE_ORDER_STATUSES = {"draft", "issued", "incomplete", "closed"}
 EDITABLE_STATUSES = {"draft"}
+RECEIVABLE_STATUSES = {"draft", "incomplete"}
+READ_ONLY_STATUSES = {"issued", "closed"}
 ZERO = Decimal("0")
 
 
@@ -80,11 +82,40 @@ def update_purchase_order(
     return order
 
 
-def close_purchase_order(db: Session, order_id: int) -> PurchaseOrder:
+def receive_purchase_order(
+    db: Session,
+    order_id: int,
+    receive_now_inputs: dict[int, str],
+) -> PurchaseOrder:
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).one()
-    if order.status != "draft":
-        raise PurchaseOrderValidationError("Only draft purchase orders can be closed.")
-    order.status = "closed"
+    if order.status not in RECEIVABLE_STATUSES:
+        raise PurchaseOrderValidationError(f"Purchase orders in status {order.status} cannot receive.")
+    if not order.lines:
+        raise PurchaseOrderValidationError("Purchase Order has no lines to receive.")
+
+    line_map = {line.id: line for line in order.lines}
+    any_received = False
+    for line in order.lines:
+        receive_now_text = receive_now_inputs.get(line.id, "0")
+        receive_now = parse_required_decimal(receive_now_text, f"Receive now for {line.sku_snapshot}")
+        if receive_now < ZERO:
+            raise PurchaseOrderValidationError("Receive now cannot be negative.")
+        new_received_quantity = Decimal(line.received_quantity or ZERO) + receive_now
+        if new_received_quantity > Decimal(line.quantity or ZERO):
+            raise PurchaseOrderValidationError(
+                f"Received quantity for {line.sku_snapshot} cannot exceed ordered quantity."
+            )
+        if receive_now > ZERO:
+            any_received = True
+        line.received_quantity = new_received_quantity
+
+    unknown_line_ids = set(receive_now_inputs) - set(line_map)
+    if unknown_line_ids:
+        raise PurchaseOrderValidationError("Receive payload contains invalid line references.")
+    if not any_received:
+        raise PurchaseOrderValidationError("Enter a received quantity greater than 0 for at least one line.")
+
+    order.status = "closed" if _all_lines_fully_received(order) else "incomplete"
     db.commit()
     db.refresh(order)
     return order
@@ -131,6 +162,18 @@ def list_all_product_suppliers(db: Session) -> list[str]:
     return sorted({(value or "").strip() for (value,) in values if (value or "").strip()})
 
 
+def pending_quantity_for_line(line: PurchaseOrderLine) -> Decimal:
+    return max(Decimal(line.quantity or ZERO) - Decimal(line.received_quantity or ZERO), ZERO)
+
+
+def can_receive_purchase_order(order: PurchaseOrder) -> bool:
+    return order.status in RECEIVABLE_STATUSES
+
+
+def is_purchase_order_editable(order: PurchaseOrder) -> bool:
+    return order.status in EDITABLE_STATUSES
+
+
 def _normalize_supplier(supplier: str) -> str:
     supplier_name = (supplier or "").strip()
     if not supplier_name:
@@ -148,7 +191,7 @@ def _normalize_status(status: str) -> str:
 def _normalize_save_status(status: str) -> str:
     normalized = _normalize_status(status)
     if normalized != "draft":
-        raise PurchaseOrderValidationError("Purchase Orders can only be saved in Draft. Use Close Purchase Order to finalize.")
+        raise PurchaseOrderValidationError("Purchase Orders can only be saved in Draft. Use Receive to complete the workflow.")
     return normalized
 
 
@@ -212,6 +255,7 @@ def _replace_lines(order: PurchaseOrder, line_data: list[dict[str, object]]) -> 
                 description_snapshot=item["description"],
                 supplier_name_snapshot=item["supplier"],
                 quantity=item["quantity"],
+                received_quantity=ZERO,
                 unit_cost_snapshot=item["unit_cost"],
                 line_total=item["line_total"],
             )
@@ -220,6 +264,10 @@ def _replace_lines(order: PurchaseOrder, line_data: list[dict[str, object]]) -> 
 
 def _recalculate_order_total(order: PurchaseOrder) -> None:
     order.estimated_total = sum((line.line_total or ZERO for line in order.lines), ZERO)
+
+
+def _all_lines_fully_received(order: PurchaseOrder) -> bool:
+    return all(pending_quantity_for_line(line) == ZERO for line in order.lines)
 
 
 def _ensure_order_editable(order: PurchaseOrder) -> None:

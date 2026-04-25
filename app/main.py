@@ -89,10 +89,13 @@ from app.services.planning_loyverse_refresh_service import (
 from app.services.purchase_order_service import (
     PurchaseOrderValidationError,
     build_purchase_order_prefill,
-    close_purchase_order,
+    can_receive_purchase_order,
     create_purchase_order,
+    is_purchase_order_editable,
     list_all_product_suppliers,
     list_purchase_order_suppliers,
+    pending_quantity_for_line,
+    receive_purchase_order,
     update_purchase_order,
 )
 from app.services.planning_service import (
@@ -203,6 +206,14 @@ def _purchase_order_line_inputs_from_form(form) -> list[dict[str, str]]:
     ]
 
 
+def _purchase_order_receive_inputs_from_form(form) -> dict[int, str]:
+    line_ids = [str(line_id).strip() for line_id in form.getlist("line_id") if str(line_id).strip()]
+    return {
+        int(line_id): str(form.get(f"receive_now_{line_id}", "0"))
+        for line_id in line_ids
+    }
+
+
 def _purchase_order_history_query(supplier: str, start_date: str, end_date: str) -> str:
     query = []
     if supplier:
@@ -212,6 +223,30 @@ def _purchase_order_history_query(supplier: str, start_date: str, end_date: str)
     if end_date:
         query.append(f"end_date={quote(end_date)}")
     return "&".join(query)
+
+
+def _purchase_order_receive_rows(
+    db: Session,
+    order_id: int,
+    receive_now_inputs: dict[int, str] | None = None,
+) -> list[dict[str, object]]:
+    receive_now_inputs = receive_now_inputs or {}
+    lines = (
+        db.query(PurchaseOrderLine)
+        .filter(PurchaseOrderLine.purchase_order_id == order_id)
+        .order_by(PurchaseOrderLine.line_number)
+        .all()
+    )
+    return [
+        {
+            "line": line,
+            "ordered_quantity": line.quantity,
+            "received_quantity": line.received_quantity,
+            "pending_quantity": pending_quantity_for_line(line),
+            "receive_now": receive_now_inputs.get(line.id, ""),
+        }
+        for line in lines
+    ]
 
 
 def _purchase_order_form_context(
@@ -774,6 +809,9 @@ def purchase_order_detail(request: Request, po_id: int, db: Session = Depends(ge
         context={
             "title": f"Purchase Order {order.po_number}",
             "order": order,
+            "can_edit": is_purchase_order_editable(order),
+            "can_receive": can_receive_purchase_order(order),
+            "pending_quantities": {line.id: pending_quantity_for_line(line) for line in order.lines},
             "error": request.query_params.get("error"),
             "message": request.query_params.get("message"),
         },
@@ -790,7 +828,7 @@ def edit_purchase_order(request: Request, po_id: int, db: Session = Depends(get_
         .filter(PurchaseOrder.id == po_id)
         .one()
     )
-    if order.status != "draft":
+    if not is_purchase_order_editable(order):
         return _redirect(
             f"/planning/purchase-orders/{order.id}?error={quote(f'Purchase orders in status {order.status} are read-only.')}"
         )
@@ -875,14 +913,79 @@ async def update_purchase_order_route(request: Request, po_id: int, db: Session 
         )
 
 
-@app.post("/planning/purchase-orders/{po_id}/close")
-def close_purchase_order_route(po_id: int, db: Session = Depends(get_db)) -> Response:
+@app.get("/planning/purchase-orders/{po_id}/print", response_class=HTMLResponse)
+def print_purchase_order(request: Request, po_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
+    order = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.lines))
+        .filter(PurchaseOrder.id == po_id)
+        .one()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="purchase_order_print.html",
+        context={
+            "title": f"Print Purchase Order {order.po_number}",
+            "order": order,
+            "supplier_number": None,
+            "supplier_address": None,
+            "company_email": None,
+            "company_address": None,
+        },
+    )
+
+
+@app.get("/planning/purchase-orders/{po_id}/receive", response_class=HTMLResponse)
+def receive_purchase_order_form(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    order = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.lines))
+        .filter(PurchaseOrder.id == po_id)
+        .one()
+    )
+    if not can_receive_purchase_order(order):
+        return _redirect(
+            f"/planning/purchase-orders/{order.id}?error={quote(f'Purchase orders in status {order.status} cannot receive.')}"
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="purchase_order_receive.html",
+        context={
+            "title": f"Receive Purchase Order {order.po_number}",
+            "order": order,
+            "line_rows": _purchase_order_receive_rows(db, order.id),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@app.post("/planning/purchase-orders/{po_id}/receive")
+async def receive_purchase_order_route(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    receive_inputs = _purchase_order_receive_inputs_from_form(form)
+    order = (
+        db.query(PurchaseOrder)
+        .options(joinedload(PurchaseOrder.lines))
+        .filter(PurchaseOrder.id == po_id)
+        .one()
+    )
     try:
-        order = close_purchase_order(db, po_id)
-        return _redirect(f"/planning/purchase-orders/{order.id}?message={quote('Purchase Order closed.')}")
+        order = receive_purchase_order(db=db, order_id=po_id, receive_now_inputs=receive_inputs)
+        return _redirect(f"/planning/purchase-orders/{order.id}?message={quote('Receipt saved successfully.')}")
     except PurchaseOrderValidationError as exc:
         db.rollback()
-        return _redirect(f"/planning/purchase-orders/{po_id}?error={quote(str(exc))}")
+        return templates.TemplateResponse(
+            request=request,
+            name="purchase_order_receive.html",
+            context={
+                "title": f"Receive Purchase Order {order.po_number}",
+                "order": order,
+                "line_rows": _purchase_order_receive_rows(db, order.id, receive_inputs),
+                "error": str(exc),
+            },
+        )
+
+
 @app.get("/planning/mps", response_class=HTMLResponse)
 def mps_report(
     request: Request,
