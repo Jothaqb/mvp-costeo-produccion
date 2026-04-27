@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/master-data/suppliers/new">New supplier</a></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Contact</th>
+          <th>Phone</th>
+          <th>Email</th>
+          <th>Active</th>
+          <th>Edit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for supplier in suppliers %}
+          <tr>
+            <td>{{ supplier.name }}</td>
+            <td>{{ supplier.contact_name or "" }}</td>
+            <td>{{ supplier.phone or "" }}</td>
+            <td>{{ supplier.email or "" }}</td>
+            <td>{{ "Yes" if supplier.active else "No" }}</td>
+            <td><a href="/master-data/suppliers/{{ supplier.id }}/edit">Edit</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6">No suppliers found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="post" action="{{ form_action }}">
+      <label for="name">Name</label>
+      <input id="name" name="name" value="{{ form_data.name }}" required>
+
+      <label for="description">Description</label>
+      <textarea id="description" name="description">{{ form_data.description }}</textarea>
+
+      <label><input type="checkbox" name="active" value="true" {% if form_data.active %}checked{% endif %}> Active</label>
+
+      <button type="submit">Save category</button>
+      <a href="/master-data/categories">Cancel</a>
+    </form>
+  </section>
+{% endblock %}

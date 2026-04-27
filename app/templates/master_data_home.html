@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Master Data</p>
+    <h1>Master Data</h1>
+    <p class="lead">Maintain the shared category, supplier, and product foundation for future operations.</p>
+  </section>
+
+  <section class="module-grid" aria-label="Master data sections">
+    <a class="module-card module-link-card" href="/master-data/products" aria-label="Open Products and SKUs">
+      <div>
+        <p class="eyebrow">Catalog</p>
+        <h2>Products / SKUs</h2>
+        <p>Create and maintain the base product records used across sales, planning, and purchasing.</p>
+      </div>
+      <span class="module-entry">Open Products / SKUs</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/master-data/categories" aria-label="Open Product Categories">
+      <div>
+        <p class="eyebrow">Catalog</p>
+        <h2>Categories</h2>
+        <p>Organize products with simple active and inactive category records.</p>
+      </div>
+      <span class="module-entry">Open Categories</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/master-data/suppliers" aria-label="Open Suppliers">
+      <div>
+        <p class="eyebrow">Procurement</p>
+        <h2>Suppliers</h2>
+        <p>Maintain supplier records for purchased products without changing current PO workflows.</p>
+      </div>
+      <span class="module-entry">Open Suppliers</span>
+    </a>
+  </section>
+{% endblock %}

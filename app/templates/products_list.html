@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/master-data/products/new">New product / SKU</a></p>
+    <table>
+      <thead>
+        <tr>
+          <th>SKU</th>
+          <th>Name</th>
+          <th>Category</th>
+          <th>Supplier</th>
+          <th>Active</th>
+          <th>Available for sale</th>
+          <th>Manufactured</th>
+          <th>Purchased</th>
+          <th>B2C price</th>
+          <th>Standard cost</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for product in products %}
+          <tr>
+            <td>{{ product.sku }}</td>
+            <td>{{ product.name }}</td>
+            <td>{{ product.category.name if product.category else "" }}</td>
+            <td>{{ product.supplier_record.name if product.supplier_record else product.supplier or "" }}</td>
+            <td>{{ "Yes" if product.active else "No" }}</td>
+            <td>{{ "Yes" if product.available_for_sale_gc else "No" }}</td>
+            <td>{{ "Yes" if product.is_manufactured else "No" }}</td>
+            <td>{{ "Yes" if product.is_purchased_product else "No" }}</td>
+            <td>{{ fmt.money_crc(product.b2c_price) }}</td>
+            <td>{{ fmt.money_crc(product.standard_cost) }}</td>
+            <td><a href="/master-data/products/{{ product.id }}">View</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="11">No products found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/master-data/categories/new">New category</a></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Description</th>
+          <th>Active</th>
+          <th>Edit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for category in categories %}
+          <tr>
+            <td>{{ category.name }}</td>
+            <td>{{ category.description or "" }}</td>
+            <td>{{ "Yes" if category.active else "No" }}</td>
+            <td><a href="/master-data/categories/{{ category.id }}/edit">Edit</a></td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4">No categories found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

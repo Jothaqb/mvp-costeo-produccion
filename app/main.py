@@ -17,6 +17,7 @@ from app.database import (
     ensure_b2b_loyverse_mapping_tables,
     ensure_app_sequences_table,
     ensure_inventory_ledger_tables,
+    ensure_master_data_tables,
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
     ensure_product_loyverse_mapping_columns,
@@ -50,6 +51,7 @@ from app.models import (
     MachineRate,
     OverheadRate,
     Product,
+    ProductCategory,
     ProductionOrder,
     ProductionOrderActivity,
     ProductionOrderMaterial,
@@ -57,6 +59,7 @@ from app.models import (
     PurchaseOrderLine,
     Route,
     RouteActivity,
+    Supplier,
 )
 from app.schemas import ComponentType, ProcessType, ProductionOrderStatus
 from app.services.b2b_sales_service import (
@@ -98,6 +101,19 @@ from app.services.inventory_ledger_service import (
     InventoryInitializationResult,
     InventoryLedgerValidationError,
     initialize_inventory_opening_balances,
+)
+from app.services.master_data_service import (
+    MasterDataValidationError,
+    create_product_category,
+    create_product_master,
+    create_supplier,
+    get_product_balance,
+    get_product_for_detail,
+    list_category_options,
+    list_supplier_options,
+    update_product_category,
+    update_product_master,
+    update_supplier,
 )
 from app.services.planning_loyverse_refresh_service import (
     PlanningLoyverseRefreshError,
@@ -160,6 +176,7 @@ ensure_product_default_route_column()
 ensure_product_is_manufactured_column()
 ensure_product_loyverse_mapping_columns()
 ensure_product_planning_columns()
+ensure_master_data_tables()
 ensure_app_sequences_table()
 ensure_inventory_ledger_tables()
 ensure_purchase_order_tables()
@@ -208,6 +225,10 @@ def _b2c_channels() -> list[str]:
     return ["whatsapp", "website", "other"]
 
 
+def _form_bool(form, field_name: str) -> bool:
+    return str(form.get(field_name, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _list_b2c_sellable_products(db: Session) -> list[Product]:
     return (
         db.query(Product)
@@ -215,6 +236,42 @@ def _list_b2c_sellable_products(db: Session) -> list[Product]:
         .order_by(Product.name, Product.sku)
         .all()
     )
+
+
+def _product_form_context(
+    *,
+    title: str,
+    form_action: str,
+    product: Product | None,
+    categories: list[ProductCategory],
+    suppliers: list[Supplier],
+    error: str | None = None,
+    product_data: dict[str, object] | None = None,
+) -> dict[str, object]:
+    data = product_data or {
+        "sku": product.sku if product else "",
+        "name": product.name if product else "",
+        "unit": product.unit if product and product.unit else "",
+        "category_id": str(product.category_id) if product and product.category_id else "",
+        "supplier_id": str(product.supplier_id) if product and product.supplier_id else "",
+        "description": product.description if product and product.description else "",
+        "observations": product.observations if product and product.observations else "",
+        "b2c_price": product.b2c_price if product else None,
+        "standard_cost": product.standard_cost if product else None,
+        "active": product.active if product else True,
+        "available_for_sale_gc": product.available_for_sale_gc if product else False,
+        "is_manufactured": product.is_manufactured if product else False,
+        "is_purchased_product": product.is_purchased_product if product else False,
+    }
+    return {
+        "title": title,
+        "form_action": form_action,
+        "product": product,
+        "product_data": data,
+        "categories": categories,
+        "suppliers": suppliers,
+        "error": error,
+    }
 
 
 def _line_inputs_from_form(form, prefix: str, count: int | None = None) -> list[dict[str, str]]:
@@ -447,6 +504,401 @@ def dashboard(request: Request) -> HTMLResponse:
         name="dashboard.html",
         context={"title": "Production Costing MVP"},
     )
+
+
+@app.get("/master-data", response_class=HTMLResponse)
+def master_data_home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="master_data_home.html",
+        context={"title": "Master Data"},
+    )
+
+
+@app.get("/master-data/categories", response_class=HTMLResponse)
+def product_categories(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    categories = db.query(ProductCategory).order_by(ProductCategory.name, ProductCategory.id).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="product_categories_list.html",
+        context={"title": "Product Categories", "categories": categories},
+    )
+
+
+@app.get("/master-data/categories/new", response_class=HTMLResponse)
+def new_product_category(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="product_category_form.html",
+        context={
+            "title": "New Product Category",
+            "form_action": "/master-data/categories",
+            "category": None,
+            "form_data": {"name": "", "description": "", "active": True},
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/categories")
+async def create_product_category_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    form_data = {
+        "name": str(form.get("name", "")),
+        "description": str(form.get("description", "")),
+        "active": _form_bool(form, "active"),
+    }
+    try:
+        category = create_product_category(
+            db,
+            name=str(form_data["name"]),
+            description=str(form_data["description"]),
+            active=bool(form_data["active"]),
+        )
+        return _redirect(f"/master-data/categories/{category.id}/edit")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="product_category_form.html",
+            context={
+                "title": "New Product Category",
+                "form_action": "/master-data/categories",
+                "category": None,
+                "form_data": form_data,
+                "error": str(exc),
+            },
+        )
+
+
+@app.get("/master-data/categories/{category_id}/edit", response_class=HTMLResponse)
+def edit_product_category(category_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    category = db.query(ProductCategory).filter(ProductCategory.id == category_id).one()
+    return templates.TemplateResponse(
+        request=request,
+        name="product_category_form.html",
+        context={
+            "title": "Edit Product Category",
+            "form_action": f"/master-data/categories/{category.id}/edit",
+            "category": category,
+            "form_data": {
+                "name": category.name,
+                "description": category.description or "",
+                "active": category.active,
+            },
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/categories/{category_id}/edit")
+async def update_product_category_route(
+    category_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    form = await request.form()
+    form_data = {
+        "name": str(form.get("name", "")),
+        "description": str(form.get("description", "")),
+        "active": _form_bool(form, "active"),
+    }
+    try:
+        update_product_category(
+            db,
+            category_id=category_id,
+            name=str(form_data["name"]),
+            description=str(form_data["description"]),
+            active=bool(form_data["active"]),
+        )
+        return _redirect("/master-data/categories")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        category = db.query(ProductCategory).filter(ProductCategory.id == category_id).one()
+        return templates.TemplateResponse(
+            request=request,
+            name="product_category_form.html",
+            context={
+                "title": "Edit Product Category",
+                "form_action": f"/master-data/categories/{category.id}/edit",
+                "category": category,
+                "form_data": form_data,
+                "error": str(exc),
+            },
+        )
+
+
+@app.get("/master-data/suppliers", response_class=HTMLResponse)
+def suppliers(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    supplier_rows = db.query(Supplier).order_by(Supplier.name, Supplier.id).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="suppliers_list.html",
+        context={"title": "Suppliers", "suppliers": supplier_rows},
+    )
+
+
+@app.get("/master-data/suppliers/new", response_class=HTMLResponse)
+def new_supplier(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="supplier_form.html",
+        context={
+            "title": "New Supplier",
+            "form_action": "/master-data/suppliers",
+            "supplier": None,
+            "form_data": {
+                "name": "",
+                "contact_name": "",
+                "phone": "",
+                "email": "",
+                "notes": "",
+                "active": True,
+            },
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/suppliers")
+async def create_supplier_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    form_data = {
+        "name": str(form.get("name", "")),
+        "contact_name": str(form.get("contact_name", "")),
+        "phone": str(form.get("phone", "")),
+        "email": str(form.get("email", "")),
+        "notes": str(form.get("notes", "")),
+        "active": _form_bool(form, "active"),
+    }
+    try:
+        supplier = create_supplier(
+            db,
+            name=str(form_data["name"]),
+            contact_name=str(form_data["contact_name"]),
+            phone=str(form_data["phone"]),
+            email=str(form_data["email"]),
+            notes=str(form_data["notes"]),
+            active=bool(form_data["active"]),
+        )
+        return _redirect(f"/master-data/suppliers/{supplier.id}/edit")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="supplier_form.html",
+            context={
+                "title": "New Supplier",
+                "form_action": "/master-data/suppliers",
+                "supplier": None,
+                "form_data": form_data,
+                "error": str(exc),
+            },
+        )
+
+
+@app.get("/master-data/suppliers/{supplier_id}/edit", response_class=HTMLResponse)
+def edit_supplier(supplier_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    supplier = db.query(Supplier).filter(Supplier.id == supplier_id).one()
+    return templates.TemplateResponse(
+        request=request,
+        name="supplier_form.html",
+        context={
+            "title": "Edit Supplier",
+            "form_action": f"/master-data/suppliers/{supplier.id}/edit",
+            "supplier": supplier,
+            "form_data": {
+                "name": supplier.name,
+                "contact_name": supplier.contact_name or "",
+                "phone": supplier.phone or "",
+                "email": supplier.email or "",
+                "notes": supplier.notes or "",
+                "active": supplier.active,
+            },
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/suppliers/{supplier_id}/edit")
+async def update_supplier_route(supplier_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    form_data = {
+        "name": str(form.get("name", "")),
+        "contact_name": str(form.get("contact_name", "")),
+        "phone": str(form.get("phone", "")),
+        "email": str(form.get("email", "")),
+        "notes": str(form.get("notes", "")),
+        "active": _form_bool(form, "active"),
+    }
+    try:
+        update_supplier(
+            db,
+            supplier_id=supplier_id,
+            name=str(form_data["name"]),
+            contact_name=str(form_data["contact_name"]),
+            phone=str(form_data["phone"]),
+            email=str(form_data["email"]),
+            notes=str(form_data["notes"]),
+            active=bool(form_data["active"]),
+        )
+        return _redirect("/master-data/suppliers")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        supplier = db.query(Supplier).filter(Supplier.id == supplier_id).one()
+        return templates.TemplateResponse(
+            request=request,
+            name="supplier_form.html",
+            context={
+                "title": "Edit Supplier",
+                "form_action": f"/master-data/suppliers/{supplier.id}/edit",
+                "supplier": supplier,
+                "form_data": form_data,
+                "error": str(exc),
+            },
+        )
+
+
+@app.get("/master-data/products", response_class=HTMLResponse)
+def products_master(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    products = (
+        db.query(Product)
+        .options(joinedload(Product.category), joinedload(Product.supplier_record))
+        .order_by(Product.sku, Product.id)
+        .all()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="products_list.html",
+        context={"title": "Products / SKUs", "products": products},
+    )
+
+
+@app.get("/master-data/products/new", response_class=HTMLResponse)
+def new_product_master(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="product_form.html",
+        context=_product_form_context(
+            title="New Product / SKU",
+            form_action="/master-data/products",
+            product=None,
+            categories=list_category_options(db),
+            suppliers=list_supplier_options(db),
+        ),
+    )
+
+
+@app.post("/master-data/products")
+async def create_product_master_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    product_data = {
+        "sku": str(form.get("sku", "")),
+        "name": str(form.get("name", "")),
+        "unit": str(form.get("unit", "")),
+        "category_id": str(form.get("category_id", "")),
+        "supplier_id": str(form.get("supplier_id", "")),
+        "description": str(form.get("description", "")),
+        "observations": str(form.get("observations", "")),
+        "b2c_price": str(form.get("b2c_price", "")),
+        "standard_cost": str(form.get("standard_cost", "")),
+        "active": _form_bool(form, "active"),
+        "available_for_sale_gc": _form_bool(form, "available_for_sale_gc"),
+        "is_manufactured": _form_bool(form, "is_manufactured"),
+        "is_purchased_product": _form_bool(form, "is_purchased_product"),
+    }
+    try:
+        product = create_product_master(db, **product_data)
+        return _redirect(f"/master-data/products/{product.id}")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        category_id = int(product_data["category_id"]) if str(product_data["category_id"]).isdigit() else None
+        supplier_id = int(product_data["supplier_id"]) if str(product_data["supplier_id"]).isdigit() else None
+        return templates.TemplateResponse(
+            request=request,
+            name="product_form.html",
+            context=_product_form_context(
+                title="New Product / SKU",
+                form_action="/master-data/products",
+                product=None,
+                categories=list_category_options(db, category_id),
+                suppliers=list_supplier_options(db, supplier_id),
+                error=str(exc),
+                product_data=product_data,
+            ),
+        )
+
+
+@app.get("/master-data/products/{product_id}", response_class=HTMLResponse)
+def product_detail(product_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    product = get_product_for_detail(db, product_id)
+    balance = get_product_balance(db, product_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="product_detail.html",
+        context={"title": "Product Detail", "product": product, "balance": balance},
+    )
+
+
+@app.get("/master-data/products/{product_id}/edit", response_class=HTMLResponse)
+def edit_product_master(product_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    product = get_product_for_detail(db, product_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="product_form.html",
+        context=_product_form_context(
+            title="Edit Product / SKU",
+            form_action=f"/master-data/products/{product.id}/edit",
+            product=product,
+            categories=list_category_options(db, product.category_id),
+            suppliers=list_supplier_options(db, product.supplier_id),
+        ),
+    )
+
+
+@app.post("/master-data/products/{product_id}/edit")
+async def update_product_master_route(
+    product_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    form = await request.form()
+    product_data = {
+        "sku": str(form.get("sku", "")),
+        "name": str(form.get("name", "")),
+        "unit": str(form.get("unit", "")),
+        "category_id": str(form.get("category_id", "")),
+        "supplier_id": str(form.get("supplier_id", "")),
+        "description": str(form.get("description", "")),
+        "observations": str(form.get("observations", "")),
+        "b2c_price": str(form.get("b2c_price", "")),
+        "standard_cost": str(form.get("standard_cost", "")),
+        "active": _form_bool(form, "active"),
+        "available_for_sale_gc": _form_bool(form, "available_for_sale_gc"),
+        "is_manufactured": _form_bool(form, "is_manufactured"),
+        "is_purchased_product": _form_bool(form, "is_purchased_product"),
+    }
+    try:
+        update_product_master(db, product_id=product_id, **product_data)
+        return _redirect(f"/master-data/products/{product_id}")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        product = get_product_for_detail(db, product_id)
+        category_id = int(product_data["category_id"]) if str(product_data["category_id"]).isdigit() else product.category_id
+        supplier_id = int(product_data["supplier_id"]) if str(product_data["supplier_id"]).isdigit() else product.supplier_id
+        return templates.TemplateResponse(
+            request=request,
+            name="product_form.html",
+            context=_product_form_context(
+                title="Edit Product / SKU",
+                form_action=f"/master-data/products/{product.id}/edit",
+                product=product,
+                categories=list_category_options(db, category_id),
+                suppliers=list_supplier_options(db, supplier_id),
+                error=str(exc),
+                product_data=product_data,
+            ),
+        )
 
 
 @app.get("/production", response_class=HTMLResponse)

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="post" action="{{ form_action }}">
+      <label for="sku">SKU</label>
+      <input id="sku" name="sku" value="{{ product_data.sku }}" required>
+
+      <label for="name">Name</label>
+      <input id="name" name="name" value="{{ product_data.name }}" required>
+
+      <label for="unit">Unit</label>
+      <input id="unit" name="unit" value="{{ product_data.unit }}">
+
+      <label for="category_id">Category</label>
+      <select id="category_id" name="category_id">
+        <option value="">None</option>
+        {% for category in categories %}
+          <option value="{{ category.id }}" {% if product_data.category_id == category.id|string %}selected{% endif %}>{{ category.name }}{% if not category.active %} (inactive){% endif %}</option>
+        {% endfor %}
+      </select>
+
+      <label for="supplier_id">Supplier</label>
+      <select id="supplier_id" name="supplier_id">
+        <option value="">None</option>
+        {% for supplier in suppliers %}
+          <option value="{{ supplier.id }}" {% if product_data.supplier_id == supplier.id|string %}selected{% endif %}>{{ supplier.name }}{% if not supplier.active %} (inactive){% endif %}</option>
+        {% endfor %}
+      </select>
+
+      <label for="description">Description</label>
+      <textarea id="description" name="description">{{ product_data.description }}</textarea>
+
+      <label for="observations">Observations</label>
+      <textarea id="observations" name="observations">{{ product_data.observations }}</textarea>
+
+      <label for="b2c_price">B2C price</label>
+      <input id="b2c_price" name="b2c_price" inputmode="decimal" value="{{ product_data.b2c_price if product_data.b2c_price is not none else '' }}">
+
+      <label for="standard_cost">Standard cost</label>
+      <input id="standard_cost" name="standard_cost" inputmode="decimal" value="{{ product_data.standard_cost if product_data.standard_cost is not none else '' }}">
+
+      <label><input type="checkbox" name="active" value="true" {% if product_data.active %}checked{% endif %}> Active</label>
+      <label><input type="checkbox" name="available_for_sale_gc" value="true" {% if product_data.available_for_sale_gc %}checked{% endif %}> Available for sale</label>
+      <label><input type="checkbox" name="is_manufactured" value="true" {% if product_data.is_manufactured %}checked{% endif %}> Manufactured product</label>
+      <label><input type="checkbox" name="is_purchased_product" value="true" {% if product_data.is_purchased_product %}checked{% endif %}> Purchased product</label>
+
+      <p class="muted-inline">Manufactured and purchased flags can be left blank for products that are not yet classified.</p>
+
+      <button type="submit">Save product</button>
+      <a href="/master-data/products">Cancel</a>
+    </form>
+  </section>
+{% endblock %}

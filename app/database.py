@@ -74,6 +74,72 @@ def ensure_product_planning_columns() -> None:
             },
         )
 
+
+def ensure_master_data_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS product_categories (
+                id INTEGER NOT NULL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                description TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_categories_name ON product_categories (name)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_categories_active ON product_categories (active)"
+        )
+
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS suppliers (
+                id INTEGER NOT NULL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                contact_name VARCHAR(255),
+                phone VARCHAR(100),
+                email VARCHAR(255),
+                notes TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_suppliers_name ON suppliers (name)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_suppliers_active ON suppliers (active)"
+        )
+
+        _ensure_columns(
+            connection,
+            "products",
+            {
+                "category_id": "INTEGER",
+                "supplier_id": "INTEGER",
+                "description": "TEXT",
+                "observations": "TEXT",
+                "b2c_price": "NUMERIC(12, 4)",
+                "is_purchased_product": "BOOLEAN NOT NULL DEFAULT 0",
+            },
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_products_category_id ON products (category_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_products_supplier_id ON products (supplier_id)"
+        )
+
 def ensure_product_loyverse_mapping_columns() -> None:
     if engine.dialect.name != "sqlite":
         return

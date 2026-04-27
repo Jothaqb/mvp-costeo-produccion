@@ -7,6 +7,45 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
+class ProductCategory(Base):
+    __tablename__ = "product_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    products: Mapped[list["Product"]] = relationship("Product", back_populates="category")
+
+
+class Supplier(Base):
+    __tablename__ = "suppliers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    contact_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    products: Mapped[list["Product"]] = relationship("Product", back_populates="supplier_record")
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -14,12 +53,18 @@ class Product(Base):
     sku: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("product_categories.id"), nullable=True)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey("suppliers.id"), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observations: Mapped[str | None] = mapped_column(Text, nullable=True)
+    b2c_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     standard_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     loyverse_handle: Mapped[str | None] = mapped_column(String(255), nullable=True)
     loyverse_item_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     loyverse_variant_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     default_route_id: Mapped[int | None] = mapped_column(ForeignKey("routes.id"), nullable=True)
     is_manufactured: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_purchased_product: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     available_for_sale_gc: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     supplier: Mapped[str | None] = mapped_column(String(255), nullable=True)
     current_inventory_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
@@ -39,6 +84,8 @@ class Product(Base):
     )
 
     default_route: Mapped["Route | None"] = relationship("Route", back_populates="products")
+    category: Mapped["ProductCategory | None"] = relationship("ProductCategory", back_populates="products")
+    supplier_record: Mapped["Supplier | None"] = relationship("Supplier", back_populates="products")
 
 
 class AppSequence(Base):

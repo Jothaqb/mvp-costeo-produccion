@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ product.sku }} - {{ product.name }}</h1>
+    <div class="actions">
+      <a role="button" href="/master-data/products/{{ product.id }}/edit">Edit product</a>
+      <a role="button" class="secondary" href="/master-data/products">Back to products</a>
+    </div>
+
+    <dl class="summary">
+      <div><dt>SKU</dt><dd>{{ product.sku }}</dd></div>
+      <div><dt>Name</dt><dd>{{ product.name }}</dd></div>
+      <div><dt>Unit</dt><dd>{{ product.unit or "" }}</dd></div>
+      <div><dt>Category</dt><dd>{{ product.category.name if product.category else "" }}</dd></div>
+      <div><dt>Supplier</dt><dd>{{ product.supplier_record.name if product.supplier_record else product.supplier or "" }}</dd></div>
+      <div><dt>Active</dt><dd>{{ "Yes" if product.active else "No" }}</dd></div>
+      <div><dt>Available for sale</dt><dd>{{ "Yes" if product.available_for_sale_gc else "No" }}</dd></div>
+      <div><dt>Manufactured product</dt><dd>{{ "Yes" if product.is_manufactured else "No" }}</dd></div>
+      <div><dt>Purchased product</dt><dd>{{ "Yes" if product.is_purchased_product else "No" }}</dd></div>
+      <div><dt>B2C price</dt><dd>{{ fmt.money_crc(product.b2c_price) }}</dd></div>
+      <div><dt>Standard cost</dt><dd>{{ fmt.money_crc(product.standard_cost) }}</dd></div>
+      <div><dt>Description</dt><dd>{{ product.description or "" }}</dd></div>
+      <div><dt>Observations</dt><dd>{{ product.observations or "" }}</dd></div>
+    </dl>
+
+    {% if not product.is_manufactured and not product.is_purchased_product %}
+      <p class="muted-inline">This product is not yet classified as manufactured or purchased.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Inventory Snapshot</h2>
+    {% if balance %}
+      <dl class="summary">
+        <div><dt>On hand quantity</dt><dd>{{ fmt.number_3(balance.on_hand_qty) }}</dd></div>
+        <div><dt>Average unit cost</dt><dd>{{ fmt.money_crc(balance.average_unit_cost) }}</dd></div>
+        <div><dt>Inventory value</dt><dd>{{ fmt.money_crc(balance.inventory_value) }}</dd></div>
+      </dl>
+    {% else %}
+      <p>No InventoryBalance record exists yet for this product.</p>
+    {% endif %}
+  </section>
+{% endblock %}

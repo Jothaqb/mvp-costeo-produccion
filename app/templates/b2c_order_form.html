@@ -51,10 +51,10 @@
                 <select class="b2c-product-select" name="line_sku_{{ index }}">
                   <option value="">Select product...</option>
                   {% if submitted_line and submitted_line.sku and submitted_line.sku not in product_skus %}
-                    <option value="{{ submitted_line.sku }}" data-description="" selected>{{ submitted_line.sku }}</option>
+                    <option value="{{ submitted_line.sku }}" data-description="" data-b2c-price="" selected>{{ submitted_line.sku }}</option>
                   {% endif %}
                   {% for product in products %}
-                    <option value="{{ product.sku }}" data-description="{{ product.name }}" {% if submitted_line and submitted_line.sku == product.sku %}selected{% endif %}>{{ product.name }} ({{ product.sku }})</option>
+                    <option value="{{ product.sku }}" data-description="{{ product.name }}" data-b2c-price="{{ '{:.4f}'.format(product.b2c_price) if product.b2c_price is not none and product.b2c_price > 0 else '' }}" {% if submitted_line and submitted_line.sku == product.sku %}selected{% endif %}>{{ product.name }} ({{ product.sku }})</option>
                   {% endfor %}
                 </select>
               </td>
@@ -83,7 +83,7 @@
           <select class="b2c-product-select" name="line_sku___index__">
             <option value="">Select product...</option>
             {% for product in products %}
-              <option value="{{ product.sku }}" data-description="{{ product.name }}">{{ product.name }} ({{ product.sku }})</option>
+              <option value="{{ product.sku }}" data-description="{{ product.name }}" data-b2c-price="{{ '{:.4f}'.format(product.b2c_price) if product.b2c_price is not none and product.b2c_price > 0 else '' }}">{{ product.name }} ({{ product.sku }})</option>
             {% endfor %}
           </select>
         </td>
@@ -114,6 +114,22 @@
           button.disabled = rows.length <= 1;
         }
       });
+    }
+
+    function b2cApplyProductSelection(row, overwritePrice) {
+      const select = row.querySelector(".b2c-product-select");
+      const unitPriceInput = row.querySelector(".b2c-unit-price-input");
+      const descriptionCell = row.querySelector(".b2c-description-cell");
+      if (!select || !unitPriceInput || !descriptionCell) {
+        return;
+      }
+      const option = select.options[select.selectedIndex];
+      const description = option ? (option.dataset.description || "") : "";
+      const productPrice = option ? (option.dataset.b2cPrice || "") : "";
+      descriptionCell.textContent = description;
+      if (overwritePrice || !String(unitPriceInput.value || "").trim()) {
+        unitPriceInput.value = productPrice || "";
+      }
     }
 
     function b2cRecalculate() {
@@ -161,7 +177,12 @@
 
     if (b2cLinesBody) {
       b2cLinesBody.addEventListener("change", (event) => {
-        if (event.target.matches(".b2c-product-select, .b2c-quantity-input, .b2c-unit-price-input")) {
+        if (event.target.matches(".b2c-product-select")) {
+          b2cApplyProductSelection(event.target.closest(".b2c-order-line"), true);
+          b2cRecalculate();
+          return;
+        }
+        if (event.target.matches(".b2c-quantity-input, .b2c-unit-price-input")) {
           b2cRecalculate();
         }
       });
@@ -192,6 +213,9 @@
       });
     }
 
+    document.querySelectorAll("#b2c-lines-body .b2c-order-line").forEach((row) => {
+      b2cApplyProductSelection(row, false);
+    });
     b2cRecalculate();
   </script>
 {% endblock %}
