@@ -141,6 +141,69 @@ def ensure_master_data_tables() -> None:
         )
 
 
+def ensure_discount_master_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS discount_rules (
+                id INTEGER NOT NULL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                discount_type VARCHAR(50) NOT NULL,
+                value NUMERIC(12, 4) NOT NULL,
+                applies_to VARCHAR(50) NOT NULL,
+                channel VARCHAR(50) NOT NULL,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                description TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT ck_discount_rules_discount_type CHECK (discount_type IN ('percentage')),
+                CONSTRAINT ck_discount_rules_applies_to CHECK (applies_to IN ('order_total')),
+                CONSTRAINT ck_discount_rules_channel CHECK (channel IN ('b2c'))
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_discount_rules_name ON discount_rules (name)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_discount_rules_active ON discount_rules (active)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_discount_rules_channel_applies_to "
+            "ON discount_rules (channel, applies_to, active)"
+        )
+
+        _ensure_columns(
+            connection,
+            "b2c_sales_orders",
+            {
+                "discount_rule_id": "INTEGER",
+                "discount_name_snapshot": "VARCHAR(255)",
+                "discount_type_snapshot": "VARCHAR(50)",
+                "discount_value_snapshot": "NUMERIC(12, 4)",
+                "discount_amount": "NUMERIC(12, 4) NOT NULL DEFAULT 0",
+                "cost_total_snapshot": "NUMERIC(12, 4)",
+                "gross_margin_amount": "NUMERIC(12, 4)",
+                "gross_margin_percent": "NUMERIC(12, 4)",
+            },
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_discount_rule_id ON b2c_sales_orders (discount_rule_id)"
+        )
+
+        _ensure_columns(
+            connection,
+            "b2c_sales_order_lines",
+            {
+                "discount_amount_snapshot": "NUMERIC(12, 4)",
+                "net_line_total_snapshot": "NUMERIC(12, 4)",
+            },
+        )
+
+
 def ensure_product_bom_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

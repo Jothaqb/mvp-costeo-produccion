@@ -14,7 +14,13 @@
       <div><dt>Phone</dt><dd>{{ order.customer_phone or "" }}</dd></div>
       <div><dt>Email</dt><dd>{{ order.customer_email or "" }}</dd></div>
       <div><dt>Subtotal</dt><dd>{{ fmt.money_crc(order.subtotal_amount) }}</dd></div>
+      <div><dt>Discount</dt><dd>{{ order.discount_name_snapshot or "" }}</dd></div>
+      <div><dt>Discount value</dt><dd>{{ order.discount_value_snapshot if order.discount_value_snapshot is not none else "" }}</dd></div>
+      <div><dt>Discount amount</dt><dd>{{ fmt.money_crc(order.discount_amount) }}</dd></div>
       <div><dt>Total</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
+      <div><dt>Order cost snapshot</dt><dd>{{ fmt.money_crc(order.cost_total_snapshot) }}</dd></div>
+      <div><dt>Order gross margin</dt><dd>{{ fmt.money_crc(order.gross_margin_amount) }}</dd></div>
+      <div><dt>Order gross margin %</dt><dd>{{ order.gross_margin_percent if order.gross_margin_percent is not none else "" }}</dd></div>
       <div><dt>Observations</dt><dd>{{ order.observations or "" }}</dd></div>
     </dl>
 
@@ -46,7 +52,12 @@
           <th>Description</th>
           <th>Unit price</th>
           <th>Quantity</th>
-          <th>Line total</th>
+          <th>Gross line total</th>
+          <th>Discount snapshot</th>
+          <th>Net line total</th>
+          <th>Cost total snapshot</th>
+          <th>Gross margin</th>
+          <th>Gross margin %</th>
         </tr>
       </thead>
       <tbody>
@@ -58,6 +69,11 @@
             <td>{{ fmt.money_crc(line.unit_price_snapshot) }}</td>
             <td>{{ fmt.number_3(line.quantity) }}</td>
             <td>{{ fmt.money_crc(line.line_total) }}</td>
+            <td>{{ fmt.money_crc(line.discount_amount_snapshot) }}</td>
+            <td>{{ fmt.money_crc(line.net_line_total_snapshot) }}</td>
+            <td>{{ fmt.money_crc(line.cost_total_snapshot) }}</td>
+            <td>{{ fmt.money_crc(line.gross_margin_amount) }}</td>
+            <td>{{ line.gross_margin_percent if line.gross_margin_percent is not none else "" }}</td>
           </tr>
         {% endfor %}
       </tbody>

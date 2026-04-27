@@ -4,10 +4,14 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import InventoryBalance, Product, ProductCategory, Supplier
+from app.models import DiscountRule, InventoryBalance, Product, ProductCategory, Supplier
 
 
 ZERO = Decimal("0")
+ONE = Decimal("1")
+DISCOUNT_TYPE_PERCENTAGE = "percentage"
+DISCOUNT_APPLIES_TO_ORDER_TOTAL = "order_total"
+DISCOUNT_CHANNEL_B2C = "b2c"
 
 
 class MasterDataValidationError(Exception):
@@ -96,6 +100,64 @@ def update_supplier(
     db.commit()
     db.refresh(supplier)
     return supplier
+
+
+def create_discount_rule(
+    db: Session,
+    *,
+    name: str,
+    discount_type: str,
+    value: str,
+    applies_to: str,
+    channel: str,
+    active: bool,
+    description: str,
+) -> DiscountRule:
+    discount_rule = DiscountRule()
+    _assign_discount_rule_fields(
+        db,
+        discount_rule,
+        name=name,
+        discount_type=discount_type,
+        value=value,
+        applies_to=applies_to,
+        channel=channel,
+        active=active,
+        description=description,
+    )
+    db.add(discount_rule)
+    db.commit()
+    db.refresh(discount_rule)
+    return discount_rule
+
+
+def update_discount_rule(
+    db: Session,
+    *,
+    discount_rule_id: int,
+    name: str,
+    discount_type: str,
+    value: str,
+    applies_to: str,
+    channel: str,
+    active: bool,
+    description: str,
+) -> DiscountRule:
+    discount_rule = db.query(DiscountRule).filter(DiscountRule.id == discount_rule_id).one()
+    _assign_discount_rule_fields(
+        db,
+        discount_rule,
+        name=name,
+        discount_type=discount_type,
+        value=value,
+        applies_to=applies_to,
+        channel=channel,
+        active=active,
+        description=description,
+    )
+    db.commit()
+    db.refresh(discount_rule)
+    return discount_rule
 
 
 def create_product_master(
@@ -200,6 +262,26 @@ def list_supplier_options(db: Session, current_supplier_id: int | None = None) -
     return query.order_by(Supplier.name, Supplier.id).all()
 
 
+def list_discount_rule_options(
+    db: Session,
+    current_discount_rule_id: int | None = None,
+    *,
+    channel: str = DISCOUNT_CHANNEL_B2C,
+    applies_to: str = DISCOUNT_APPLIES_TO_ORDER_TOTAL,
+) -> list[DiscountRule]:
+    query = db.query(DiscountRule).filter(
+        DiscountRule.channel == channel,
+        DiscountRule.applies_to == applies_to,
+    )
+    if current_discount_rule_id is None:
+        query = query.filter(DiscountRule.active.is_(True))
+    else:
+        query = query.filter(
+            (DiscountRule.active.is_(True)) | (DiscountRule.id == current_discount_rule_id)
+        )
+    return query.order_by(DiscountRule.name, DiscountRule.id).all()
+
+
 def get_product_for_detail(db: Session, product_id: int) -> Product:
     return (
         db.query(Product)
@@ -255,6 +337,41 @@ def _assign_supplier_fields(
     supplier.email = _optional_text(email)
     supplier.notes = _optional_text(notes)
     supplier.active = active
+
+
+def _assign_discount_rule_fields(
+    db: Session,
+    discount_rule: DiscountRule,
+    *,
+    name: str,
+    discount_type: str,
+    value: str,
+    applies_to: str,
+    channel: str,
+    active: bool,
+    description: str,
+) -> None:
+    normalized_name = _required_text(name, "Discount name")
+    existing = db.query(DiscountRule.id).filter(func.lower(DiscountRule.name) == normalized_name.lower()).first()
+    if existing is not None and existing[0] != discount_rule.id:
+        raise MasterDataValidationError(f"Discount '{normalized_name}' already exists.")
+
+    normalized_type = _normalize_discount_type(discount_type)
+    normalized_applies_to = _normalize_discount_applies_to(applies_to)
+    normalized_channel = _normalize_discount_channel(channel)
+    parsed_value = _parse_nonnegative_decimal(value, "Discount value")
+    if parsed_value is None:
+        raise MasterDataValidationError("Discount value is required.")
+    if normalized_type == DISCOUNT_TYPE_PERCENTAGE and parsed_value > ONE:
+        raise MasterDataValidationError("Percentage discount value cannot exceed 1.")
+
+    discount_rule.name = normalized_name
+    discount_rule.discount_type = normalized_type
+    discount_rule.value = parsed_value
+    discount_rule.applies_to = normalized_applies_to
+    discount_rule.channel = normalized_channel
+    discount_rule.active = active
+    discount_rule.description = _optional_text(description)
 
 
 def _assign_product_fields(
@@ -318,6 +435,27 @@ def _resolve_supplier(db: Session, raw_supplier_id: str) -> Supplier | None:
     if supplier is None:
         raise MasterDataValidationError("Selected supplier does not exist.")
     return supplier
+
+
+def _normalize_discount_type(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized != DISCOUNT_TYPE_PERCENTAGE:
+        raise MasterDataValidationError("Discount type is invalid.")
+    return normalized
+
+
+def _normalize_discount_applies_to(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized != DISCOUNT_APPLIES_TO_ORDER_TOTAL:
+        raise MasterDataValidationError("Discount applies_to is invalid.")
+    return normalized
+
+
+def _normalize_discount_channel(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized != DISCOUNT_CHANNEL_B2C:
+        raise MasterDataValidationError("Discount channel is invalid.")
+    return normalized
 
 
 def _parse_optional_int(value: str | int | None, field_name: str) -> int | None:

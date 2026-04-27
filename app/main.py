@@ -16,6 +16,7 @@ from app.database import (
     ensure_b2c_sales_tables,
     ensure_b2b_loyverse_mapping_tables,
     ensure_app_sequences_table,
+    ensure_discount_master_tables,
     ensure_inventory_ledger_tables,
     ensure_master_data_tables,
     ensure_product_bom_tables,
@@ -39,6 +40,7 @@ from app.models import (
     B2BSalesOrderLine,
     B2CSalesOrder,
     B2CSalesOrderLine,
+    DiscountRule,
     ImportBatch,
     ImportedBomHeader,
     ImportedBomLine,
@@ -105,13 +107,16 @@ from app.services.inventory_ledger_service import (
 )
 from app.services.master_data_service import (
     MasterDataValidationError,
+    create_discount_rule,
     create_product_category,
     create_product_master,
     create_supplier,
     get_product_balance,
     get_product_for_detail,
     list_category_options,
+    list_discount_rule_options,
     list_supplier_options,
+    update_discount_rule,
     update_product_category,
     update_product_master,
     update_supplier,
@@ -196,6 +201,7 @@ ensure_sprint7c_lot_columns_and_tables()
 ensure_b2b_sales_followup_columns()
 ensure_b2b_invoice_snapshot_columns()
 ensure_b2c_sales_tables()
+ensure_discount_master_tables()
 ensure_b2b_loyverse_mapping_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
@@ -231,6 +237,18 @@ def _b2c_statuses() -> list[str]:
 
 def _b2c_channels() -> list[str]:
     return ["whatsapp", "website", "other"]
+
+
+def _discount_types() -> list[str]:
+    return ["percentage"]
+
+
+def _discount_applies_to_options() -> list[str]:
+    return ["order_total"]
+
+
+def _discount_channels() -> list[str]:
+    return ["b2c"]
 
 
 def _form_bool(form, field_name: str) -> bool:
@@ -790,6 +808,136 @@ async def update_supplier_route(supplier_id: int, request: Request, db: Session 
                 "form_action": f"/master-data/suppliers/{supplier.id}/edit",
                 "supplier": supplier,
                 "form_data": form_data,
+                "error": str(exc),
+            },
+        )
+
+
+@app.get("/master-data/discounts", response_class=HTMLResponse)
+def discounts_master(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    discount_rules = db.query(DiscountRule).order_by(DiscountRule.name, DiscountRule.id).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="discounts_list.html",
+        context={"title": "Discounts", "discount_rules": discount_rules},
+    )
+
+
+@app.get("/master-data/discounts/new", response_class=HTMLResponse)
+def new_discount_rule(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="discount_form.html",
+        context={
+            "title": "New Discount",
+            "form_action": "/master-data/discounts",
+            "discount_rule": None,
+            "form_data": {
+                "name": "",
+                "discount_type": "percentage",
+                "value": "",
+                "applies_to": "order_total",
+                "channel": "b2c",
+                "active": True,
+                "description": "",
+            },
+            "discount_types": _discount_types(),
+            "discount_applies_to_options": _discount_applies_to_options(),
+            "discount_channels": _discount_channels(),
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/discounts")
+async def create_discount_rule_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    form_data = {
+        "name": str(form.get("name", "")),
+        "discount_type": str(form.get("discount_type", "")),
+        "value": str(form.get("value", "")),
+        "applies_to": str(form.get("applies_to", "")),
+        "channel": str(form.get("channel", "")),
+        "active": _form_bool(form, "active"),
+        "description": str(form.get("description", "")),
+    }
+    try:
+        discount_rule = create_discount_rule(db, **form_data)
+        return _redirect(f"/master-data/discounts/{discount_rule.id}/edit")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="discount_form.html",
+            context={
+                "title": "New Discount",
+                "form_action": "/master-data/discounts",
+                "discount_rule": None,
+                "form_data": form_data,
+                "discount_types": _discount_types(),
+                "discount_applies_to_options": _discount_applies_to_options(),
+                "discount_channels": _discount_channels(),
+                "error": str(exc),
+            },
+        )
+
+
+@app.get("/master-data/discounts/{discount_id}/edit", response_class=HTMLResponse)
+def edit_discount_rule(discount_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    discount_rule = db.query(DiscountRule).filter(DiscountRule.id == discount_id).one()
+    return templates.TemplateResponse(
+        request=request,
+        name="discount_form.html",
+        context={
+            "title": "Edit Discount",
+            "form_action": f"/master-data/discounts/{discount_rule.id}/edit",
+            "discount_rule": discount_rule,
+            "form_data": {
+                "name": discount_rule.name,
+                "discount_type": discount_rule.discount_type,
+                "value": discount_rule.value,
+                "applies_to": discount_rule.applies_to,
+                "channel": discount_rule.channel,
+                "active": discount_rule.active,
+                "description": discount_rule.description or "",
+            },
+            "discount_types": _discount_types(),
+            "discount_applies_to_options": _discount_applies_to_options(),
+            "discount_channels": _discount_channels(),
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/discounts/{discount_id}/edit")
+async def update_discount_rule_route(discount_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    form_data = {
+        "name": str(form.get("name", "")),
+        "discount_type": str(form.get("discount_type", "")),
+        "value": str(form.get("value", "")),
+        "applies_to": str(form.get("applies_to", "")),
+        "channel": str(form.get("channel", "")),
+        "active": _form_bool(form, "active"),
+        "description": str(form.get("description", "")),
+    }
+    try:
+        update_discount_rule(db, discount_rule_id=discount_id, **form_data)
+        return _redirect("/master-data/discounts")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        discount_rule = db.query(DiscountRule).filter(DiscountRule.id == discount_id).one()
+        return templates.TemplateResponse(
+            request=request,
+            name="discount_form.html",
+            context={
+                "title": "Edit Discount",
+                "form_action": f"/master-data/discounts/{discount_rule.id}/edit",
+                "discount_rule": discount_rule,
+                "form_data": form_data,
+                "discount_types": _discount_types(),
+                "discount_applies_to_options": _discount_applies_to_options(),
+                "discount_channels": _discount_channels(),
                 "error": str(exc),
             },
         )
@@ -2480,6 +2628,7 @@ def b2c_orders(
 @app.get("/b2c/orders/new", response_class=HTMLResponse)
 def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     products = _list_b2c_sellable_products(db)
+    discount_rules = list_discount_rule_options(db)
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_form.html",
@@ -2487,6 +2636,8 @@ def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             "title": "New B2C Order",
             "products": products,
             "product_skus": {product.sku for product in products},
+            "discount_rules": discount_rules,
+            "discount_rule_ids": {rule.id for rule in discount_rules},
             "channels": _b2c_channels(),
             "error": None,
             "default_order_date": date.today().isoformat(),
@@ -2503,6 +2654,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
     customer_phone = str(form.get("customer_phone", ""))
     customer_email = str(form.get("customer_email", ""))
     channel = str(form.get("channel", ""))
+    discount_rule_id = str(form.get("discount_rule_id", ""))
     observations = str(form.get("observations", ""))
     try:
         order_date = datetime.strptime(order_date_text, "%Y-%m-%d").date()
@@ -2513,6 +2665,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
             customer_phone=customer_phone,
             customer_email=customer_email,
             channel=channel,
+            discount_rule_id=discount_rule_id,
             observations=observations,
             line_inputs=line_inputs,
         )
@@ -2520,6 +2673,8 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
     except (B2CValidationError, ValueError) as exc:
         db.rollback()
         products = _list_b2c_sellable_products(db)
+        current_discount_rule_id = int(discount_rule_id) if discount_rule_id.isdigit() else None
+        discount_rules = list_discount_rule_options(db, current_discount_rule_id)
         return templates.TemplateResponse(
             request=request,
             name="b2c_order_form.html",
@@ -2527,6 +2682,8 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
                 "title": "New B2C Order",
                 "products": products,
                 "product_skus": {product.sku for product in products},
+                "discount_rules": discount_rules,
+                "discount_rule_ids": {rule.id for rule in discount_rules},
                 "channels": _b2c_channels(),
                 "error": str(exc),
                 "default_order_date": order_date_text or date.today().isoformat(),
@@ -2534,6 +2691,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
                 "submitted_customer_phone": customer_phone,
                 "submitted_customer_email": customer_email,
                 "submitted_channel": channel,
+                "submitted_discount_rule_id": discount_rule_id,
                 "submitted_observations": observations,
                 "submitted_lines": line_inputs,
             },
@@ -2568,6 +2726,7 @@ def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db
         .all()
     )
     products = _list_b2c_sellable_products(db)
+    discount_rules = list_discount_rule_options(db, order.discount_rule_id)
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_edit.html",
@@ -2577,6 +2736,8 @@ def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db
             "lines": lines,
             "products": products,
             "product_skus": {product.sku for product in products},
+            "discount_rules": discount_rules,
+            "discount_rule_ids": {rule.id for rule in discount_rules},
             "channels": _b2c_channels(),
             "error": None,
         },
@@ -2591,6 +2752,7 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
     customer_phone = str(form.get("customer_phone", ""))
     customer_email = str(form.get("customer_email", ""))
     channel = str(form.get("channel", ""))
+    discount_rule_id = str(form.get("discount_rule_id", ""))
     observations = str(form.get("observations", ""))
     line_ids = form.getlist("line_id")
     line_updates = [
@@ -2614,6 +2776,7 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
             customer_phone=customer_phone,
             customer_email=customer_email,
             channel=channel,
+            discount_rule_id=discount_rule_id,
             observations=observations,
             line_updates=line_updates,
             deleted_line_ids=deleted_line_ids,
@@ -2631,6 +2794,8 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
         )
         submitted_line_updates = {int(update["id"]): update for update in line_updates if str(update["id"]).strip()}
         products = _list_b2c_sellable_products(db)
+        current_discount_rule_id = int(discount_rule_id) if discount_rule_id.isdigit() else order.discount_rule_id
+        discount_rules = list_discount_rule_options(db, current_discount_rule_id)
         return templates.TemplateResponse(
             request=request,
             name="b2c_order_edit.html",
@@ -2640,6 +2805,8 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
                 "lines": lines,
                 "products": products,
                 "product_skus": {product.sku for product in products},
+                "discount_rules": discount_rules,
+                "discount_rule_ids": {rule.id for rule in discount_rules},
                 "channels": _b2c_channels(),
                 "error": str(exc),
                 "submitted_order_date": order_date_text,
@@ -2647,6 +2814,7 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
                 "submitted_customer_phone": customer_phone,
                 "submitted_customer_email": customer_email,
                 "submitted_channel": channel,
+                "submitted_discount_rule_id": discount_rule_id,
                 "submitted_observations": observations,
                 "submitted_line_updates": submitted_line_updates,
                 "submitted_new_lines": new_line_inputs,

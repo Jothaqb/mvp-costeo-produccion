@@ -32,6 +32,21 @@
       <label for="observations">Observations</label>
       <textarea id="observations" name="observations">{{ submitted_observations if submitted_observations is defined else order.observations or "" }}</textarea>
 
+      {% set selected_discount_rule_id = submitted_discount_rule_id if submitted_discount_rule_id is defined else (order.discount_rule_id|string if order.discount_rule_id else "") %}
+      <label for="discount_rule_id">Discount</label>
+      <select id="discount_rule_id" name="discount_rule_id">
+        <option value="">No discount</option>
+        {% for discount_rule in discount_rules %}
+          <option
+            value="{{ discount_rule.id }}"
+            data-discount-value="{{ '{:.4f}'.format(discount_rule.value) if discount_rule.value is not none else '' }}"
+            {% if selected_discount_rule_id == (discount_rule.id|string) %}selected{% endif %}
+          >
+            {{ discount_rule.name }} ({{ discount_rule.value }})
+          </option>
+        {% endfor %}
+      </select>
+
       <table>
         <thead>
           <tr>
@@ -94,6 +109,7 @@
       </table>
 
       <p><strong>Subtotal Preview:</strong> <span id="b2c-order-subtotal">&#8353;0</span></p>
+      <p><strong>Discount Preview:</strong> <span id="b2c-order-discount">&#8353;0</span></p>
       <p><strong>Total Preview:</strong> <span id="b2c-order-total">&#8353;0</span></p>
 
       <button type="submit">Save draft order</button>
@@ -148,12 +164,21 @@
         subtotal += amount;
       });
       const subtotalElement = document.getElementById("b2c-order-subtotal");
+      const discountElement = document.getElementById("b2c-order-discount");
       const totalElement = document.getElementById("b2c-order-total");
+      const discountSelect = document.getElementById("discount_rule_id");
+      const selectedDiscountOption = discountSelect ? discountSelect.options[discountSelect.selectedIndex] : null;
+      const discountValue = b2cNumber(selectedDiscountOption ? (selectedDiscountOption.dataset.discountValue || "") : "");
+      const discountAmount = subtotal > 0 && discountValue > 0 ? subtotal * discountValue : 0;
+      const total = Math.max(subtotal - discountAmount, 0);
       if (subtotalElement) {
         subtotalElement.textContent = b2cFormatMoney(subtotal);
       }
+      if (discountElement) {
+        discountElement.textContent = b2cFormatMoney(discountAmount);
+      }
       if (totalElement) {
-        totalElement.textContent = b2cFormatMoney(subtotal);
+        totalElement.textContent = b2cFormatMoney(total);
       }
     }
 
@@ -169,6 +194,10 @@
     document.querySelectorAll("tbody tr").forEach((row) => {
       b2cApplyProductSelection(row, false);
     });
+    const b2cDiscountSelect = document.getElementById("discount_rule_id");
+    if (b2cDiscountSelect) {
+      b2cDiscountSelect.addEventListener("change", b2cRecalculate);
+    }
     b2cRecalculate();
   </script>
 {% endblock %}

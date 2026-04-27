@@ -46,6 +46,33 @@ class Supplier(Base):
     products: Mapped[list["Product"]] = relationship("Product", back_populates="supplier_record")
 
 
+class DiscountRule(Base):
+    __tablename__ = "discount_rules"
+    __table_args__ = (
+        CheckConstraint("discount_type IN ('percentage')", name="ck_discount_rules_discount_type"),
+        CheckConstraint("applies_to IN ('order_total')", name="ck_discount_rules_applies_to"),
+        CheckConstraint("channel IN ('b2c')", name="ck_discount_rules_channel"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    discount_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    applies_to: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel: Mapped[str] = mapped_column(String(50), nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    b2c_orders: Mapped[list["B2CSalesOrder"]] = relationship("B2CSalesOrder", back_populates="discount_rule")
+
+
 class Product(Base):
     __tablename__ = "products"
 
@@ -297,8 +324,16 @@ class B2CSalesOrder(Base):
     customer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     channel: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
+    discount_rule_id: Mapped[int | None] = mapped_column(ForeignKey("discount_rules.id"), nullable=True)
+    discount_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    discount_type_snapshot: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    discount_value_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     subtotal_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    cost_total_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    gross_margin_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    gross_margin_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     observations: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -308,6 +343,7 @@ class B2CSalesOrder(Base):
         nullable=False,
     )
 
+    discount_rule: Mapped["DiscountRule | None"] = relationship("DiscountRule", back_populates="b2c_orders")
     lines: Mapped[list["B2CSalesOrderLine"]] = relationship(
         back_populates="sales_order",
         cascade="all, delete-orphan",
@@ -325,6 +361,8 @@ class B2CSalesOrderLine(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     unit_price_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    discount_amount_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    net_line_total_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     cost_unit_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     cost_total_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     gross_margin_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)

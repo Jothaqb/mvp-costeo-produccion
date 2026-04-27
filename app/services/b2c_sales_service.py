@@ -8,6 +8,7 @@ from app.models import (
     AppSequence,
     B2CSalesOrder,
     B2CSalesOrderLine,
+    DiscountRule,
     InventoryTransaction,
     Product,
 )
@@ -61,11 +62,13 @@ def create_b2c_sales_order(
     customer_phone: str,
     customer_email: str,
     channel: str,
+    discount_rule_id: str,
     observations: str,
     line_inputs: list[dict[str, str]],
 ) -> B2CSalesOrder:
     normalized_channel = _normalize_channel(channel)
     line_data = _build_b2c_line_data(db, line_inputs, require_at_least_one=True)
+    discount_rule = _resolve_b2c_discount_rule(db, discount_rule_id)
     order = B2CSalesOrder(
         order_number=_generate_b2c_order_number(db),
         order_date=order_date,
@@ -74,6 +77,7 @@ def create_b2c_sales_order(
         customer_email=_clean_optional_text(customer_email),
         channel=normalized_channel,
         status="draft",
+        discount_amount=ZERO,
         subtotal_amount=ZERO,
         total_amount=ZERO,
         observations=_clean_optional_text(observations),
@@ -81,6 +85,7 @@ def create_b2c_sales_order(
     db.add(order)
     db.flush()
     _replace_lines(order, line_data)
+    _apply_discount_rule_snapshot(order, discount_rule)
     _recalculate_b2c_order_total(order)
     db.commit()
     db.refresh(order)
@@ -96,6 +101,7 @@ def update_b2c_sales_order(
     customer_phone: str,
     customer_email: str,
     channel: str,
+    discount_rule_id: str,
     observations: str,
     line_updates: list[dict[str, str]],
     deleted_line_ids: list[int],
@@ -114,6 +120,11 @@ def update_b2c_sales_order(
     order.customer_email = _clean_optional_text(customer_email)
     order.channel = _normalize_channel(channel)
     order.observations = _clean_optional_text(observations)
+    discount_rule = _resolve_b2c_discount_rule(
+        db,
+        discount_rule_id,
+        allow_inactive_rule_id=order.discount_rule_id,
+    )
 
     catalog_by_sku = _sellable_product_catalog_by_sku(db)
     deleted_ids = set(deleted_line_ids)
@@ -169,6 +180,7 @@ def update_b2c_sales_order(
     if not remaining_lines:
         raise B2CValidationError("Order must have at least one line.")
     _renumber_lines(remaining_lines)
+    _apply_discount_rule_snapshot(order, discount_rule)
     _recalculate_b2c_order_total(order)
     db.commit()
     db.refresh(order)
@@ -207,6 +219,7 @@ def invoice_b2c_order_in_erp(db: Session, order_id: int) -> B2CSalesOrder:
         for prepared_line in prepared_lines:
             _post_b2c_invoice_line(db, order, prepared_line, transaction_date)
 
+        _snapshot_b2c_order_invoice_margin(order)
         order.status = "invoiced"
         db.commit()
         db.refresh(order)
@@ -300,11 +313,11 @@ def _post_b2c_invoice_line(
 
     cost_unit_snapshot = parse_required_decimal(posting.transaction.unit_cost, "COGS unit cost").quantize(SNAPSHOT_QUANT)
     cost_total_snapshot = parse_required_decimal(posting.transaction.total_cost, "COGS total cost").quantize(SNAPSHOT_QUANT)
-    line_total = parse_required_decimal(prepared_line.line.line_total, "Line total").quantize(SNAPSHOT_QUANT)
-    gross_margin_amount = (line_total - cost_total_snapshot).quantize(SNAPSHOT_QUANT)
+    net_line_total = _net_line_total_for_margin(prepared_line.line)
+    gross_margin_amount = (net_line_total - cost_total_snapshot).quantize(SNAPSHOT_QUANT)
     gross_margin_percent = (
-        (gross_margin_amount / line_total).quantize(SNAPSHOT_QUANT)
-        if line_total > ZERO
+        (gross_margin_amount / net_line_total).quantize(SNAPSHOT_QUANT)
+        if net_line_total > ZERO
         else None
     )
 
@@ -395,6 +408,8 @@ def _assign_line_from_product(
     line.quantity = quantity
     line.unit_price_snapshot = unit_price
     line.line_total = (quantity * unit_price).quantize(SNAPSHOT_QUANT)
+    line.discount_amount_snapshot = ZERO
+    line.net_line_total_snapshot = line.line_total
 
 
 def _renumber_lines(lines: list[B2CSalesOrderLine]) -> None:
@@ -405,12 +420,116 @@ def _renumber_lines(lines: list[B2CSalesOrderLine]) -> None:
 def _recalculate_b2c_order_total(order: B2CSalesOrder) -> None:
     subtotal = sum((line.line_total or ZERO for line in order.lines), ZERO).quantize(SNAPSHOT_QUANT)
     order.subtotal_amount = subtotal
-    order.total_amount = subtotal
+    discount_value = order.discount_value_snapshot if order.discount_value_snapshot is not None else ZERO
+    discount_amount = ZERO
+    if subtotal > ZERO and discount_value > ZERO:
+        discount_amount = (subtotal * discount_value).quantize(SNAPSHOT_QUANT)
+        if discount_amount > subtotal:
+            discount_amount = subtotal
+    order.discount_amount = discount_amount
+    order.total_amount = (subtotal - discount_amount).quantize(SNAPSHOT_QUANT)
+    _allocate_discount_across_lines(order, subtotal, discount_amount)
 
 
 def _ensure_b2c_order_editable(order: B2CSalesOrder) -> None:
     if order.status not in EDITABLE_STATUSES:
         raise B2CValidationError("Only draft B2C orders are editable.")
+
+
+def _resolve_b2c_discount_rule(
+    db: Session,
+    raw_discount_rule_id: str | int | None,
+    *,
+    allow_inactive_rule_id: int | None = None,
+) -> DiscountRule | None:
+    text = str(raw_discount_rule_id or "").strip()
+    if not text:
+        return None
+    if not text.isdigit():
+        raise B2CValidationError("Selected discount is invalid.")
+    discount_rule_id = int(text)
+    discount_rule = db.query(DiscountRule).filter(DiscountRule.id == discount_rule_id).one_or_none()
+    if discount_rule is None:
+        raise B2CValidationError("Selected discount does not exist.")
+    if (
+        not discount_rule.active
+        and (allow_inactive_rule_id is None or discount_rule.id != allow_inactive_rule_id)
+    ):
+        raise B2CValidationError("Selected discount is not active.")
+    if discount_rule.channel != "b2c" or discount_rule.applies_to != "order_total":
+        raise B2CValidationError("Selected discount is not valid for B2C order totals.")
+    if discount_rule.discount_type != "percentage":
+        raise B2CValidationError("Selected discount type is not supported.")
+    return discount_rule
+
+
+def _apply_discount_rule_snapshot(order: B2CSalesOrder, discount_rule: DiscountRule | None) -> None:
+    if discount_rule is None:
+        order.discount_rule_id = None
+        order.discount_name_snapshot = None
+        order.discount_type_snapshot = None
+        order.discount_value_snapshot = None
+        return
+
+    order.discount_rule_id = discount_rule.id
+    order.discount_name_snapshot = discount_rule.name
+    order.discount_type_snapshot = discount_rule.discount_type
+    order.discount_value_snapshot = discount_rule.value.quantize(SNAPSHOT_QUANT)
+
+
+def _allocate_discount_across_lines(
+    order: B2CSalesOrder,
+    subtotal: Decimal,
+    discount_amount: Decimal,
+) -> None:
+    positive_lines = [line for line in order.lines if (line.line_total or ZERO) > ZERO]
+    if subtotal <= ZERO or discount_amount <= ZERO or not positive_lines:
+        for line in order.lines:
+            gross_line_total = (line.line_total or ZERO).quantize(SNAPSHOT_QUANT)
+            line.discount_amount_snapshot = ZERO
+            line.net_line_total_snapshot = gross_line_total
+        return
+
+    allocated = ZERO
+    last_positive_line = positive_lines[-1]
+    for line in order.lines:
+        gross_line_total = (line.line_total or ZERO).quantize(SNAPSHOT_QUANT)
+        if gross_line_total <= ZERO:
+            line.discount_amount_snapshot = ZERO
+            line.net_line_total_snapshot = gross_line_total
+            continue
+
+        if line is last_positive_line:
+            line_discount_amount = (discount_amount - allocated).quantize(SNAPSHOT_QUANT)
+        else:
+            line_discount_amount = ((gross_line_total / subtotal) * discount_amount).quantize(SNAPSHOT_QUANT)
+            remaining_discount = (discount_amount - allocated).quantize(SNAPSHOT_QUANT)
+            if line_discount_amount > remaining_discount:
+                line_discount_amount = remaining_discount
+            allocated += line_discount_amount
+
+        line.discount_amount_snapshot = line_discount_amount
+        line.net_line_total_snapshot = (gross_line_total - line_discount_amount).quantize(SNAPSHOT_QUANT)
+
+
+def _net_line_total_for_margin(line: B2CSalesOrderLine) -> Decimal:
+    if line.net_line_total_snapshot is not None:
+        return parse_required_decimal(line.net_line_total_snapshot, "Net line total").quantize(SNAPSHOT_QUANT)
+    return parse_required_decimal(line.line_total, "Line total").quantize(SNAPSHOT_QUANT)
+
+
+def _snapshot_b2c_order_invoice_margin(order: B2CSalesOrder) -> None:
+    cost_total_snapshot = sum((line.cost_total_snapshot or ZERO for line in order.lines), ZERO).quantize(SNAPSHOT_QUANT)
+    total_amount = parse_required_decimal(order.total_amount, "Order total").quantize(SNAPSHOT_QUANT)
+    gross_margin_amount = (total_amount - cost_total_snapshot).quantize(SNAPSHOT_QUANT)
+    gross_margin_percent = (
+        (gross_margin_amount / total_amount).quantize(SNAPSHOT_QUANT)
+        if total_amount > ZERO
+        else None
+    )
+    order.cost_total_snapshot = cost_total_snapshot
+    order.gross_margin_amount = gross_margin_amount
+    order.gross_margin_percent = gross_margin_percent
 
 
 def _generate_b2c_order_number(db: Session) -> str:

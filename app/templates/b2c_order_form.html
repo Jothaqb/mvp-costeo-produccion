@@ -30,6 +30,20 @@
       <label for="observations">Observations</label>
       <textarea id="observations" name="observations">{{ submitted_observations or "" }}</textarea>
 
+      <label for="discount_rule_id">Discount</label>
+      <select id="discount_rule_id" name="discount_rule_id">
+        <option value="">No discount</option>
+        {% for discount_rule in discount_rules %}
+          <option
+            value="{{ discount_rule.id }}"
+            data-discount-value="{{ '{:.4f}'.format(discount_rule.value) if discount_rule.value is not none else '' }}"
+            {% if submitted_discount_rule_id is defined and submitted_discount_rule_id == (discount_rule.id|string) %}selected{% endif %}
+          >
+            {{ discount_rule.name }} ({{ discount_rule.value }})
+          </option>
+        {% endfor %}
+      </select>
+
       <table>
         <thead>
           <tr>
@@ -71,6 +85,7 @@
       <button type="button" id="b2c-add-line">Add product</button>
 
       <p><strong>Subtotal:</strong> <span id="b2c-order-subtotal">&#8353;0</span></p>
+      <p><strong>Discount:</strong> <span id="b2c-order-discount">&#8353;0</span></p>
       <p><strong>Total:</strong> <span id="b2c-order-total">&#8353;0</span></p>
 
       <button type="submit">Create draft order</button>
@@ -153,12 +168,21 @@
         subtotal += amount;
       });
       const subtotalElement = document.getElementById("b2c-order-subtotal");
+      const discountElement = document.getElementById("b2c-order-discount");
       const totalElement = document.getElementById("b2c-order-total");
+      const discountSelect = document.getElementById("discount_rule_id");
+      const selectedDiscountOption = discountSelect ? discountSelect.options[discountSelect.selectedIndex] : null;
+      const discountValue = b2cNumber(selectedDiscountOption ? (selectedDiscountOption.dataset.discountValue || "") : "");
+      const discountAmount = subtotal > 0 && discountValue > 0 ? subtotal * discountValue : 0;
+      const total = Math.max(subtotal - discountAmount, 0);
       if (subtotalElement) {
         subtotalElement.textContent = b2cFormatMoney(subtotal);
       }
+      if (discountElement) {
+        discountElement.textContent = b2cFormatMoney(discountAmount);
+      }
       if (totalElement) {
-        totalElement.textContent = b2cFormatMoney(subtotal);
+        totalElement.textContent = b2cFormatMoney(total);
       }
       b2cUpdateRemoveButtons();
     }
@@ -201,6 +225,11 @@
           b2cRecalculate();
         }
       });
+    }
+
+    const b2cDiscountSelect = document.getElementById("discount_rule_id");
+    if (b2cDiscountSelect) {
+      b2cDiscountSelect.addEventListener("change", b2cRecalculate);
     }
 
     if (b2cAddLineButton && b2cLineTemplate && b2cLinesBody) {

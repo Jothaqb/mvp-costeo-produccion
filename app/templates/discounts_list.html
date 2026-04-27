@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/master-data/discounts/new">New Discount</a></p>
+  </section>
+
+  <section>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Value</th>
+          <th>Applies to</th>
+          <th>Channel</th>
+          <th>Active</th>
+          <th>Edit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for discount_rule in discount_rules %}
+          <tr>
+            <td>{{ discount_rule.name }}</td>
+            <td>{{ discount_rule.discount_type }}</td>
+            <td>{{ discount_rule.value }}</td>
+            <td>{{ discount_rule.applies_to }}</td>
+            <td>{{ discount_rule.channel }}</td>
+            <td>{{ "yes" if discount_rule.active else "no" }}</td>
+            <td><a href="/master-data/discounts/{{ discount_rule.id }}/edit">Edit</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}
