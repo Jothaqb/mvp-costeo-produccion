@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/b2c/orders/new">New B2C order</a></p>
+    <form method="get" action="/b2c/orders">
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="">All statuses</option>
+        {% for status in statuses %}
+          <option value="{{ status }}" {% if filters.status == status %}selected{% endif %}>{{ status }}</option>
+        {% endfor %}
+      </select>
+
+      <button type="submit">Filter</button>
+      <a href="/b2c/orders">Clear</a>
+    </form>
+  </section>
+
+  <section>
+    <table>
+      <thead>
+        <tr>
+          <th>Order</th>
+          <th>Order date</th>
+          <th>Customer</th>
+          <th>Channel</th>
+          <th>Status</th>
+          <th>Total</th>
+          <th>Created</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for order in orders %}
+          <tr>
+            <td>{{ order.order_number }}</td>
+            <td>{{ order.order_date }}</td>
+            <td>{{ order.customer_name or "" }}</td>
+            <td>{{ order.channel }}</td>
+            <td>{{ order.status }}</td>
+            <td>{{ fmt.money_crc(order.total_amount) }}</td>
+            <td>{{ order.created_at }}</td>
+            <td><a href="/b2c/orders/{{ order.id }}">View</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}
