@@ -247,6 +247,23 @@ def ensure_b2b_sales_followup_columns() -> None:
 
 
 
+def ensure_b2b_invoice_snapshot_columns() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "b2b_sales_order_lines",
+            {
+                "cost_unit_snapshot": "NUMERIC(12, 4)",
+                "cost_total_snapshot": "NUMERIC(12, 4)",
+                "gross_margin_amount": "NUMERIC(12, 4)",
+                "gross_margin_percent": "NUMERIC(12, 4)",
+            },
+        )
+
+
 def ensure_purchase_order_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

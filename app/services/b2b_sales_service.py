@@ -1,7 +1,8 @@
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     AppSequence,
@@ -9,7 +10,14 @@ from app.models import (
     B2BCustomerProduct,
     B2BSalesOrder,
     B2BSalesOrderLine,
+    InventoryTransaction,
     LoyversePaymentTypeMapping,
+    Product,
+)
+from app.services.inventory_ledger_service import (
+    InventoryLedgerValidationError,
+    get_or_create_inventory_balance,
+    post_outgoing_movement,
 )
 
 
@@ -23,10 +31,18 @@ ALLOWED_STATUS_TRANSITIONS = {
     "invoiced": set(),
 }
 ZERO = Decimal("0")
+SNAPSHOT_QUANT = Decimal("0.0001")
 
 
 class B2BValidationError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class PreparedB2BInvoiceLine:
+    line: B2BSalesOrderLine
+    product: Product
+    quantity: Decimal
 
 
 def parse_optional_decimal(value: str | Decimal | None, field_name: str) -> Decimal | None:
@@ -332,6 +348,139 @@ def change_sales_order_status(db: Session, order_id: int, new_status: str) -> B2
     db.commit()
     db.refresh(order)
     return order
+
+
+def invoice_b2b_order_in_erp(db: Session, order_id: int) -> B2BSalesOrder:
+    order = (
+        db.query(B2BSalesOrder)
+        .options(joinedload(B2BSalesOrder.lines))
+        .filter(B2BSalesOrder.id == order_id)
+        .one()
+    )
+    _validate_b2b_invoice_eligibility(order)
+    _ensure_no_existing_b2b_invoice_posting(db, order.id)
+
+    prepared_lines = _prepare_b2b_invoice_lines(db, order)
+    if not prepared_lines:
+        raise B2BValidationError("Order must include at least one positive-quantity line to invoice.")
+
+    transaction_date = datetime.utcnow()
+    try:
+        for prepared_line in prepared_lines:
+            _post_b2b_invoice_line(db, order, prepared_line, transaction_date)
+
+        order.status = "invoiced"
+        db.commit()
+        db.refresh(order)
+        return order
+    except InventoryLedgerValidationError as exc:
+        db.rollback()
+        raise B2BValidationError(str(exc)) from exc
+    except B2BValidationError:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _validate_b2b_invoice_eligibility(order: B2BSalesOrder) -> None:
+    if order.status == "invoiced":
+        raise B2BValidationError("Order is already invoiced.")
+    if "invoiced" not in ALLOWED_STATUS_TRANSITIONS[order.status]:
+        raise B2BValidationError(f"Cannot change status from {order.status} to invoiced.")
+
+
+def _ensure_no_existing_b2b_invoice_posting(db: Session, order_id: int) -> None:
+    existing_transaction = (
+        db.query(InventoryTransaction.id)
+        .filter(
+            InventoryTransaction.transaction_type == "b2b_invoice_sale",
+            InventoryTransaction.source_type == "b2b_order",
+            InventoryTransaction.source_id == order_id,
+        )
+        .first()
+    )
+    if existing_transaction is not None:
+        raise B2BValidationError("This B2B order already has Kardex invoice transactions.")
+
+
+def _prepare_b2b_invoice_lines(db: Session, order: B2BSalesOrder) -> list[PreparedB2BInvoiceLine]:
+    prepared_lines: list[PreparedB2BInvoiceLine] = []
+    for line in sorted(order.lines, key=lambda current_line: (current_line.line_number, current_line.id)):
+        quantity = parse_required_decimal(line.quantity, "Quantity")
+        if quantity <= ZERO:
+            continue
+        product = _resolve_b2b_invoice_product(db, line)
+        prepared_lines.append(PreparedB2BInvoiceLine(line=line, product=product, quantity=quantity))
+    return prepared_lines
+
+
+def _resolve_b2b_invoice_product(db: Session, line: B2BSalesOrderLine) -> Product:
+    sku = (line.sku_snapshot or "").strip()
+    if not sku:
+        raise B2BValidationError("B2B line is missing SKU snapshot and cannot be invoiced.")
+    product = db.query(Product).filter(Product.sku == sku).one_or_none()
+    if product is None:
+        raise B2BValidationError(f"B2B line SKU {sku} could not be resolved to a product.")
+    return product
+
+
+def _post_b2b_invoice_line(
+    db: Session,
+    order: B2BSalesOrder,
+    prepared_line: PreparedB2BInvoiceLine,
+    transaction_date: datetime,
+) -> None:
+    balance = get_or_create_inventory_balance(db, prepared_line.product.id)
+    current_average_cost = parse_required_decimal(balance.average_unit_cost, "Current average cost")
+    warning_messages: list[str] = []
+    if balance.last_transaction_id is None:
+        warning_messages.append("No prior inventory balance existed; average cost defaulted to 0.")
+    if current_average_cost == ZERO:
+        warning_messages.append("Average cost was 0 at invoice time; cost snapshot and COGS were recorded as 0.")
+
+    base_note = (
+        f"B2B order {order.order_number} invoice for SKU {prepared_line.line.sku_snapshot}. "
+        "ERP-local invoice posting."
+    )
+    posting = post_outgoing_movement(
+        db,
+        product_id=prepared_line.product.id,
+        transaction_type="b2b_invoice_sale",
+        outgoing_qty=prepared_line.quantity,
+        transaction_date=transaction_date,
+        source_type="b2b_order",
+        source_id=order.id,
+        source_line_id=prepared_line.line.id,
+        notes=base_note,
+    )
+
+    warning_messages.extend(posting.warnings)
+    if warning_messages:
+        posting.transaction.notes = _append_warning_notes(base_note, warning_messages)
+
+    cost_unit_snapshot = parse_required_decimal(posting.transaction.unit_cost, "COGS unit cost").quantize(SNAPSHOT_QUANT)
+    cost_total_snapshot = parse_required_decimal(posting.transaction.total_cost, "COGS total cost").quantize(SNAPSHOT_QUANT)
+    line_total = parse_required_decimal(prepared_line.line.line_total, "Line total").quantize(SNAPSHOT_QUANT)
+    gross_margin_amount = (line_total - cost_total_snapshot).quantize(SNAPSHOT_QUANT)
+    gross_margin_percent = (
+        (gross_margin_amount / line_total).quantize(SNAPSHOT_QUANT)
+        if line_total > ZERO
+        else None
+    )
+
+    prepared_line.line.cost_unit_snapshot = cost_unit_snapshot
+    prepared_line.line.cost_total_snapshot = cost_total_snapshot
+    prepared_line.line.gross_margin_amount = gross_margin_amount
+    prepared_line.line.gross_margin_percent = gross_margin_percent
+
+
+def _append_warning_notes(base_note: str, warnings: list[str]) -> str:
+    unique_warnings = [warning.strip() for warning in warnings if warning and warning.strip()]
+    if not unique_warnings:
+        return base_note
+    return f"{base_note} " + " ".join(f"Warning: {warning}" for warning in unique_warnings)
 
 
 def _build_line_data(

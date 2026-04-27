@@ -208,6 +208,10 @@ class B2BSalesOrderLine(Base):
     unit_price_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    cost_unit_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    cost_total_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    gross_margin_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    gross_margin_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     loyverse_variant_id_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

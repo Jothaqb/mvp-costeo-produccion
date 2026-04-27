@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.database import (
     Base,
     engine,
+    ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
     ensure_b2b_loyverse_mapping_tables,
     ensure_app_sequences_table,
@@ -61,14 +62,13 @@ from app.services.b2b_sales_service import (
     change_sales_order_status,
     create_customer,
     create_sales_order,
+    invoice_b2b_order_in_erp,
     update_customer,
     update_customer_product,
     update_sales_order_lines,
 )
-from app.services.b2b_loyverse_invoice_service import invoice_b2b_order_in_loyverse
 from app.services.b2b_loyverse_mapping_service import (
     LoyverseMappingSyncError,
-    build_b2b_invoice_readiness,
     refresh_loyverse_customer_mappings,
     refresh_loyverse_payment_type_mappings,
     refresh_loyverse_variant_mappings,
@@ -159,6 +159,7 @@ ensure_sprint6_loyverse_cost_sync_columns()
 ensure_production_loyverse_inventory_sync_columns()
 ensure_sprint7c_lot_columns_and_tables()
 ensure_b2b_sales_followup_columns()
+ensure_b2b_invoice_snapshot_columns()
 ensure_b2b_loyverse_mapping_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
@@ -1606,11 +1607,10 @@ def b2b_order_detail(order_id: int, request: Request, db: Session = Depends(get_
         .order_by(B2BSalesOrderLine.line_number)
         .all()
     )
-    readiness = build_b2b_invoice_readiness(db, order_id)
     return templates.TemplateResponse(
         request=request,
         name="b2b_order_detail.html",
-        context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": None, "readiness": readiness},
+        context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": None},
     )
 
 
@@ -1737,7 +1737,7 @@ def update_b2b_order_status(
 ) -> Response:
     try:
         if status == "invoiced":
-            invoice_b2b_order_in_loyverse(db, order_id)
+            invoice_b2b_order_in_erp(db, order_id)
         else:
             change_sales_order_status(db, order_id, status)
         return _redirect(f"/b2b/orders/{order_id}")
@@ -1753,7 +1753,7 @@ def update_b2b_order_status(
         return templates.TemplateResponse(
             request=request,
             name="b2b_order_detail.html",
-            context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc), "readiness": build_b2b_invoice_readiness(db, order_id)},
+            context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc)},
         )
 
 @app.get("/imports", response_class=HTMLResponse)
