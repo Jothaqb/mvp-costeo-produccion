@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>Edit BOM</h1>
+    <p>{{ product.sku }} - {{ product.name }}</p>
+    <p class="muted-inline">
+      This Product Master BOM is editable and will be used for future production integration.
+      Current Production Order creation remains unchanged in this sprint.
+    </p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <form method="post" action="/master-data/products/{{ product.id }}/bom/edit">
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Name</th>
+            <th>Unit</th>
+            <th>Quantity standard</th>
+            <th>Notes</th>
+            <th>Remove</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in existing_lines %}
+            <tr>
+              <td>
+                <input type="hidden" name="line_id" value="{{ line.id }}">
+                <select name="component_sku_{{ line.id }}" required>
+                  {% if line.component_sku_snapshot and line.component_sku_snapshot not in existing_component_option_skus %}
+                    <option value="{{ line.component_sku_snapshot }}" selected>
+                      {{ line.component_sku_snapshot }} - {{ line.component_name_snapshot or "SKU not found" }} (not found)
+                    </option>
+                  {% endif %}
+                  {% for component in existing_component_options %}
+                    <option value="{{ component.sku }}" {% if component.sku == line.component_sku_snapshot %}selected{% endif %}>
+                      {{ component.sku }} - {{ component.name }}{% if component.unit %} ({{ component.unit }}){% endif %}{% if not component.active %} [inactive]{% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td>
+                {{ line.component_name_snapshot or "" }}
+                {% if line.component_product_id is none %}
+                  <div class="muted-inline">SKU not found in current Product master.</div>
+                {% endif %}
+              </td>
+              <td>{{ line.unit_snapshot or "" }}</td>
+              <td><input name="quantity_standard_{{ line.id }}" inputmode="decimal" value="{{ line.quantity_standard }}"></td>
+              <td><input name="notes_{{ line.id }}" value="{{ line.notes }}"></td>
+              <td><input type="checkbox" name="delete_line_id" value="{{ line.id }}" {% if line.delete %}checked{% endif %}></td>
+            </tr>
+          {% endfor %}
+
+          {% for row in new_rows %}
+            <tr>
+              <td>
+                <input type="hidden" name="new_line_index" value="{{ row.index }}">
+                <select name="new_component_sku_{{ row.index }}">
+                  <option value="">Add component...</option>
+                  {% for component in new_component_options %}
+                    <option value="{{ component.sku }}" {% if component.sku == row.component_sku %}selected{% endif %}>
+                      {{ component.sku }} - {{ component.name }}{% if component.unit %} ({{ component.unit }}){% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td></td>
+              <td></td>
+              <td><input name="new_quantity_standard_{{ row.index }}" inputmode="decimal" value="{{ row.quantity_standard }}"></td>
+              <td><input name="new_notes_{{ row.index }}" value="{{ row.notes }}"></td>
+              <td></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <button type="submit">Save BOM</button>
+      <a href="/master-data/products/{{ product.id }}">Cancel</a>
+    </form>
+  </section>
+{% endblock %}
