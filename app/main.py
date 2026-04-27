@@ -18,6 +18,7 @@ from app.database import (
     ensure_app_sequences_table,
     ensure_inventory_ledger_tables,
     ensure_master_data_tables,
+    ensure_product_bom_tables,
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
     ensure_product_loyverse_mapping_columns,
@@ -119,6 +120,12 @@ from app.services.planning_loyverse_refresh_service import (
     PlanningLoyverseRefreshError,
     refresh_planning_inventory_and_cost,
 )
+from app.services.product_bom_service import (
+    ProductBomValidationError,
+    get_or_seed_product_bom,
+    list_bom_component_options,
+    save_product_bom,
+)
 from app.services.purchase_order_service import (
     PurchaseOrderValidationError,
     build_purchase_order_prefill,
@@ -177,6 +184,7 @@ ensure_product_is_manufactured_column()
 ensure_product_loyverse_mapping_columns()
 ensure_product_planning_columns()
 ensure_master_data_tables()
+ensure_product_bom_tables()
 ensure_app_sequences_table()
 ensure_inventory_ledger_tables()
 ensure_purchase_order_tables()
@@ -272,6 +280,34 @@ def _product_form_context(
         "suppliers": suppliers,
         "error": error,
     }
+
+
+def _product_bom_existing_rows(lines) -> list[dict[str, object]]:
+    return [
+        {
+            "id": line.id,
+            "component_sku_snapshot": line.component_sku_snapshot or "",
+            "component_name_snapshot": line.component_name_snapshot or "",
+            "unit_snapshot": line.unit_snapshot or "",
+            "quantity_standard": str(line.quantity_standard) if line.quantity_standard is not None else "",
+            "notes": line.notes or "",
+            "component_product_id": line.component_product_id,
+            "delete": False,
+        }
+        for line in lines
+    ]
+
+
+def _blank_product_bom_new_rows(count: int = 5) -> list[dict[str, object]]:
+    return [
+        {
+            "index": index,
+            "component_sku": "",
+            "quantity_standard": "",
+            "notes": "",
+        }
+        for index in range(1, count + 1)
+    ]
 
 
 def _line_inputs_from_form(form, prefix: str, count: int | None = None) -> list[dict[str, str]]:
@@ -833,10 +869,21 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
 def product_detail(product_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     product = get_product_for_detail(db, product_id)
     balance = get_product_balance(db, product_id)
+    bom = get_or_seed_product_bom(db, product) if product.is_manufactured else None
+    bom_lines = sorted(
+        bom.lines,
+        key=lambda line: (line.line_number, line.id),
+    ) if bom is not None else []
     return templates.TemplateResponse(
         request=request,
         name="product_detail.html",
-        context={"title": "Product Detail", "product": product, "balance": balance},
+        context={
+            "title": "Product Detail",
+            "product": product,
+            "balance": balance,
+            "bom": bom,
+            "bom_lines": bom_lines,
+        },
     )
 
 
@@ -898,6 +945,163 @@ async def update_product_master_route(
                 error=str(exc),
                 product_data=product_data,
             ),
+        )
+
+
+@app.get("/master-data/products/{product_id}/bom/edit", response_class=HTMLResponse)
+def edit_product_bom(product_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    product = get_product_for_detail(db, product_id)
+    if not product.is_manufactured:
+        return _redirect(f"/master-data/products/{product_id}")
+
+    bom = get_or_seed_product_bom(db, product)
+    bom_lines = sorted(
+        bom.lines,
+        key=lambda line: (line.line_number, line.id),
+    ) if bom is not None else []
+    current_component_ids = [line.component_product_id for line in bom_lines if line.component_product_id is not None]
+    existing_component_options = list_bom_component_options(
+        db,
+        current_component_ids,
+        active_only=True,
+        exclude_product_id=product.id,
+    )
+    new_component_options = list_bom_component_options(db, active_only=True, exclude_product_id=product.id)
+    return templates.TemplateResponse(
+        request=request,
+        name="product_bom_edit.html",
+        context={
+            "title": "Edit BOM",
+            "product": product,
+            "bom": bom,
+            "existing_lines": _product_bom_existing_rows(bom_lines),
+            "new_rows": _blank_product_bom_new_rows(),
+            "existing_component_options": existing_component_options,
+            "existing_component_option_skus": [option.sku for option in existing_component_options],
+            "new_component_options": new_component_options,
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/products/{product_id}/bom/edit")
+async def update_product_bom_route(
+    product_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    form = await request.form()
+    line_ids = [str(line_id).strip() for line_id in form.getlist("line_id") if str(line_id).strip()]
+    deleted_line_ids = {str(line_id).strip() for line_id in form.getlist("delete_line_id") if str(line_id).strip()}
+    line_updates = [
+        {
+            "id": line_id,
+            "component_sku": str(form.get(f"component_sku_{line_id}", "")),
+            "quantity_standard": str(form.get(f"quantity_standard_{line_id}", "")),
+            "notes": str(form.get(f"notes_{line_id}", "")),
+            "delete": line_id in deleted_line_ids,
+        }
+        for line_id in line_ids
+    ]
+    new_indexes = [str(index).strip() for index in form.getlist("new_line_index") if str(index).strip()]
+    new_lines = [
+        {
+            "component_sku": str(form.get(f"new_component_sku_{index}", "")),
+            "quantity_standard": str(form.get(f"new_quantity_standard_{index}", "")),
+            "notes": str(form.get(f"new_notes_{index}", "")),
+        }
+        for index in new_indexes
+    ]
+
+    try:
+        save_product_bom(
+            db,
+            product_id=product_id,
+            line_updates=line_updates,
+            new_lines=new_lines,
+        )
+        return _redirect(f"/master-data/products/{product_id}")
+    except ProductBomValidationError as exc:
+        db.rollback()
+        product = get_product_for_detail(db, product_id)
+        bom = get_or_seed_product_bom(db, product) if product.is_manufactured else None
+        bom_lines = sorted(
+            bom.lines,
+            key=lambda line: (line.line_number, line.id),
+        ) if bom is not None else []
+        current_component_ids = [line.component_product_id for line in bom_lines if line.component_product_id is not None]
+        existing_component_options = list_bom_component_options(
+            db,
+            current_component_ids,
+            active_only=True,
+            exclude_product_id=product.id,
+        )
+        new_component_options = list_bom_component_options(db, active_only=True, exclude_product_id=product.id)
+        component_lookup = {option.sku: option for option in [*existing_component_options, *new_component_options]}
+        existing_lines_by_id = {str(line.id): line for line in bom_lines}
+        existing_rows: list[dict[str, object]] = []
+        for update in line_updates:
+            current_line = existing_lines_by_id.get(str(update["id"]))
+            selected_sku = str(update["component_sku"] or "").strip()
+            selected_product = component_lookup.get(selected_sku)
+            existing_rows.append(
+                {
+                    "id": current_line.id if current_line is not None else update["id"],
+                    "component_sku_snapshot": selected_sku,
+                    "component_name_snapshot": (
+                        selected_product.name
+                        if selected_product is not None
+                        else (current_line.component_name_snapshot if current_line is not None else "")
+                    ) or "",
+                    "unit_snapshot": (
+                        selected_product.unit
+                        if selected_product is not None
+                        else (current_line.unit_snapshot if current_line is not None else "")
+                    ) or "",
+                    "quantity_standard": str(update["quantity_standard"] or ""),
+                    "notes": str(update["notes"] or ""),
+                    "component_product_id": (
+                        selected_product.id
+                        if selected_product is not None
+                        else (current_line.component_product_id if current_line is not None else None)
+                    ),
+                    "delete": bool(update["delete"]),
+                }
+            )
+
+        new_rows = [
+            {
+                "index": index,
+                "component_sku": str(line["component_sku"] or ""),
+                "quantity_standard": str(line["quantity_standard"] or ""),
+                "notes": str(line["notes"] or ""),
+            }
+            for index, line in enumerate(new_lines, start=1)
+        ]
+        while len(new_rows) < 5:
+            new_rows.append(
+                {
+                    "index": len(new_rows) + 1,
+                    "component_sku": "",
+                    "quantity_standard": "",
+                    "notes": "",
+                }
+            )
+
+        return templates.TemplateResponse(
+            request=request,
+            name="product_bom_edit.html",
+            context={
+                "title": "Edit BOM",
+                "product": product,
+                "bom": bom,
+                "existing_lines": existing_rows,
+                "new_rows": new_rows,
+                "existing_component_options": existing_component_options,
+                "existing_component_option_skus": [option.sku for option in existing_component_options],
+                "new_component_options": new_component_options,
+                "error": str(exc),
+            },
         )
 
 

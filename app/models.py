@@ -86,6 +86,11 @@ class Product(Base):
     default_route: Mapped["Route | None"] = relationship("Route", back_populates="products")
     category: Mapped["ProductCategory | None"] = relationship("ProductCategory", back_populates="products")
     supplier_record: Mapped["Supplier | None"] = relationship("Supplier", back_populates="products")
+    bom_header: Mapped["ProductBomHeader | None"] = relationship(
+        "ProductBomHeader",
+        back_populates="product",
+        uselist=False,
+    )
 
 
 class AppSequence(Base):
@@ -447,6 +452,73 @@ class InventoryBalance(Base):
 
     product: Mapped[Product] = relationship(foreign_keys=[product_id])
     last_transaction: Mapped[InventoryTransaction | None] = relationship(foreign_keys=[last_transaction_id])
+
+
+class ProductBomHeader(Base):
+    __tablename__ = "product_bom_headers"
+    __table_args__ = (UniqueConstraint("product_id", name="uq_product_bom_headers_product_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False, index=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    source_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source_imported_bom_header_id: Mapped[int | None] = mapped_column(
+        ForeignKey("imported_bom_headers.id"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    product: Mapped[Product] = relationship("Product", back_populates="bom_header")
+    source_imported_bom_header: Mapped["ImportedBomHeader | None"] = relationship(
+        "ImportedBomHeader",
+        foreign_keys=[source_imported_bom_header_id],
+    )
+    lines: Mapped[list["ProductBomLine"]] = relationship(
+        back_populates="bom_header",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProductBomLine(Base):
+    __tablename__ = "product_bom_lines"
+    __table_args__ = (UniqueConstraint("bom_header_id", "line_number", name="uq_product_bom_lines_line_number"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    bom_header_id: Mapped[int] = mapped_column(ForeignKey("product_bom_headers.id"), nullable=False, index=True)
+    component_product_id: Mapped[int | None] = mapped_column(ForeignKey("products.id"), nullable=True, index=True)
+    component_sku_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    component_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    unit_snapshot: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    quantity_standard: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_imported_bom_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("imported_bom_lines.id"),
+        nullable=True,
+    )
+    component_type: Mapped[str] = mapped_column(String(50), default="material", nullable=False)
+    include_in_real_cost: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    bom_header: Mapped[ProductBomHeader] = relationship("ProductBomHeader", back_populates="lines")
+    component_product: Mapped[Product | None] = relationship("Product", foreign_keys=[component_product_id])
+    source_imported_bom_line: Mapped["ImportedBomLine | None"] = relationship(
+        "ImportedBomLine",
+        foreign_keys=[source_imported_bom_line_id],
+    )
 
 
 class ImportBatch(Base):

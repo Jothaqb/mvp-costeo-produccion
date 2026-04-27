@@ -140,6 +140,76 @@ def ensure_master_data_tables() -> None:
             "CREATE INDEX IF NOT EXISTS ix_products_supplier_id ON products (supplier_id)"
         )
 
+
+def ensure_product_bom_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS product_bom_headers (
+                id INTEGER NOT NULL PRIMARY KEY,
+                product_id INTEGER NOT NULL UNIQUE,
+                name VARCHAR(255),
+                active BOOLEAN NOT NULL DEFAULT 1,
+                source_type VARCHAR(50),
+                source_imported_bom_header_id INTEGER,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(product_id) REFERENCES products (id),
+                FOREIGN KEY(source_imported_bom_header_id) REFERENCES imported_bom_headers (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_bom_headers_product_id ON product_bom_headers (product_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_bom_headers_source_imported_bom_header_id "
+            "ON product_bom_headers (source_imported_bom_header_id)"
+        )
+
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS product_bom_lines (
+                id INTEGER NOT NULL PRIMARY KEY,
+                bom_header_id INTEGER NOT NULL,
+                component_product_id INTEGER,
+                component_sku_snapshot VARCHAR(100),
+                component_name_snapshot VARCHAR(255),
+                unit_snapshot VARCHAR(50),
+                quantity_standard NUMERIC(12, 4),
+                line_number INTEGER NOT NULL,
+                notes TEXT,
+                source_imported_bom_line_id INTEGER,
+                component_type VARCHAR(50) NOT NULL DEFAULT 'material',
+                include_in_real_cost BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(bom_header_id) REFERENCES product_bom_headers (id),
+                FOREIGN KEY(component_product_id) REFERENCES products (id),
+                FOREIGN KEY(source_imported_bom_line_id) REFERENCES imported_bom_lines (id),
+                CONSTRAINT uq_product_bom_lines_line_number UNIQUE (bom_header_id, line_number)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_bom_lines_bom_header_id ON product_bom_lines (bom_header_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_bom_lines_component_product_id "
+            "ON product_bom_lines (component_product_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_bom_lines_component_sku_snapshot "
+            "ON product_bom_lines (component_sku_snapshot)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_product_bom_lines_source_imported_bom_line_id "
+            "ON product_bom_lines (source_imported_bom_line_id)"
+        )
+
 def ensure_product_loyverse_mapping_columns() -> None:
     if engine.dialect.name != "sqlite":
         return

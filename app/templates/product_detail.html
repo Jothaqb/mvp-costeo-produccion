@@ -31,6 +31,62 @@
   </section>
 
   <section>
+    <h2>BOM</h2>
+    {% if product.is_manufactured %}
+      <p class="muted-inline">
+        This Product Master BOM is editable and will be used for future production integration.
+        Current Production Order creation remains unchanged in this sprint.
+      </p>
+      <div class="actions">
+        <a role="button" href="/master-data/products/{{ product.id }}/bom/edit">
+          {% if bom %}Edit BOM{% else %}Create BOM{% endif %}
+        </a>
+      </div>
+      {% if bom and bom_lines %}
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Component SKU</th>
+              <th>Component name</th>
+              <th>Unit</th>
+              <th>Quantity standard</th>
+              <th>Type</th>
+              <th>Include in real cost</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for line in bom_lines %}
+              <tr>
+                <td>{{ line.line_number }}</td>
+                <td>{{ line.component_sku_snapshot or "" }}</td>
+                <td>
+                  {{ line.component_name_snapshot or "" }}
+                  {% if line.component_product_id is none %}
+                    <div class="muted-inline">SKU not found in current Product master.</div>
+                  {% endif %}
+                </td>
+                <td>{{ line.unit_snapshot or "" }}</td>
+                <td>{{ fmt.number_3(line.quantity_standard) }}</td>
+                <td>{{ line.component_type }}</td>
+                <td>{{ "yes" if line.include_in_real_cost else "no" }}</td>
+                <td>{{ line.notes or "" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% elif bom %}
+        <p>No BOM component lines exist yet for this product.</p>
+      {% else %}
+        <p>No Product Master BOM exists yet for this product.</p>
+      {% endif %}
+    {% else %}
+      <p>BOM management is available only for manufactured products.</p>
+    {% endif %}
+  </section>
+
+  <section>
     <h2>Inventory Snapshot</h2>
     {% if balance %}
       <dl class="summary">
