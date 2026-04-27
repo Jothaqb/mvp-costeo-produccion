@@ -1,0 +1,57 @@
+{% set inventory_path = request.url.path %}
+{% set inventory_cards = [
+  {
+    "title": "Inventory Home",
+    "href": "/inventory",
+    "description": "Open the inventory workspace and jump to the main control pages.",
+    "active": inventory_path == "/inventory"
+  },
+  {
+    "title": "Balances",
+    "href": "/inventory/balances",
+    "description": "Review current on-hand quantity, average cost, and inventory value.",
+    "active": inventory_path == "/inventory/balances"
+  },
+  {
+    "title": "Transactions",
+    "href": "/inventory/transactions",
+    "description": "Inspect the permanent Kardex movement history across the ERP.",
+    "active": inventory_path == "/inventory/transactions"
+  },
+  {
+    "title": "Adjustments",
+    "href": "/inventory/adjustments",
+    "description": "Review posted inventory corrections and linked adjustment documents.",
+    "active": inventory_path == "/inventory/adjustments" or (inventory_path.startswith("/inventory/adjustments/") and inventory_path != "/inventory/adjustments/new")
+  },
+  {
+    "title": "Initialize Opening Balances",
+    "href": "/inventory/initialize-opening-balances",
+    "description": "Run or review the one-time initialization from legacy product fields.",
+    "active": inventory_path == "/inventory/initialize-opening-balances"
+  },
+  {
+    "title": "New Adjustment",
+    "href": "/inventory/adjustments/new",
+    "description": "Post a controlled positive, negative, or stock-count correction.",
+    "active": inventory_path == "/inventory/adjustments/new"
+  }
+] %}
+
+<section class="inventory-nav-section" aria-label="Inventory quick access">
+  <div class="inventory-nav-grid">
+    {% for card in inventory_cards %}
+      <a
+        class="inventory-nav-card{% if card.active %} inventory-nav-card-active{% endif %}"
+        href="{{ card.href }}"
+        aria-current="{{ 'page' if card.active else 'false' }}"
+      >
+        <div class="inventory-nav-card-body">
+          <p class="inventory-nav-card-label">{{ card.title }}</p>
+          <p class="inventory-nav-card-text">{{ card.description }}</p>
+        </div>
+        <span class="inventory-nav-card-link">Open</span>
+      </a>
+    {% endfor %}
+  </div>
+</section>

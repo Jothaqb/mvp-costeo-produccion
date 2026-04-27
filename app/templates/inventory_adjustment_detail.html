@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Inventory</p>
+    <h1>{{ adjustment.adjustment_number }}</h1>
+    <p class="lead">Review the posted adjustment document and its linked Kardex transaction snapshot.</p>
+  </section>
+
+  <section>
+
+    <dl class="summary">
+      <div><dt>Date</dt><dd>{{ adjustment.adjustment_date }}</dd></div>
+      <div><dt>SKU</dt><dd>{{ adjustment.sku_snapshot }}</dd></div>
+      <div><dt>Product</dt><dd>{{ adjustment.product_name_snapshot }}</dd></div>
+      <div><dt>Mode</dt><dd>{{ adjustment.adjustment_mode }}</dd></div>
+      <div><dt>Adjustment type</dt><dd>{{ adjustment.adjustment_type }}</dd></div>
+      <div><dt>Transaction type</dt><dd>{{ adjustment.transaction_type }}</dd></div>
+      <div><dt>Reason</dt><dd>{{ adjustment.reason }}</dd></div>
+      <div><dt>Current qty snapshot</dt><dd>{{ fmt.number_3(adjustment.current_qty_snapshot) }}</dd></div>
+      <div><dt>Counted qty</dt><dd>{{ fmt.number_3(adjustment.counted_qty) if adjustment.counted_qty is not none else '' }}</dd></div>
+      <div><dt>Quantity adjustment</dt><dd>{{ fmt.number_3(adjustment.quantity_adjustment) }}</dd></div>
+      <div><dt>Unit cost</dt><dd>{{ fmt.money_crc(adjustment.unit_cost) if adjustment.unit_cost is not none else '' }}</dd></div>
+      <div><dt>Total cost</dt><dd>{{ fmt.money_crc(adjustment.total_cost) if adjustment.total_cost is not none else '' }}</dd></div>
+      <div><dt>Status</dt><dd>{{ adjustment.status }}</dd></div>
+      <div><dt>Linked transaction</dt><dd>{{ "#" ~ adjustment.inventory_transaction_id if adjustment.inventory_transaction_id else '' }}</dd></div>
+      <div><dt>Notes</dt><dd>{{ adjustment.notes or "" }}</dd></div>
+      <div><dt>Warning notes</dt><dd>{{ adjustment.warning_notes or "" }}</dd></div>
+    </dl>
+  </section>
+
+  {% if transaction %}
+    <section>
+      <h2>Linked Kardex Transaction</h2>
+      <dl class="summary">
+        <div><dt>Transaction date</dt><dd>{{ transaction.transaction_date }}</dd></div>
+        <div><dt>Quantity in</dt><dd>{{ fmt.number_3(transaction.quantity_in) }}</dd></div>
+        <div><dt>Quantity out</dt><dd>{{ fmt.number_3(transaction.quantity_out) }}</dd></div>
+        <div><dt>Unit cost</dt><dd>{{ fmt.money_crc(transaction.unit_cost) if transaction.unit_cost is not none else '' }}</dd></div>
+        <div><dt>Total cost</dt><dd>{{ fmt.money_crc(transaction.total_cost) if transaction.total_cost is not none else '' }}</dd></div>
+        <div><dt>Running quantity</dt><dd>{{ fmt.number_3(transaction.running_quantity) }}</dd></div>
+        <div><dt>Running avg cost</dt><dd>{{ fmt.money_crc(transaction.running_average_cost) }}</dd></div>
+        <div><dt>Running inventory value</dt><dd>{{ fmt.money_crc(transaction.running_inventory_value) }}</dd></div>
+        <div><dt>Notes</dt><dd>{{ transaction.notes or "" }}</dd></div>
+      </dl>
+    </section>
+  {% endif %}
+{% endblock %}

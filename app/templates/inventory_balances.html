@@ -8,12 +8,6 @@
     <p class="lead">Review current on-hand balances and weighted average cost snapshots without changing any live workflows.</p>
   </section>
 
-  <section class="actions">
-    <a class="button secondary" href="/">Home</a>
-    <a class="button secondary" href="/inventory/transactions">View Transactions</a>
-    <a class="button" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
-  </section>
-
   {% if not opening_balances_initialized %}
     <p class="error">Opening balances have not been initialized yet. Balances may be empty until the one-time initialization is completed.</p>
   {% endif %}

@@ -482,6 +482,75 @@ button:focus,
   align-items: center;
 }
 
+.inventory-nav-section {
+  margin-top: 20px;
+}
+
+.inventory-nav-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.inventory-nav-card {
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  color: inherit;
+  background: var(--surface);
+  text-decoration: none;
+  box-shadow: 0 6px 18px rgba(20, 35, 45, 0.04);
+  transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+}
+
+.inventory-nav-card:hover,
+.inventory-nav-card:focus {
+  transform: translateY(-2px);
+  border-color: rgba(15, 118, 110, 0.35);
+  box-shadow: 0 14px 32px rgba(20, 35, 45, 0.1);
+  outline: none;
+}
+
+.inventory-nav-card-active {
+  border-color: rgba(15, 118, 110, 0.55);
+  background: rgba(15, 118, 110, 0.06);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
+}
+
+.inventory-nav-card-body {
+  display: grid;
+  gap: 8px;
+}
+
+.inventory-nav-card-label {
+  margin: 0;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.inventory-nav-card-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.inventory-nav-card-link {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: #fff;
+  background: var(--accent);
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+
 .inline-actions {
   display: flex;
   gap: 10px;
@@ -555,4 +624,16 @@ button:focus,
 .help-abbr {
   border-bottom: 1px dotted rgba(23, 33, 43, 0.45);
   cursor: help;
+}
+
+@media (max-width: 1040px) {
+  .inventory-nav-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .inventory-nav-grid {
+    grid-template-columns: 1fr;
+  }
 }

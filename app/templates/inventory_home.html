@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Inventory</p>
+    <h1>Inventory</h1>
+    <p class="lead">Use the inventory workspace to review balances, inspect Kardex transactions, post adjustments, and manage opening balance setup.</p>
+  </section>
+
+  <section class="module-grid" aria-label="Inventory sections">
+    <a class="module-card module-link-card" href="/inventory/balances" aria-label="Open Inventory Balances">
+      <div>
+        <p class="eyebrow">Stock</p>
+        <h2>Inventory Balances</h2>
+        <p>Review current on-hand quantity, weighted average cost, and inventory value.</p>
+      </div>
+      <span class="module-entry">Open Balances</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/inventory/transactions" aria-label="Open Inventory Transactions">
+      <div>
+        <p class="eyebrow">Kardex</p>
+        <h2>Inventory Transactions</h2>
+        <p>Inspect the permanent Kardex movement history across the ERP.</p>
+      </div>
+      <span class="module-entry">Open Transactions</span>
+    </a>
+
+    <article class="module-card">
+      <div>
+        <p class="eyebrow">Control</p>
+        <h2>Inventory Adjustments</h2>
+        <p>Review posted inventory corrections and create controlled positive, negative, or stock-count adjustments.</p>
+      </div>
+      <div class="module-card-actions">
+        <a class="module-entry" href="/inventory/adjustments">Open Adjustments</a>
+        <a class="button secondary" href="/inventory/adjustments/new">New Adjustment</a>
+      </div>
+    </article>
+
+    <a class="module-card module-link-card" href="/inventory/initialize-opening-balances" aria-label="Initialize Opening Balances">
+      <div>
+        <p class="eyebrow">Setup</p>
+        <h2>Initialize Opening Balances</h2>
+        <p>Run or review the one-time initialization from legacy product inventory fields.</p>
+      </div>
+      <span class="module-entry">Initialize Opening Balances</span>
+    </a>
+  </section>
+{% endblock %}

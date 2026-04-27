@@ -8,12 +8,6 @@
     <p class="lead">Review the permanent kardex trail that will support future inventory, COGS, and margin posting.</p>
   </section>
 
-  <section class="actions">
-    <a class="button secondary" href="/">Home</a>
-    <a class="button secondary" href="/inventory/balances">View Balances</a>
-    <a class="button" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
-  </section>
-
   {% if not opening_balances_initialized %}
     <p class="error">Opening balances have not been initialized yet. Transactions may be empty until the one-time initialization is completed.</p>
   {% endif %}

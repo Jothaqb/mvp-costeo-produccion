@@ -17,6 +17,7 @@ from app.database import (
     ensure_b2b_loyverse_mapping_tables,
     ensure_app_sequences_table,
     ensure_discount_master_tables,
+    ensure_inventory_adjustment_tables,
     ensure_inventory_ledger_tables,
     ensure_master_data_tables,
     ensure_product_bom_tables,
@@ -44,6 +45,7 @@ from app.models import (
     ImportBatch,
     ImportedBomHeader,
     ImportedBomLine,
+    InventoryAdjustment,
     InventoryBalance,
     InventoryTransaction,
     LaborRate,
@@ -104,6 +106,11 @@ from app.services.inventory_ledger_service import (
     InventoryInitializationResult,
     InventoryLedgerValidationError,
     initialize_inventory_opening_balances,
+)
+from app.services.inventory_adjustment_service import (
+    InventoryAdjustmentValidationError,
+    create_inventory_adjustment_post_token,
+    create_inventory_adjustment_with_posting,
 )
 from app.services.master_data_service import (
     MasterDataValidationError,
@@ -203,6 +210,7 @@ ensure_b2b_invoice_snapshot_columns()
 ensure_b2c_sales_tables()
 ensure_discount_master_tables()
 ensure_b2b_loyverse_mapping_tables()
+ensure_inventory_adjustment_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -249,6 +257,18 @@ def _discount_applies_to_options() -> list[str]:
 
 def _discount_channels() -> list[str]:
     return ["b2c"]
+
+
+def _inventory_adjustment_modes() -> list[str]:
+    return ["quantity_adjustment", "stock_count"]
+
+
+def _inventory_adjustment_types() -> list[str]:
+    return ["increase", "decrease"]
+
+
+def _inventory_adjustment_reasons() -> list[str]:
+    return ["physical_count", "damage", "waste", "correction", "other"]
 
 
 def _form_bool(form, field_name: str) -> bool:
@@ -465,6 +485,59 @@ def _inventory_init_context(
     }
 
 
+def _inventory_adjustment_product_options(db: Session) -> list[dict[str, object]]:
+    products = db.query(Product).order_by(Product.sku, Product.name).all()
+    balances_by_product_id = {
+        balance.product_id: balance
+        for balance in db.query(InventoryBalance).order_by(InventoryBalance.product_id).all()
+    }
+    return [
+        {
+            "id": product.id,
+            "sku": product.sku,
+            "name": product.name,
+            "active": product.active,
+            "current_qty": balances_by_product_id.get(product.id).on_hand_qty if balances_by_product_id.get(product.id) else None,
+            "average_unit_cost": balances_by_product_id.get(product.id).average_unit_cost if balances_by_product_id.get(product.id) else None,
+            "lookup_label": f"{product.sku} - {product.name}",
+        }
+        for product in products
+    ]
+
+
+def _inventory_adjustment_form_context(
+    *,
+    title: str,
+    form_action: str,
+    product_options: list[dict[str, object]],
+    post_token: str,
+    error: str | None = None,
+    form_data: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "form_action": form_action,
+        "product_options": product_options,
+        "post_token": post_token,
+        "adjustment_modes": _inventory_adjustment_modes(),
+        "adjustment_types": _inventory_adjustment_types(),
+        "adjustment_reasons": _inventory_adjustment_reasons(),
+        "error": error,
+        "form_data": form_data
+        or {
+            "adjustment_date": date.today().isoformat(),
+            "product_id": "",
+            "adjustment_mode": "quantity_adjustment",
+            "adjustment_type": "increase",
+            "quantity": "",
+            "counted_qty": "",
+            "unit_cost": "",
+            "reason": "correction",
+            "notes": "",
+        },
+    }
+
+
 def _po_product_options(db: Session) -> list[dict[str, object]]:
     products = (
         db.query(Product)
@@ -557,6 +630,15 @@ def dashboard(request: Request) -> HTMLResponse:
         request=request,
         name="dashboard.html",
         context={"title": "Production Costing MVP"},
+    )
+
+
+@app.get("/inventory", response_class=HTMLResponse)
+def inventory_home(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="inventory_home.html",
+        context={"title": "Inventory"},
     )
 
 
@@ -1323,6 +1405,125 @@ def inventory_transactions_report(request: Request, db: Session = Depends(get_db
             "title": "Inventory Transactions",
             "transactions": transactions,
             "opening_balances_initialized": _inventory_opening_balance_exists(db),
+        },
+    )
+
+
+@app.get("/inventory/adjustments", response_class=HTMLResponse)
+def inventory_adjustments_report(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    adjustments = (
+        db.query(InventoryAdjustment)
+        .options(
+            joinedload(InventoryAdjustment.product),
+            joinedload(InventoryAdjustment.inventory_transaction),
+        )
+        .order_by(InventoryAdjustment.adjustment_date.desc(), InventoryAdjustment.id.desc())
+        .all()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="inventory_adjustments_list.html",
+        context={
+            "title": "Inventory Adjustments",
+            "adjustments": adjustments,
+            "opening_balances_initialized": _inventory_opening_balance_exists(db),
+        },
+    )
+
+
+@app.get("/inventory/adjustments/new", response_class=HTMLResponse)
+def new_inventory_adjustment(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    product_options = _inventory_adjustment_product_options(db)
+    post_token = create_inventory_adjustment_post_token(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="inventory_adjustment_form.html",
+        context=_inventory_adjustment_form_context(
+            title="New Inventory Adjustment",
+            form_action="/inventory/adjustments",
+            product_options=product_options,
+            post_token=post_token.token,
+        ),
+    )
+
+
+@app.post("/inventory/adjustments")
+async def create_inventory_adjustment_route(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    form = await request.form()
+    form_data = {
+        "adjustment_date": str(form.get("adjustment_date", "")),
+        "product_id": str(form.get("product_id", "")),
+        "adjustment_mode": str(form.get("adjustment_mode", "")),
+        "adjustment_type": str(form.get("adjustment_type", "")),
+        "quantity": str(form.get("quantity", "")),
+        "counted_qty": str(form.get("counted_qty", "")),
+        "unit_cost": str(form.get("unit_cost", "")),
+        "reason": str(form.get("reason", "")),
+        "notes": str(form.get("notes", "")),
+    }
+    post_token = str(form.get("post_token", ""))
+    try:
+        adjustment_date = datetime.strptime(form_data["adjustment_date"], "%Y-%m-%d").date()
+        product_id_text = form_data["product_id"].strip()
+        if not product_id_text.isdigit():
+            raise InventoryAdjustmentValidationError("Product is required.")
+        adjustment = create_inventory_adjustment_with_posting(
+            db,
+            post_token=post_token,
+            adjustment_date=adjustment_date,
+            product_id=int(product_id_text),
+            adjustment_mode=form_data["adjustment_mode"],
+            adjustment_type=form_data["adjustment_type"],
+            quantity=form_data["quantity"],
+            counted_qty=form_data["counted_qty"],
+            unit_cost=form_data["unit_cost"],
+            reason=form_data["reason"],
+            notes=form_data["notes"],
+        )
+        return _redirect(f"/inventory/adjustments/{adjustment.id}")
+    except (InventoryAdjustmentValidationError, ValueError) as exc:
+        db.rollback()
+        retry_token = create_inventory_adjustment_post_token(db)
+        product_options = _inventory_adjustment_product_options(db)
+        return templates.TemplateResponse(
+            request=request,
+            name="inventory_adjustment_form.html",
+            context=_inventory_adjustment_form_context(
+                title="New Inventory Adjustment",
+                form_action="/inventory/adjustments",
+                product_options=product_options,
+                post_token=retry_token.token,
+                error=str(exc),
+                form_data=form_data,
+            ),
+        )
+
+
+@app.get("/inventory/adjustments/{adjustment_id}", response_class=HTMLResponse)
+def inventory_adjustment_detail(
+    adjustment_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    adjustment = (
+        db.query(InventoryAdjustment)
+        .options(
+            joinedload(InventoryAdjustment.product),
+            joinedload(InventoryAdjustment.inventory_transaction),
+        )
+        .filter(InventoryAdjustment.id == adjustment_id)
+        .one()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="inventory_adjustment_detail.html",
+        context={
+            "title": "Inventory Adjustment",
+            "adjustment": adjustment,
+            "transaction": adjustment.inventory_transaction,
         },
     )
 

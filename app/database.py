@@ -634,6 +634,76 @@ def ensure_inventory_ledger_tables() -> None:
         )
 
 
+def ensure_inventory_adjustment_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_adjustment_post_tokens (
+                id INTEGER NOT NULL PRIMARY KEY,
+                token VARCHAR(255) NOT NULL UNIQUE,
+                used_at DATETIME,
+                created_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_inventory_adjustment_post_tokens_token "
+            "ON inventory_adjustment_post_tokens (token)"
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_adjustments (
+                id INTEGER NOT NULL PRIMARY KEY,
+                adjustment_number VARCHAR(100) NOT NULL UNIQUE,
+                adjustment_date DATE NOT NULL,
+                product_id INTEGER NOT NULL,
+                sku_snapshot VARCHAR(100) NOT NULL,
+                product_name_snapshot VARCHAR(255) NOT NULL,
+                adjustment_mode VARCHAR(50) NOT NULL,
+                adjustment_type VARCHAR(50) NOT NULL,
+                transaction_type VARCHAR(50) NOT NULL,
+                reason VARCHAR(50) NOT NULL,
+                current_qty_snapshot NUMERIC(12, 4) NOT NULL,
+                counted_qty NUMERIC(12, 4),
+                quantity_adjustment NUMERIC(12, 4) NOT NULL,
+                unit_cost NUMERIC(12, 4),
+                total_cost NUMERIC(12, 4),
+                notes TEXT,
+                warning_notes TEXT,
+                status VARCHAR(50) NOT NULL,
+                inventory_transaction_id INTEGER,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                CONSTRAINT ck_inventory_adjustments_mode CHECK (adjustment_mode IN ('quantity_adjustment', 'stock_count')),
+                CONSTRAINT ck_inventory_adjustments_type CHECK (adjustment_type IN ('increase', 'decrease')),
+                CONSTRAINT ck_inventory_adjustments_status CHECK (status IN ('posted')),
+                CONSTRAINT ck_inventory_adjustments_reason CHECK (reason IN ('physical_count', 'damage', 'waste', 'correction', 'other')),
+                FOREIGN KEY(product_id) REFERENCES products (id),
+                FOREIGN KEY(inventory_transaction_id) REFERENCES inventory_transactions (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_inventory_adjustments_adjustment_number "
+            "ON inventory_adjustments (adjustment_number)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_inventory_adjustments_product_id "
+            "ON inventory_adjustments (product_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_inventory_adjustments_inventory_transaction_id "
+            "ON inventory_adjustments (inventory_transaction_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_inventory_adjustments_adjustment_date_id "
+            "ON inventory_adjustments (adjustment_date, id)"
+        )
+
+
 def _ensure_purchase_order_status_supports_receive_workflow(connection) -> None:
     create_sql_row = connection.exec_driver_sql(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='purchase_orders'"

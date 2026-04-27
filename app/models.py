@@ -444,6 +444,15 @@ class PurchaseOrderReceiveToken(Base):
     purchase_order: Mapped[PurchaseOrder] = relationship()
 
 
+class InventoryAdjustmentPostToken(Base):
+    __tablename__ = "inventory_adjustment_post_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    token: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class InventoryTransaction(Base):
     __tablename__ = "inventory_transactions"
 
@@ -490,6 +499,64 @@ class InventoryBalance(Base):
 
     product: Mapped[Product] = relationship(foreign_keys=[product_id])
     last_transaction: Mapped[InventoryTransaction | None] = relationship(foreign_keys=[last_transaction_id])
+
+
+class InventoryAdjustment(Base):
+    __tablename__ = "inventory_adjustments"
+    __table_args__ = (
+        CheckConstraint(
+            "adjustment_mode IN ('quantity_adjustment', 'stock_count')",
+            name="ck_inventory_adjustments_mode",
+        ),
+        CheckConstraint(
+            "adjustment_type IN ('increase', 'decrease')",
+            name="ck_inventory_adjustments_type",
+        ),
+        CheckConstraint(
+            "status IN ('posted')",
+            name="ck_inventory_adjustments_status",
+        ),
+        CheckConstraint(
+            "reason IN ('physical_count', 'damage', 'waste', 'correction', 'other')",
+            name="ck_inventory_adjustments_reason",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    adjustment_number: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    adjustment_date: Mapped[date] = mapped_column(Date, nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False, index=True)
+    sku_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
+    product_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    adjustment_mode: Mapped[str] = mapped_column(String(50), nullable=False)
+    adjustment_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    transaction_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    reason: Mapped[str] = mapped_column(String(50), nullable=False)
+    current_qty_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    counted_qty: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    quantity_adjustment: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    total_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warning_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="posted", nullable=False)
+    inventory_transaction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("inventory_transactions.id"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    product: Mapped[Product] = relationship(foreign_keys=[product_id])
+    inventory_transaction: Mapped[InventoryTransaction | None] = relationship(
+        foreign_keys=[inventory_transaction_id]
+    )
 
 
 class ProductBomHeader(Base):

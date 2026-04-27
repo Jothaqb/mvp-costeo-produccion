@@ -10,6 +10,7 @@
     {% set path = request.url.path %}
     {% set is_sales = path == "/sales" or path.startswith("/sales/") or path == "/b2b" or path.startswith("/b2b/") or path == "/b2c" or path.startswith("/b2c/") %}
     {% set is_master_data = path == "/master-data" or path.startswith("/master-data/") %}
+    {% set is_inventory = path == "/inventory" or path.startswith("/inventory/") %}
     {% set is_planning = path == "/planning" or path.startswith("/planning/") %}
     {% set is_production_routes = path == "/production/routes" or path.startswith("/production/routes/") or path == "/activities" or path.startswith("/activities/") or path == "/machines" or path.startswith("/machines/") or path == "/routes" or path.startswith("/routes/") or path == "/product-routes" or path.startswith("/product-routes/") or path == "/rates" or path.startswith("/rates/") %}
     {% set is_production = path == "/production" or path.startswith("/production/") or path == "/imports" or path.startswith("/imports/") or path == "/production-orders" or path.startswith("/production-orders/") or is_production_routes %}
@@ -52,6 +53,13 @@
             <a class="nav-link" href="/master-data/categories">Categories</a>
             <a class="nav-link" href="/master-data/suppliers">Suppliers</a>
             <a class="nav-link" href="/master-data/discounts">Discounts</a>
+          {% elif is_inventory %}
+            <span class="nav-context">Inventory</span>
+            <a class="nav-link" href="/inventory">Inventory Home</a>
+            <a class="nav-link" href="/inventory/balances">Balances</a>
+            <a class="nav-link" href="/inventory/transactions">Transactions</a>
+            <a class="nav-link" href="/inventory/adjustments">Adjustments</a>
+            <a class="nav-link" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
           {% endif %}
         </div>
       </nav>

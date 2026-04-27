@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Inventory</p>
+    <h1>{{ title }}</h1>
+    <p class="lead">Post a single controlled inventory correction into Kardex with linked adjustment traceability.</p>
+  </section>
+
+  <section>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <form method="post" action="{{ form_action }}">
+      <input type="hidden" name="post_token" value="{{ post_token }}">
+
+      <label for="adjustment_date">Adjustment date</label>
+      <input id="adjustment_date" name="adjustment_date" type="date" value="{{ form_data.adjustment_date }}" required>
+
+      <label for="product_id">Product / SKU</label>
+      <select id="product_id" name="product_id" required>
+        <option value="">Select product...</option>
+        {% for product in product_options %}
+          <option
+            value="{{ product.id }}"
+            data-current-qty="{{ product.current_qty if product.current_qty is not none else '0.0000' }}"
+            data-average-unit-cost="{{ product.average_unit_cost if product.average_unit_cost is not none else '0.0000' }}"
+            {% if form_data.product_id == (product.id|string) %}selected{% endif %}
+          >
+            {{ product.lookup_label }}{% if not product.active %} [inactive]{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+
+      <p><strong>Current on hand:</strong> <span id="inventory-adjustment-current-qty"></span></p>
+      <p><strong>Current average cost:</strong> <span id="inventory-adjustment-current-cost"></span></p>
+
+      <label for="adjustment_mode">Mode</label>
+      <select id="adjustment_mode" name="adjustment_mode" required>
+        {% for adjustment_mode in adjustment_modes %}
+          <option value="{{ adjustment_mode }}" {% if form_data.adjustment_mode == adjustment_mode %}selected{% endif %}>{{ adjustment_mode }}</option>
+        {% endfor %}
+      </select>
+
+      <div id="quantity-adjustment-fields">
+        <label for="adjustment_type">Direction</label>
+        <select id="adjustment_type" name="adjustment_type">
+          {% for adjustment_type in adjustment_types %}
+            <option value="{{ adjustment_type }}" {% if form_data.adjustment_type == adjustment_type %}selected{% endif %}>{{ adjustment_type }}</option>
+          {% endfor %}
+        </select>
+
+        <label for="quantity">Quantity</label>
+        <input id="quantity" name="quantity" inputmode="decimal" value="{{ form_data.quantity }}">
+      </div>
+
+      <div id="stock-count-fields">
+        <label for="counted_qty">Counted quantity</label>
+        <input id="counted_qty" name="counted_qty" inputmode="decimal" value="{{ form_data.counted_qty }}">
+      </div>
+
+      <div id="unit-cost-fields">
+        <label for="unit_cost">Unit cost (used for increase only)</label>
+        <input id="unit_cost" name="unit_cost" inputmode="decimal" value="{{ form_data.unit_cost }}">
+      </div>
+
+      <label for="reason">Reason</label>
+      <select id="reason" name="reason" required>
+        {% for reason in adjustment_reasons %}
+          <option value="{{ reason }}" {% if form_data.reason == reason %}selected{% endif %}>{{ reason }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="notes">Notes</label>
+      <textarea id="notes" name="notes">{{ form_data.notes }}</textarea>
+
+      <button type="submit">Post Adjustment</button>
+      <a href="/inventory/adjustments">Cancel</a>
+    </form>
+  </section>
+
+  <script>
+    function inventoryAdjustmentNumber(value) {
+      const parsed = Number(String(value || "").replace(",", "."));
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function inventoryAdjustmentFormatQty(value) {
+      return value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+    }
+
+    function inventoryAdjustmentFormatMoney(value) {
+      return "\u20a1" + Math.round(value).toLocaleString("en-US");
+    }
+
+    function inventoryAdjustmentRefreshProductSnapshot() {
+      const productSelect = document.getElementById("product_id");
+      const currentQtyEl = document.getElementById("inventory-adjustment-current-qty");
+      const currentCostEl = document.getElementById("inventory-adjustment-current-cost");
+      const option = productSelect ? productSelect.options[productSelect.selectedIndex] : null;
+      const currentQty = inventoryAdjustmentNumber(option ? option.dataset.currentQty : "0");
+      const currentCost = inventoryAdjustmentNumber(option ? option.dataset.averageUnitCost : "0");
+      if (currentQtyEl) {
+        currentQtyEl.textContent = inventoryAdjustmentFormatQty(currentQty);
+      }
+      if (currentCostEl) {
+        currentCostEl.textContent = inventoryAdjustmentFormatMoney(currentCost);
+      }
+    }
+
+    function inventoryAdjustmentRefreshMode() {
+      const modeSelect = document.getElementById("adjustment_mode");
+      const typeSelect = document.getElementById("adjustment_type");
+      const quantityFields = document.getElementById("quantity-adjustment-fields");
+      const stockCountFields = document.getElementById("stock-count-fields");
+      const unitCostFields = document.getElementById("unit-cost-fields");
+      const mode = modeSelect ? modeSelect.value : "quantity_adjustment";
+      const type = typeSelect ? typeSelect.value : "increase";
+      const countInput = document.getElementById("counted_qty");
+      const productSelect = document.getElementById("product_id");
+      const option = productSelect ? productSelect.options[productSelect.selectedIndex] : null;
+      const currentQty = inventoryAdjustmentNumber(option ? option.dataset.currentQty : "0");
+      const countedQty = inventoryAdjustmentNumber(countInput ? countInput.value : "0");
+      const stockCountImpliesIncrease = countedQty > currentQty;
+      if (quantityFields) {
+        quantityFields.style.display = mode === "quantity_adjustment" ? "" : "none";
+      }
+      if (stockCountFields) {
+        stockCountFields.style.display = mode === "stock_count" ? "" : "none";
+      }
+      if (unitCostFields) {
+        const showUnitCost = mode === "quantity_adjustment" ? type === "increase" : stockCountImpliesIncrease;
+        unitCostFields.style.display = showUnitCost ? "" : "none";
+      }
+    }
+
+    document.getElementById("product_id")?.addEventListener("change", () => {
+      inventoryAdjustmentRefreshProductSnapshot();
+      inventoryAdjustmentRefreshMode();
+    });
+    document.getElementById("adjustment_mode")?.addEventListener("change", inventoryAdjustmentRefreshMode);
+    document.getElementById("adjustment_type")?.addEventListener("change", inventoryAdjustmentRefreshMode);
+    document.getElementById("counted_qty")?.addEventListener("input", inventoryAdjustmentRefreshMode);
+
+    inventoryAdjustmentRefreshProductSnapshot();
+    inventoryAdjustmentRefreshMode();
+  </script>
+{% endblock %}

@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Inventory</p>
+    <h1>Inventory Adjustments</h1>
+    <p class="lead">Post controlled inventory corrections into Kardex without changing product master stock or cost fields.</p>
+  </section>
+
+  {% if not opening_balances_initialized %}
+    <p class="error">Opening balances have not been initialized yet. Adjustment results may be incomplete until the one-time initialization is completed.</p>
+  {% endif %}
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Adjustment</th>
+          <th>Date</th>
+          <th>SKU</th>
+          <th>Product</th>
+          <th>Mode</th>
+          <th>Type</th>
+          <th>Quantity adj.</th>
+          <th>Reason</th>
+          <th>Status</th>
+          <th>Transaction</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for adjustment in adjustments %}
+          <tr>
+            <td><a href="/inventory/adjustments/{{ adjustment.id }}">{{ adjustment.adjustment_number }}</a></td>
+            <td>{{ adjustment.adjustment_date }}</td>
+            <td>{{ adjustment.sku_snapshot }}</td>
+            <td>{{ adjustment.product_name_snapshot }}</td>
+            <td>{{ adjustment.adjustment_mode }}</td>
+            <td>{{ adjustment.adjustment_type }}</td>
+            <td>{{ fmt.number_3(adjustment.quantity_adjustment) }}</td>
+            <td>{{ adjustment.reason }}</td>
+            <td>{{ adjustment.status }}</td>
+            <td>
+              {% if adjustment.inventory_transaction_id %}
+                #{{ adjustment.inventory_transaction_id }}
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="10">No inventory adjustments found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}
