@@ -9,10 +9,13 @@ from app.models import (
     AppSequence,
     ImportedBomHeader,
     ImportedBomLine,
+    InventoryBalance,
     InventoryTransaction,
     ImportBatch,
     LotSequence,
     Product,
+    ProductBomHeader,
+    ProductBomLine,
     ProductionOrder,
     ProductionOrderActivity,
     ProductionOrderMaterial,
@@ -104,9 +107,14 @@ def create_production_order(
     if not route_activities:
         raise ProductionOrderValidationError("Product default route must have at least one activity.")
 
-    bom_header = _get_latest_bom_header(db, product.sku)
-    if bom_header is None:
-        raise ProductionOrderValidationError("Product must have an imported BOM before creating an order.")
+    product_bom_header = _get_product_bom_header(db, product.id)
+    imported_bom_header = None
+    if product_bom_header is None:
+        imported_bom_header = _get_latest_bom_header(db, product.sku)
+    if product_bom_header is None and imported_bom_header is None:
+        raise ProductionOrderValidationError(
+            "Product must have a Product Master BOM or imported BOM before creating a Production Order."
+        )
 
     order_number = _generate_internal_order_number(db)
 
@@ -131,7 +139,10 @@ def create_production_order(
     db.flush()
 
     _copy_route_activities(db, order, route_activities)
-    _copy_bom(db, order, bom_header)
+    if product_bom_header is not None:
+        _copy_product_bom(db, order, product_bom_header)
+    elif imported_bom_header is not None:
+        _copy_bom(db, order, imported_bom_header)
     db.commit()
     db.refresh(order)
     return order
@@ -605,6 +616,21 @@ def _get_latest_bom_header(db: Session, product_sku: str) -> ImportedBomHeader |
     )
 
 
+def _get_product_bom_header(db: Session, product_id: int) -> ProductBomHeader | None:
+    header = (
+        db.query(ProductBomHeader)
+        .options(
+            joinedload(ProductBomHeader.lines).joinedload(ProductBomLine.component_product),
+            joinedload(ProductBomHeader.lines).joinedload(ProductBomLine.source_imported_bom_line),
+        )
+        .filter(ProductBomHeader.product_id == product_id)
+        .one_or_none()
+    )
+    if header is None or not header.lines:
+        return None
+    return header
+
+
 def _copy_bom(db: Session, order: ProductionOrder, bom_header: ImportedBomHeader) -> None:
     bom_lines = (
         db.query(ImportedBomLine)
@@ -636,6 +662,51 @@ def _copy_bom(db: Session, order: ProductionOrder, bom_header: ImportedBomHeader
                 include_in_real_cost=line.include_in_real_cost,
             )
         )
+
+
+def _copy_product_bom(db: Session, order: ProductionOrder, bom_header: ProductBomHeader) -> None:
+    bom_lines = sorted(bom_header.lines, key=lambda line: (line.line_number, line.id))
+    for line in bom_lines:
+        quantity_standard = line.quantity_standard
+        unit_cost_snapshot = _resolve_product_bom_unit_cost(db, line)
+        line_cost = None
+        if quantity_standard is not None and unit_cost_snapshot is not None:
+            line_cost = quantity_standard * unit_cost_snapshot
+
+        db.add(
+            ProductionOrderMaterial(
+                production_order_id=order.id,
+                component_sku=line.component_sku_snapshot,
+                component_name=line.component_name_snapshot,
+                quantity_standard=quantity_standard,
+                required_quantity=_calculate_required_quantity(order, quantity_standard),
+                unit_cost_snapshot=unit_cost_snapshot,
+                line_cost=line_cost,
+                component_type=(line.component_type or "").strip() or "material",
+                include_in_real_cost=(
+                    line.include_in_real_cost if line.include_in_real_cost is not None else True
+                ),
+            )
+        )
+
+
+def _resolve_product_bom_unit_cost(db: Session, line: ProductBomLine) -> Decimal | None:
+    component_product = line.component_product
+    if component_product is not None:
+        balance = (
+            db.query(InventoryBalance)
+            .filter(InventoryBalance.product_id == component_product.id)
+            .one_or_none()
+        )
+        if balance is not None and balance.average_unit_cost is not None and balance.average_unit_cost > ZERO:
+            return balance.average_unit_cost
+        if component_product.standard_cost is not None and component_product.standard_cost > ZERO:
+            return component_product.standard_cost
+
+    imported_line = line.source_imported_bom_line
+    if imported_line is not None and imported_line.component_cost is not None:
+        return imported_line.component_cost
+    return None
 
 
 def _ensure_not_closed(order: ProductionOrder) -> None:
