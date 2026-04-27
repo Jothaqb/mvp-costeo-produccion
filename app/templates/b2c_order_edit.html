@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>Edit {{ order.order_number }}</h1>
+    <p>Order date: {{ order.order_date }} | Channel: {{ order.channel }}</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <form method="post" action="/b2c/orders/{{ order.id }}/edit">
+      <label for="order_date">Order date</label>
+      <input id="order_date" name="order_date" type="date" value="{{ submitted_order_date if submitted_order_date is defined else order.order_date }}" required>
+
+      <label for="customer_name">Customer name</label>
+      <input id="customer_name" name="customer_name" value="{{ submitted_customer_name if submitted_customer_name is defined else order.customer_name or '' }}">
+
+      <label for="customer_phone">Customer phone</label>
+      <input id="customer_phone" name="customer_phone" value="{{ submitted_customer_phone if submitted_customer_phone is defined else order.customer_phone or '' }}">
+
+      <label for="customer_email">Customer email</label>
+      <input id="customer_email" name="customer_email" type="email" value="{{ submitted_customer_email if submitted_customer_email is defined else order.customer_email or '' }}">
+
+      <label for="channel">Channel</label>
+      {% set selected_channel = submitted_channel if submitted_channel is defined else order.channel %}
+      <select id="channel" name="channel" required>
+        <option value="">Select channel...</option>
+        {% for channel in channels %}
+          <option value="{{ channel }}" {% if selected_channel == channel %}selected{% endif %}>{{ channel }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="observations">Observations</label>
+      <textarea id="observations" name="observations">{{ submitted_observations if submitted_observations is defined else order.observations or "" }}</textarea>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Description</th>
+            <th>Quantity</th>
+            <th>Unit price</th>
+            <th>Amount</th>
+            <th>Delete</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in lines %}
+            {% set submitted_line = submitted_line_updates.get(line.id) if submitted_line_updates is defined else none %}
+            {% set selected_sku = submitted_line.sku if submitted_line else line.sku_snapshot %}
+            {% set selected_quantity = submitted_line.quantity if submitted_line else line.quantity %}
+            {% set selected_unit_price = submitted_line.unit_price if submitted_line else line.unit_price_snapshot %}
+            <tr>
+              <td>
+                <input type="hidden" name="line_id" value="{{ line.id }}">
+                <select class="b2c-product-select" name="line_sku_{{ line.id }}" required>
+                  {% if selected_sku and selected_sku not in product_skus %}
+                    <option value="{{ selected_sku }}" data-description="{{ line.description_snapshot }}" selected>{{ line.description_snapshot }} ({{ selected_sku }})</option>
+                  {% endif %}
+                  {% for product in products %}
+                    <option value="{{ product.sku }}" data-description="{{ product.name }}" {% if product.sku == selected_sku %}selected{% endif %}>{{ product.name }} ({{ product.sku }})</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td class="b2c-description-cell"></td>
+              <td><input class="b2c-quantity-input" name="line_quantity_{{ line.id }}" value="{{ selected_quantity }}" required></td>
+              <td><input class="b2c-unit-price-input" name="line_unit_price_{{ line.id }}" value="{{ selected_unit_price }}" required></td>
+              <td class="b2c-line-amount"></td>
+              <td><input type="checkbox" name="delete_line_id" value="{{ line.id }}"></td>
+            </tr>
+          {% endfor %}
+          {% for index in range(1, 4) %}
+            {% set submitted_line = submitted_new_lines[index - 1] if submitted_new_lines is defined and submitted_new_lines|length >= index else none %}
+            <tr>
+              <td>
+                <input type="hidden" name="new_line_index" value="{{ index }}">
+                <select class="b2c-product-select" name="new_line_sku_{{ index }}">
+                  <option value="">Add product...</option>
+                  {% if submitted_line and submitted_line.sku and submitted_line.sku not in product_skus %}
+                    <option value="{{ submitted_line.sku }}" data-description="" selected>{{ submitted_line.sku }}</option>
+                  {% endif %}
+                  {% for product in products %}
+                    <option value="{{ product.sku }}" data-description="{{ product.name }}" {% if submitted_line and submitted_line.sku == product.sku %}selected{% endif %}>{{ product.name }} ({{ product.sku }})</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td class="b2c-description-cell"></td>
+              <td><input class="b2c-quantity-input" name="new_line_quantity_{{ index }}" value="{{ submitted_line.quantity if submitted_line else '' }}"></td>
+              <td><input class="b2c-unit-price-input" name="new_line_unit_price_{{ index }}" value="{{ submitted_line.unit_price if submitted_line else '' }}"></td>
+              <td class="b2c-line-amount"></td>
+              <td></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <p><strong>Subtotal Preview:</strong> <span id="b2c-order-subtotal">&#8353;0</span></p>
+      <p><strong>Total Preview:</strong> <span id="b2c-order-total">&#8353;0</span></p>
+
+      <button type="submit">Save draft order</button>
+      <a href="/b2c/orders/{{ order.id }}">Cancel</a>
+    </form>
+  </section>
+
+  <script>
+    function b2cNumber(value) {
+      const parsed = Number(String(value || "").replace(",", "."));
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function b2cFormatMoney(value) {
+      return "\u20a1" + Math.round(value).toLocaleString("en-US");
+    }
+
+    function b2cRecalculate() {
+      let subtotal = 0;
+      document.querySelectorAll("tbody tr").forEach((row) => {
+        const select = row.querySelector(".b2c-product-select");
+        const quantityInput = row.querySelector(".b2c-quantity-input");
+        const unitPriceInput = row.querySelector(".b2c-unit-price-input");
+        const descriptionCell = row.querySelector(".b2c-description-cell");
+        const amountCell = row.querySelector(".b2c-line-amount");
+        if (!select || !quantityInput || !unitPriceInput || !descriptionCell || !amountCell) {
+          return;
+        }
+        const option = select.options[select.selectedIndex];
+        const description = option ? (option.dataset.description || "") : "";
+        const quantity = b2cNumber(quantityInput.value);
+        const unitPrice = b2cNumber(unitPriceInput.value);
+        const amount = quantity * unitPrice;
+        descriptionCell.textContent = description;
+        amountCell.textContent = amount ? b2cFormatMoney(amount) : "";
+        subtotal += amount;
+      });
+      const subtotalElement = document.getElementById("b2c-order-subtotal");
+      const totalElement = document.getElementById("b2c-order-total");
+      if (subtotalElement) {
+        subtotalElement.textContent = b2cFormatMoney(subtotal);
+      }
+      if (totalElement) {
+        totalElement.textContent = b2cFormatMoney(subtotal);
+      }
+    }
+
+    document.querySelectorAll(".b2c-product-select, .b2c-quantity-input, .b2c-unit-price-input").forEach((input) => {
+      input.addEventListener("change", b2cRecalculate);
+      input.addEventListener("input", b2cRecalculate);
+    });
+    b2cRecalculate();
+  </script>
+{% endblock %}

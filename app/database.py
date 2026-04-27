@@ -264,6 +264,65 @@ def ensure_b2b_invoice_snapshot_columns() -> None:
         )
 
 
+def ensure_b2c_sales_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS b2c_sales_orders (
+                id INTEGER NOT NULL PRIMARY KEY,
+                order_number VARCHAR(100) NOT NULL UNIQUE,
+                order_date DATE NOT NULL,
+                customer_name VARCHAR(255),
+                customer_phone VARCHAR(100),
+                customer_email VARCHAR(255),
+                channel VARCHAR(50) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                subtotal_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                total_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                observations TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS b2c_sales_order_lines (
+                id INTEGER NOT NULL PRIMARY KEY,
+                sales_order_id INTEGER NOT NULL,
+                line_number INTEGER NOT NULL,
+                sku_snapshot VARCHAR(100) NOT NULL,
+                description_snapshot VARCHAR(255) NOT NULL,
+                quantity NUMERIC(12, 4) NOT NULL,
+                unit_price_snapshot NUMERIC(12, 4) NOT NULL,
+                line_total NUMERIC(12, 4) NOT NULL,
+                cost_unit_snapshot NUMERIC(12, 4),
+                cost_total_snapshot NUMERIC(12, 4),
+                gross_margin_amount NUMERIC(12, 4),
+                gross_margin_percent NUMERIC(12, 4),
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(sales_order_id) REFERENCES b2c_sales_orders (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_order_number ON b2c_sales_orders (order_number)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_order_date ON b2c_sales_orders (order_date)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_status ON b2c_sales_orders (status)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_order_lines_sales_order_id ON b2c_sales_order_lines (sales_order_id)"
+        )
+
+
 def ensure_purchase_order_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ order.order_number }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <p><a href="/b2c/orders">Sales history</a></p>
+    <dl class="summary">
+      <div><dt>Status</dt><dd>{{ order.status }}</dd></div>
+      <div><dt>Order date</dt><dd>{{ order.order_date }}</dd></div>
+      <div><dt>Channel</dt><dd>{{ order.channel }}</dd></div>
+      <div><dt>Customer</dt><dd>{{ order.customer_name or "" }}</dd></div>
+      <div><dt>Phone</dt><dd>{{ order.customer_phone or "" }}</dd></div>
+      <div><dt>Email</dt><dd>{{ order.customer_email or "" }}</dd></div>
+      <div><dt>Subtotal</dt><dd>{{ fmt.money_crc(order.subtotal_amount) }}</dd></div>
+      <div><dt>Total</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
+      <div><dt>Observations</dt><dd>{{ order.observations or "" }}</dd></div>
+    </dl>
+
+    {% if order.status == "draft" %}
+      <div class="actions">
+        <a role="button" href="/b2c/orders/{{ order.id }}/edit">Edit order</a>
+        <form method="post" action="/b2c/orders/{{ order.id }}/status">
+          <input type="hidden" name="status" value="invoiced">
+          <button type="submit">Mark invoiced</button>
+        </form>
+        <form method="post" action="/b2c/orders/{{ order.id }}/status">
+          <input type="hidden" name="status" value="cancelled">
+          <button type="submit">Cancel order</button>
+        </form>
+      </div>
+    {% else %}
+      <p>{{ "Invoiced orders are read-only." if order.status == "invoiced" else "Cancelled orders are read-only." }}</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Lines</h2>
+    <p>Line count: {{ lines|length }}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>SKU</th>
+          <th>Description</th>
+          <th>Unit price</th>
+          <th>Quantity</th>
+          <th>Line total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in lines %}
+          <tr>
+            <td>{{ line.line_number }}</td>
+            <td>{{ line.sku_snapshot }}</td>
+            <td>{{ line.description_snapshot }}</td>
+            <td>{{ fmt.money_crc(line.unit_price_snapshot) }}</td>
+            <td>{{ fmt.number_3(line.quantity) }}</td>
+            <td>{{ fmt.money_crc(line.line_total) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

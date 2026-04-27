@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <form method="post" action="/b2c/orders">
+      <label for="order_date">Order date</label>
+      <input id="order_date" name="order_date" type="date" value="{{ default_order_date }}" required>
+
+      <label for="customer_name">Customer name</label>
+      <input id="customer_name" name="customer_name" value="{{ submitted_customer_name or '' }}">
+
+      <label for="customer_phone">Customer phone</label>
+      <input id="customer_phone" name="customer_phone" value="{{ submitted_customer_phone or '' }}">
+
+      <label for="customer_email">Customer email</label>
+      <input id="customer_email" name="customer_email" type="email" value="{{ submitted_customer_email or '' }}">
+
+      <label for="channel">Channel</label>
+      <select id="channel" name="channel" required>
+        <option value="">Select channel...</option>
+        {% for channel in channels %}
+          <option value="{{ channel }}" {% if submitted_channel is defined and submitted_channel == channel %}selected{% endif %}>{{ channel }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="observations">Observations</label>
+      <textarea id="observations" name="observations">{{ submitted_observations or "" }}</textarea>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Product</th>
+            <th>Description</th>
+            <th>Quantity</th>
+            <th>Unit price</th>
+            <th>Amount</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="b2c-lines-body">
+          {% set initial_line_count = submitted_lines|length if submitted_lines is defined and submitted_lines else 5 %}
+          {% for index in range(1, initial_line_count + 1) %}
+            {% set submitted_line = submitted_lines[index - 1] if submitted_lines is defined and submitted_lines|length >= index else none %}
+            <tr class="b2c-order-line">
+              <td>
+                <input type="hidden" name="line_index" value="{{ index }}">
+                <select class="b2c-product-select" name="line_sku_{{ index }}">
+                  <option value="">Select product...</option>
+                  {% if submitted_line and submitted_line.sku and submitted_line.sku not in product_skus %}
+                    <option value="{{ submitted_line.sku }}" data-description="" selected>{{ submitted_line.sku }}</option>
+                  {% endif %}
+                  {% for product in products %}
+                    <option value="{{ product.sku }}" data-description="{{ product.name }}" {% if submitted_line and submitted_line.sku == product.sku %}selected{% endif %}>{{ product.name }} ({{ product.sku }})</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td class="b2c-description-cell"></td>
+              <td><input class="b2c-quantity-input" name="line_quantity_{{ index }}" value="{{ submitted_line.quantity if submitted_line else '' }}"></td>
+              <td><input class="b2c-unit-price-input" name="line_unit_price_{{ index }}" value="{{ submitted_line.unit_price if submitted_line else '' }}"></td>
+              <td class="b2c-line-amount"></td>
+              <td><button type="button" class="b2c-remove-line">Remove</button></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <button type="button" id="b2c-add-line">Add product</button>
+
+      <p><strong>Subtotal:</strong> <span id="b2c-order-subtotal">&#8353;0</span></p>
+      <p><strong>Total:</strong> <span id="b2c-order-total">&#8353;0</span></p>
+
+      <button type="submit">Create draft order</button>
+    </form>
+
+    <template id="b2c-line-template">
+      <tr class="b2c-order-line">
+        <td>
+          <input type="hidden" name="line_index" value="__index__">
+          <select class="b2c-product-select" name="line_sku___index__">
+            <option value="">Select product...</option>
+            {% for product in products %}
+              <option value="{{ product.sku }}" data-description="{{ product.name }}">{{ product.name }} ({{ product.sku }})</option>
+            {% endfor %}
+          </select>
+        </td>
+        <td class="b2c-description-cell"></td>
+        <td><input class="b2c-quantity-input" name="line_quantity___index__"></td>
+        <td><input class="b2c-unit-price-input" name="line_unit_price___index__"></td>
+        <td class="b2c-line-amount"></td>
+        <td><button type="button" class="b2c-remove-line">Remove</button></td>
+      </tr>
+    </template>
+  </section>
+
+  <script>
+    function b2cNumber(value) {
+      const parsed = Number(String(value || "").replace(",", "."));
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function b2cFormatMoney(value) {
+      return "\u20a1" + Math.round(value).toLocaleString("en-US");
+    }
+
+    function b2cUpdateRemoveButtons() {
+      const rows = document.querySelectorAll("#b2c-lines-body .b2c-order-line");
+      rows.forEach((row) => {
+        const button = row.querySelector(".b2c-remove-line");
+        if (button) {
+          button.disabled = rows.length <= 1;
+        }
+      });
+    }
+
+    function b2cRecalculate() {
+      let subtotal = 0;
+      document.querySelectorAll("#b2c-lines-body .b2c-order-line").forEach((row) => {
+        const select = row.querySelector(".b2c-product-select");
+        const quantityInput = row.querySelector(".b2c-quantity-input");
+        const unitPriceInput = row.querySelector(".b2c-unit-price-input");
+        const descriptionCell = row.querySelector(".b2c-description-cell");
+        const amountCell = row.querySelector(".b2c-line-amount");
+        if (!select || !quantityInput || !unitPriceInput || !descriptionCell || !amountCell) {
+          return;
+        }
+        const option = select.options[select.selectedIndex];
+        const description = option ? (option.dataset.description || "") : "";
+        const quantity = b2cNumber(quantityInput.value);
+        const unitPrice = b2cNumber(unitPriceInput.value);
+        const amount = quantity * unitPrice;
+        descriptionCell.textContent = description;
+        amountCell.textContent = amount ? b2cFormatMoney(amount) : "";
+        subtotal += amount;
+      });
+      const subtotalElement = document.getElementById("b2c-order-subtotal");
+      const totalElement = document.getElementById("b2c-order-total");
+      if (subtotalElement) {
+        subtotalElement.textContent = b2cFormatMoney(subtotal);
+      }
+      if (totalElement) {
+        totalElement.textContent = b2cFormatMoney(subtotal);
+      }
+      b2cUpdateRemoveButtons();
+    }
+
+    const b2cLinesBody = document.getElementById("b2c-lines-body");
+    const b2cLineTemplate = document.getElementById("b2c-line-template");
+    const b2cAddLineButton = document.getElementById("b2c-add-line");
+    let b2cNextLineIndex = 1;
+
+    document.querySelectorAll('input[name="line_index"]').forEach((input) => {
+      const value = Number(input.value);
+      if (Number.isFinite(value) && value >= b2cNextLineIndex) {
+        b2cNextLineIndex = value + 1;
+      }
+    });
+
+    if (b2cLinesBody) {
+      b2cLinesBody.addEventListener("change", (event) => {
+        if (event.target.matches(".b2c-product-select, .b2c-quantity-input, .b2c-unit-price-input")) {
+          b2cRecalculate();
+        }
+      });
+      b2cLinesBody.addEventListener("input", (event) => {
+        if (event.target.matches(".b2c-product-select, .b2c-quantity-input, .b2c-unit-price-input")) {
+          b2cRecalculate();
+        }
+      });
+      b2cLinesBody.addEventListener("click", (event) => {
+        if (!event.target.matches(".b2c-remove-line")) {
+          return;
+        }
+        const row = event.target.closest(".b2c-order-line");
+        if (row && b2cLinesBody.querySelectorAll(".b2c-order-line").length > 1) {
+          row.remove();
+          b2cRecalculate();
+        }
+      });
+    }
+
+    if (b2cAddLineButton && b2cLineTemplate && b2cLinesBody) {
+      b2cAddLineButton.addEventListener("click", () => {
+        const index = String(b2cNextLineIndex);
+        const html = b2cLineTemplate.innerHTML.replace(/__index__/g, index);
+        b2cLinesBody.insertAdjacentHTML("beforeend", html);
+        b2cNextLineIndex += 1;
+        b2cRecalculate();
+      });
+    }
+
+    b2cRecalculate();
+  </script>
+{% endblock %}

@@ -224,6 +224,69 @@ class B2BSalesOrderLine(Base):
     sales_order: Mapped[B2BSalesOrder] = relationship(back_populates="lines")
 
 
+class B2CSalesOrder(Base):
+    __tablename__ = "b2c_sales_orders"
+    __table_args__ = (
+        CheckConstraint(
+            "channel IN ('whatsapp', 'website', 'other')",
+            name="ck_b2c_sales_orders_channel",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'invoiced', 'cancelled')",
+            name="ck_b2c_sales_orders_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    order_number: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    order_date: Mapped[date] = mapped_column(Date, nullable=False)
+    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    customer_phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    customer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    channel: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
+    subtotal_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    observations: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    lines: Mapped[list["B2CSalesOrderLine"]] = relationship(
+        back_populates="sales_order",
+        cascade="all, delete-orphan",
+    )
+
+
+class B2CSalesOrderLine(Base):
+    __tablename__ = "b2c_sales_order_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    sales_order_id: Mapped[int] = mapped_column(ForeignKey("b2c_sales_orders.id"), nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    sku_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
+    description_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    unit_price_snapshot: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    cost_unit_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    cost_total_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    gross_margin_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    gross_margin_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    sales_order: Mapped[B2CSalesOrder] = relationship(back_populates="lines")
+
 
 class PurchaseOrder(Base):
     __tablename__ = "purchase_orders"

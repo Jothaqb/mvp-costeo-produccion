@@ -13,6 +13,7 @@ from app.database import (
     engine,
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
+    ensure_b2c_sales_tables,
     ensure_b2b_loyverse_mapping_tables,
     ensure_app_sequences_table,
     ensure_inventory_ledger_tables,
@@ -34,6 +35,8 @@ from app.models import (
     B2BCustomerProduct,
     B2BSalesOrder,
     B2BSalesOrderLine,
+    B2CSalesOrder,
+    B2CSalesOrderLine,
     ImportBatch,
     ImportedBomHeader,
     ImportedBomLine,
@@ -66,6 +69,13 @@ from app.services.b2b_sales_service import (
     update_customer,
     update_customer_product,
     update_sales_order_lines,
+)
+from app.services.b2c_sales_service import (
+    B2CValidationError,
+    change_b2c_sales_order_status,
+    create_b2c_sales_order,
+    invoice_b2c_order_in_erp,
+    update_b2c_sales_order,
 )
 from app.services.b2b_loyverse_mapping_service import (
     LoyverseMappingSyncError,
@@ -160,6 +170,7 @@ ensure_production_loyverse_inventory_sync_columns()
 ensure_sprint7c_lot_columns_and_tables()
 ensure_b2b_sales_followup_columns()
 ensure_b2b_invoice_snapshot_columns()
+ensure_b2c_sales_tables()
 ensure_b2b_loyverse_mapping_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
@@ -189,6 +200,23 @@ def _b2b_statuses() -> list[str]:
     return ["draft", "in_process", "invoiced"]
 
 
+def _b2c_statuses() -> list[str]:
+    return ["draft", "invoiced", "cancelled"]
+
+
+def _b2c_channels() -> list[str]:
+    return ["whatsapp", "website", "other"]
+
+
+def _list_b2c_sellable_products(db: Session) -> list[Product]:
+    return (
+        db.query(Product)
+        .filter(Product.available_for_sale_gc.is_(True))
+        .order_by(Product.name, Product.sku)
+        .all()
+    )
+
+
 def _line_inputs_from_form(form, prefix: str, count: int | None = None) -> list[dict[str, str]]:
     indexes = [str(index).strip() for index in form.getlist(f"{prefix}_index") if str(index).strip()]
     if not indexes and count is not None:
@@ -201,6 +229,19 @@ def _line_inputs_from_form(form, prefix: str, count: int | None = None) -> list[
         for index in indexes
     ]
 
+
+def _b2c_line_inputs_from_form(form, prefix: str, count: int | None = None) -> list[dict[str, str]]:
+    indexes = [str(index).strip() for index in form.getlist(f"{prefix}_index") if str(index).strip()]
+    if not indexes and count is not None:
+        indexes = [str(index) for index in range(1, count + 1)]
+    return [
+        {
+            "sku": str(form.get(f"{prefix}_sku_{index}", "")),
+            "quantity": str(form.get(f"{prefix}_quantity_{index}", "")),
+            "unit_price": str(form.get(f"{prefix}_unit_price_{index}", "")),
+        }
+        for index in indexes
+    ]
 
 
 def _purchase_order_line_inputs_from_form(form) -> list[dict[str, str]]:
@@ -1754,6 +1795,235 @@ def update_b2b_order_status(
             request=request,
             name="b2b_order_detail.html",
             context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc)},
+        )
+
+
+@app.get("/b2c/orders", response_class=HTMLResponse)
+def b2c_orders(
+    request: Request,
+    status: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    filters = {"status": status.strip()}
+    order_query = db.query(B2CSalesOrder)
+    if filters["status"] in _b2c_statuses():
+        order_query = order_query.filter(B2CSalesOrder.status == filters["status"])
+    orders = order_query.order_by(B2CSalesOrder.created_at.desc(), B2CSalesOrder.id.desc()).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_orders_list.html",
+        context={
+            "title": "B2C Sales Orders",
+            "orders": orders,
+            "statuses": _b2c_statuses(),
+            "filters": filters,
+        },
+    )
+
+
+@app.get("/b2c/orders/new", response_class=HTMLResponse)
+def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    products = _list_b2c_sellable_products(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_order_form.html",
+        context={
+            "title": "New B2C Order",
+            "products": products,
+            "product_skus": {product.sku for product in products},
+            "channels": _b2c_channels(),
+            "error": None,
+            "default_order_date": date.today().isoformat(),
+        },
+    )
+
+
+@app.post("/b2c/orders")
+async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    order_date_text = str(form.get("order_date", "")).strip()
+    line_inputs = _b2c_line_inputs_from_form(form, "line")
+    customer_name = str(form.get("customer_name", ""))
+    customer_phone = str(form.get("customer_phone", ""))
+    customer_email = str(form.get("customer_email", ""))
+    channel = str(form.get("channel", ""))
+    observations = str(form.get("observations", ""))
+    try:
+        order_date = datetime.strptime(order_date_text, "%Y-%m-%d").date()
+        order = create_b2c_sales_order(
+            db,
+            order_date=order_date,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            customer_email=customer_email,
+            channel=channel,
+            observations=observations,
+            line_inputs=line_inputs,
+        )
+        return _redirect(f"/b2c/orders/{order.id}")
+    except (B2CValidationError, ValueError) as exc:
+        db.rollback()
+        products = _list_b2c_sellable_products(db)
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_order_form.html",
+            context={
+                "title": "New B2C Order",
+                "products": products,
+                "product_skus": {product.sku for product in products},
+                "channels": _b2c_channels(),
+                "error": str(exc),
+                "default_order_date": order_date_text or date.today().isoformat(),
+                "submitted_customer_name": customer_name,
+                "submitted_customer_phone": customer_phone,
+                "submitted_customer_email": customer_email,
+                "submitted_channel": channel,
+                "submitted_observations": observations,
+                "submitted_lines": line_inputs,
+            },
+        )
+
+
+@app.get("/b2c/orders/{order_id}", response_class=HTMLResponse)
+def b2c_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    order = db.query(B2CSalesOrder).filter(B2CSalesOrder.id == order_id).one()
+    lines = (
+        db.query(B2CSalesOrderLine)
+        .filter(B2CSalesOrderLine.sales_order_id == order_id)
+        .order_by(B2CSalesOrderLine.line_number)
+        .all()
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_order_detail.html",
+        context={"title": "B2C Order Detail", "order": order, "lines": lines, "error": None},
+    )
+
+
+@app.get("/b2c/orders/{order_id}/edit", response_class=HTMLResponse)
+def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    order = db.query(B2CSalesOrder).filter(B2CSalesOrder.id == order_id).one()
+    if order.status != "draft":
+        return b2c_order_detail(order_id, request, db)
+    lines = (
+        db.query(B2CSalesOrderLine)
+        .filter(B2CSalesOrderLine.sales_order_id == order_id)
+        .order_by(B2CSalesOrderLine.line_number)
+        .all()
+    )
+    products = _list_b2c_sellable_products(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_order_edit.html",
+        context={
+            "title": "Edit B2C Order",
+            "order": order,
+            "lines": lines,
+            "products": products,
+            "product_skus": {product.sku for product in products},
+            "channels": _b2c_channels(),
+            "error": None,
+        },
+    )
+
+
+@app.post("/b2c/orders/{order_id}/edit")
+async def update_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    order_date_text = str(form.get("order_date", "")).strip()
+    customer_name = str(form.get("customer_name", ""))
+    customer_phone = str(form.get("customer_phone", ""))
+    customer_email = str(form.get("customer_email", ""))
+    channel = str(form.get("channel", ""))
+    observations = str(form.get("observations", ""))
+    line_ids = form.getlist("line_id")
+    line_updates = [
+        {
+            "id": line_id,
+            "sku": str(form.get(f"line_sku_{line_id}", "")),
+            "quantity": str(form.get(f"line_quantity_{line_id}", "")),
+            "unit_price": str(form.get(f"line_unit_price_{line_id}", "")),
+        }
+        for line_id in line_ids
+    ]
+    deleted_line_ids = [int(line_id) for line_id in form.getlist("delete_line_id")]
+    new_line_inputs = _b2c_line_inputs_from_form(form, "new_line", 3)
+    try:
+        order_date = datetime.strptime(order_date_text, "%Y-%m-%d").date()
+        update_b2c_sales_order(
+            db,
+            order_id=order_id,
+            order_date=order_date,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            customer_email=customer_email,
+            channel=channel,
+            observations=observations,
+            line_updates=line_updates,
+            deleted_line_ids=deleted_line_ids,
+            new_line_inputs=new_line_inputs,
+        )
+        return _redirect(f"/b2c/orders/{order_id}")
+    except (B2CValidationError, ValueError) as exc:
+        db.rollback()
+        order = db.query(B2CSalesOrder).filter(B2CSalesOrder.id == order_id).one()
+        lines = (
+            db.query(B2CSalesOrderLine)
+            .filter(B2CSalesOrderLine.sales_order_id == order_id)
+            .order_by(B2CSalesOrderLine.line_number)
+            .all()
+        )
+        submitted_line_updates = {int(update["id"]): update for update in line_updates if str(update["id"]).strip()}
+        products = _list_b2c_sellable_products(db)
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_order_edit.html",
+            context={
+                "title": "Edit B2C Order",
+                "order": order,
+                "lines": lines,
+                "products": products,
+                "product_skus": {product.sku for product in products},
+                "channels": _b2c_channels(),
+                "error": str(exc),
+                "submitted_order_date": order_date_text,
+                "submitted_customer_name": customer_name,
+                "submitted_customer_phone": customer_phone,
+                "submitted_customer_email": customer_email,
+                "submitted_channel": channel,
+                "submitted_observations": observations,
+                "submitted_line_updates": submitted_line_updates,
+                "submitted_new_lines": new_line_inputs,
+            },
+        )
+
+
+@app.post("/b2c/orders/{order_id}/status")
+def update_b2c_order_status(
+    request: Request,
+    order_id: int,
+    status: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        if status == "invoiced":
+            invoice_b2c_order_in_erp(db, order_id)
+        else:
+            change_b2c_sales_order_status(db, order_id, status)
+        return _redirect(f"/b2c/orders/{order_id}")
+    except B2CValidationError as exc:
+        db.rollback()
+        order = db.query(B2CSalesOrder).filter(B2CSalesOrder.id == order_id).one()
+        lines = (
+            db.query(B2CSalesOrderLine)
+            .filter(B2CSalesOrderLine.sales_order_id == order_id)
+            .order_by(B2CSalesOrderLine.line_number)
+            .all()
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_order_detail.html",
+            context={"title": "B2C Order Detail", "order": order, "lines": lines, "error": str(exc)},
         )
 
 @app.get("/imports", response_class=HTMLResponse)
