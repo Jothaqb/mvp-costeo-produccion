@@ -5,7 +5,7 @@
   <section class="page-hero">
     <p class="eyebrow">Planning</p>
     <h1>Receive Purchase Order {{ order.po_number }}</h1>
-    <p class="lead">Record partial or full receipts without affecting inventory in this sprint.</p>
+    <p class="lead">Receiving this purchase order will update the ERP inventory ledger and weighted average cost.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -19,6 +19,7 @@
 
   <section>
     <form method="post" action="/planning/purchase-orders/{{ order.id }}/receive" class="wide-form">
+      <input type="hidden" name="receive_token" value="{{ receive_token }}">
       <table>
         <thead>
           <tr>

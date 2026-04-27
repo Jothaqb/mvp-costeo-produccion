@@ -97,12 +97,13 @@ from app.services.purchase_order_service import (
     PurchaseOrderValidationError,
     build_purchase_order_prefill,
     can_receive_purchase_order,
+    create_purchase_order_receive_token,
     create_purchase_order,
     is_purchase_order_editable,
     list_all_product_suppliers,
     list_purchase_order_suppliers,
     pending_quantity_for_line,
-    receive_purchase_order,
+    receive_purchase_order_with_inventory_posting,
     update_purchase_order,
 )
 from app.services.planning_service import (
@@ -1087,6 +1088,7 @@ def receive_purchase_order_form(request: Request, po_id: int, db: Session = Depe
         return _redirect(
             f"/planning/purchase-orders/{order.id}?error={quote(f'Purchase orders in status {order.status} cannot receive.')}"
         )
+    receive_token = create_purchase_order_receive_token(db, order.id)
     return templates.TemplateResponse(
         request=request,
         name="purchase_order_receive.html",
@@ -1094,6 +1096,7 @@ def receive_purchase_order_form(request: Request, po_id: int, db: Session = Depe
             "title": f"Receive Purchase Order {order.po_number}",
             "order": order,
             "line_rows": _purchase_order_receive_rows(db, order.id),
+            "receive_token": receive_token.token,
             "error": request.query_params.get("error"),
         },
     )
@@ -1103,6 +1106,7 @@ def receive_purchase_order_form(request: Request, po_id: int, db: Session = Depe
 async def receive_purchase_order_route(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
     form = await request.form()
     receive_inputs = _purchase_order_receive_inputs_from_form(form)
+    receive_token = str(form.get("receive_token", ""))
     order = (
         db.query(PurchaseOrder)
         .options(joinedload(PurchaseOrder.lines))
@@ -1110,10 +1114,16 @@ async def receive_purchase_order_route(request: Request, po_id: int, db: Session
         .one()
     )
     try:
-        order = receive_purchase_order(db=db, order_id=po_id, receive_now_inputs=receive_inputs)
+        order = receive_purchase_order_with_inventory_posting(
+            db=db,
+            order_id=po_id,
+            receive_now_inputs=receive_inputs,
+            receive_token=receive_token,
+        )
         return _redirect(f"/planning/purchase-orders/{order.id}?message={quote('Receipt saved successfully.')}")
     except PurchaseOrderValidationError as exc:
         db.rollback()
+        retry_token = create_purchase_order_receive_token(db, order.id)
         return templates.TemplateResponse(
             request=request,
             name="purchase_order_receive.html",
@@ -1121,6 +1131,7 @@ async def receive_purchase_order_route(request: Request, po_id: int, db: Session
                 "title": f"Receive Purchase Order {order.po_number}",
                 "order": order,
                 "line_rows": _purchase_order_receive_rows(db, order.id, receive_inputs),
+                "receive_token": retry_token.token,
                 "error": str(exc),
             },
         )

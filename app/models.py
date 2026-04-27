@@ -275,6 +275,18 @@ class PurchaseOrderLine(Base):
     purchase_order: Mapped[PurchaseOrder] = relationship(back_populates="lines")
 
 
+class PurchaseOrderReceiveToken(Base):
+    __tablename__ = "purchase_order_receive_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    purchase_order_id: Mapped[int] = mapped_column(ForeignKey("purchase_orders.id"), nullable=False, index=True)
+    token: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    purchase_order: Mapped[PurchaseOrder] = relationship()
+
+
 class InventoryTransaction(Base):
     __tablename__ = "inventory_transactions"
 

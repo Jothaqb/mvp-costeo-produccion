@@ -1,9 +1,18 @@
-from datetime import date
+import secrets
+from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session
 
-from app.models import AppSequence, Product, PurchaseOrder, PurchaseOrderLine
+from app.models import (
+    AppSequence,
+    Product,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    PurchaseOrderReceiveToken,
+)
+from app.services.inventory_ledger_service import InventoryLedgerValidationError, post_incoming_movement
 
 
 PURCHASE_ORDER_SEQUENCE_NAME = "purchase_order"
@@ -13,10 +22,21 @@ EDITABLE_STATUSES = {"draft"}
 RECEIVABLE_STATUSES = {"draft", "incomplete"}
 READ_ONLY_STATUSES = {"issued", "closed"}
 ZERO = Decimal("0")
+LEDGER_PO_RECEIPT_TYPE = "po_receipt"
+LEDGER_PO_SOURCE_TYPE = "purchase_order"
 
 
 class PurchaseOrderValidationError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class PreparedPurchaseOrderReceiptLine:
+    line: PurchaseOrderLine
+    receive_now: Decimal
+    new_received_quantity: Decimal
+    product: Product
+    unit_cost: Decimal
 
 
 def parse_required_decimal(value: str | Decimal | None, field_name: str) -> Decimal:
@@ -88,35 +108,69 @@ def receive_purchase_order(
     receive_now_inputs: dict[int, str],
 ) -> PurchaseOrder:
     order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).one()
-    if order.status not in RECEIVABLE_STATUSES:
-        raise PurchaseOrderValidationError(f"Purchase orders in status {order.status} cannot receive.")
-    if not order.lines:
-        raise PurchaseOrderValidationError("Purchase Order has no lines to receive.")
-
-    line_map = {line.id: line for line in order.lines}
-    any_received = False
-    for line in order.lines:
-        receive_now_text = receive_now_inputs.get(line.id, "0")
-        receive_now = parse_required_decimal(receive_now_text, f"Receive now for {line.sku_snapshot}")
-        if receive_now < ZERO:
-            raise PurchaseOrderValidationError("Receive now cannot be negative.")
-        new_received_quantity = Decimal(line.received_quantity or ZERO) + receive_now
-        if new_received_quantity > Decimal(line.quantity or ZERO):
-            raise PurchaseOrderValidationError(
-                f"Received quantity for {line.sku_snapshot} cannot exceed ordered quantity."
-            )
-        if receive_now > ZERO:
-            any_received = True
-        line.received_quantity = new_received_quantity
-
-    unknown_line_ids = set(receive_now_inputs) - set(line_map)
-    if unknown_line_ids:
-        raise PurchaseOrderValidationError("Receive payload contains invalid line references.")
-    if not any_received:
-        raise PurchaseOrderValidationError("Enter a received quantity greater than 0 for at least one line.")
-
-    order.status = "closed" if _all_lines_fully_received(order) else "incomplete"
+    prepared_lines = _prepare_purchase_order_receipt(db, order, receive_now_inputs)
+    for prepared_line in prepared_lines:
+        prepared_line.line.received_quantity = prepared_line.new_received_quantity
+    order.status = "closed" if _all_prepared_lines_fully_received(order, prepared_lines) else "incomplete"
     db.commit()
+    db.refresh(order)
+    return order
+
+
+def create_purchase_order_receive_token(db: Session, order_id: int) -> PurchaseOrderReceiveToken:
+    order = db.query(PurchaseOrder.id).filter(PurchaseOrder.id == order_id).one_or_none()
+    if order is None:
+        raise PurchaseOrderValidationError("Purchase Order not found.")
+
+    receive_token = PurchaseOrderReceiveToken(
+        purchase_order_id=order_id,
+        token=secrets.token_urlsafe(32),
+        used_at=None,
+    )
+    db.add(receive_token)
+    db.commit()
+    db.refresh(receive_token)
+    return receive_token
+
+
+def receive_purchase_order_with_inventory_posting(
+    db: Session,
+    order_id: int,
+    receive_now_inputs: dict[int, str],
+    receive_token: str,
+) -> PurchaseOrder:
+    order = db.query(PurchaseOrder).filter(PurchaseOrder.id == order_id).one()
+    try:
+        prepared_lines = _prepare_purchase_order_receipt(db, order, receive_now_inputs)
+        _consume_purchase_order_receive_token(db, order.id, receive_token)
+        for prepared_line in prepared_lines:
+            prepared_line.line.received_quantity = prepared_line.new_received_quantity
+            post_incoming_movement(
+                db,
+                product_id=prepared_line.product.id,
+                transaction_type=LEDGER_PO_RECEIPT_TYPE,
+                incoming_qty=prepared_line.receive_now,
+                incoming_unit_cost=prepared_line.unit_cost,
+                transaction_date=datetime.utcnow(),
+                source_type=LEDGER_PO_SOURCE_TYPE,
+                source_id=order.id,
+                source_line_id=prepared_line.line.id,
+                notes=(
+                    f"Purchase order {order.po_number} receipt for SKU {prepared_line.line.sku_snapshot}. "
+                    "Incremental receipt quantity posted from Receive Now."
+                ),
+            )
+        order.status = "closed" if _all_prepared_lines_fully_received(order, prepared_lines) else "incomplete"
+        db.commit()
+    except PurchaseOrderValidationError:
+        db.rollback()
+        raise
+    except InventoryLedgerValidationError as exc:
+        db.rollback()
+        raise PurchaseOrderValidationError(str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(order)
     return order
 
@@ -193,6 +247,123 @@ def _normalize_save_status(status: str) -> str:
     if normalized != "draft":
         raise PurchaseOrderValidationError("Purchase Orders can only be saved in Draft. Use Receive to complete the workflow.")
     return normalized
+
+
+def _prepare_purchase_order_receipt(
+    db: Session,
+    order: PurchaseOrder,
+    receive_now_inputs: dict[int, str],
+) -> list[PreparedPurchaseOrderReceiptLine]:
+    if order.status not in RECEIVABLE_STATUSES:
+        raise PurchaseOrderValidationError(f"Purchase orders in status {order.status} cannot receive.")
+    if not order.lines:
+        raise PurchaseOrderValidationError("Purchase Order has no lines to receive.")
+
+    line_map = {line.id: line for line in order.lines}
+    unknown_line_ids = set(receive_now_inputs) - set(line_map)
+    if unknown_line_ids:
+        raise PurchaseOrderValidationError("Receive payload contains invalid line references.")
+
+    prepared_lines: list[PreparedPurchaseOrderReceiptLine] = []
+    any_received = False
+    for line in order.lines:
+        receive_now_text = receive_now_inputs.get(line.id, "0")
+        receive_now = parse_required_decimal(receive_now_text, f"Receive now for {line.sku_snapshot}")
+        if receive_now < ZERO:
+            raise PurchaseOrderValidationError("Receive now cannot be negative.")
+
+        ordered_quantity = Decimal(line.quantity or ZERO)
+        current_received_quantity = Decimal(line.received_quantity or ZERO)
+        new_received_quantity = current_received_quantity + receive_now
+        if new_received_quantity > ordered_quantity:
+            raise PurchaseOrderValidationError(
+                f"Received quantity for {line.sku_snapshot} cannot exceed ordered quantity."
+            )
+        if receive_now <= ZERO:
+            continue
+
+        any_received = True
+        product = _resolve_purchase_order_line_product(db, line)
+        unit_cost = _validate_purchase_order_line_unit_cost(line)
+        prepared_lines.append(
+            PreparedPurchaseOrderReceiptLine(
+                line=line,
+                receive_now=receive_now,
+                new_received_quantity=new_received_quantity,
+                product=product,
+                unit_cost=unit_cost,
+            )
+        )
+
+    if not any_received:
+        raise PurchaseOrderValidationError("Enter a received quantity greater than 0 for at least one line.")
+    return prepared_lines
+
+
+def _resolve_purchase_order_line_product(db: Session, line: PurchaseOrderLine) -> Product:
+    sku = (line.sku_snapshot or "").strip()
+    if not sku:
+        raise PurchaseOrderValidationError("Purchase Order line SKU is missing and cannot be received.")
+    product = db.query(Product).filter(Product.sku == sku).one_or_none()
+    if product is None:
+        raise PurchaseOrderValidationError(f"Purchase Order line SKU {sku} does not exist in Products.")
+    return product
+
+
+def _validate_purchase_order_line_unit_cost(line: PurchaseOrderLine) -> Decimal:
+    if line.unit_cost_snapshot is None:
+        raise PurchaseOrderValidationError(f"Unit cost for {line.sku_snapshot} is required before receiving.")
+    unit_cost = Decimal(line.unit_cost_snapshot)
+    if unit_cost < ZERO:
+        raise PurchaseOrderValidationError(f"Unit cost for {line.sku_snapshot} cannot be negative.")
+    if unit_cost == ZERO:
+        raise PurchaseOrderValidationError(f"Unit cost for {line.sku_snapshot} must be greater than 0 before receiving.")
+    return unit_cost
+
+
+def _consume_purchase_order_receive_token(db: Session, order_id: int, receive_token: str) -> None:
+    token_value = (receive_token or "").strip()
+    if not token_value:
+        raise PurchaseOrderValidationError("Receive token is required.")
+
+    used_at = datetime.utcnow()
+    updated_rows = (
+        db.query(PurchaseOrderReceiveToken)
+        .filter(
+            PurchaseOrderReceiveToken.purchase_order_id == order_id,
+            PurchaseOrderReceiveToken.token == token_value,
+            PurchaseOrderReceiveToken.used_at.is_(None),
+        )
+        .update({PurchaseOrderReceiveToken.used_at: used_at}, synchronize_session=False)
+    )
+    if updated_rows == 1:
+        db.flush()
+        return
+
+    token_row = db.query(PurchaseOrderReceiveToken).filter(PurchaseOrderReceiveToken.token == token_value).one_or_none()
+    if token_row is None or token_row.purchase_order_id != order_id:
+        raise PurchaseOrderValidationError("Receive token is invalid for this Purchase Order.")
+    if token_row.used_at is not None:
+        raise PurchaseOrderValidationError(
+            "This receipt form has already been processed. Reopen Receive to continue."
+        )
+    raise PurchaseOrderValidationError("Receive token could not be validated.")
+
+
+def _all_prepared_lines_fully_received(
+    order: PurchaseOrder,
+    prepared_lines: list[PreparedPurchaseOrderReceiptLine],
+) -> bool:
+    received_by_line_id = {item.line.id: item.new_received_quantity for item in prepared_lines}
+    return all(
+        max(
+            Decimal(line.quantity or ZERO)
+            - Decimal(received_by_line_id.get(line.id, Decimal(line.received_quantity or ZERO))),
+            ZERO,
+        )
+        == ZERO
+        for line in order.lines
+    )
 
 
 def _build_line_data(

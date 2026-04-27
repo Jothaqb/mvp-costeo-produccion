@@ -300,6 +300,7 @@ def ensure_purchase_order_tables() -> None:
         )
         _ensure_purchase_order_status_supports_receive_workflow(connection)
         _ensure_purchase_order_lines_received_quantity(connection)
+        _ensure_purchase_order_receive_tokens_table(connection)
 
 
 def ensure_inventory_ledger_tables() -> None:
@@ -429,6 +430,27 @@ def _ensure_purchase_order_lines_received_quantity(connection) -> None:
         connection.exec_driver_sql(
             "ALTER TABLE purchase_order_lines ADD COLUMN received_quantity NUMERIC(12, 4) NOT NULL DEFAULT 0"
         )
+
+
+def _ensure_purchase_order_receive_tokens_table(connection) -> None:
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE IF NOT EXISTS purchase_order_receive_tokens (
+            id INTEGER NOT NULL PRIMARY KEY,
+            purchase_order_id INTEGER NOT NULL,
+            token VARCHAR(255) NOT NULL UNIQUE,
+            used_at DATETIME,
+            created_at DATETIME NOT NULL,
+            FOREIGN KEY(purchase_order_id) REFERENCES purchase_orders (id)
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_purchase_order_receive_tokens_purchase_order_id ON purchase_order_receive_tokens (purchase_order_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_purchase_order_receive_tokens_token ON purchase_order_receive_tokens (token)"
+    )
 
 def ensure_b2b_loyverse_mapping_tables() -> None:
     if engine.dialect.name != "sqlite":
