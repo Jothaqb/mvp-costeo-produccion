@@ -179,6 +179,11 @@ from app.services.planning_service import (
     update_product_moqs,
     update_product_planner_quantities,
 )
+from app.services.supplier_import_service import (
+    SupplierImportResult,
+    SupplierImportValidationError,
+    import_suppliers_csv,
+)
 from app.services.production_loyverse_inventory_preview_service import (
     ProductionInventoryPreviewError,
     build_production_inventory_preview,
@@ -821,6 +826,44 @@ def suppliers(
             "suppliers": supplier_rows,
             "filters": filters,
             "result_count": len(supplier_rows),
+        },
+    )
+
+
+@app.get("/master-data/suppliers/import", response_class=HTMLResponse)
+def import_suppliers_form(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="supplier_import_form.html",
+        context={
+            "title": "Import Suppliers CSV",
+            "result": None,
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/suppliers/import")
+async def import_suppliers_route(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    result: SupplierImportResult | None = None
+    error: str | None = None
+    try:
+        file_bytes = await file.read()
+        result = import_suppliers_csv(
+            db,
+            file_name=file.filename or "suppliers.csv",
+            file_bytes=file_bytes,
+        )
+    except (SupplierImportValidationError, UnicodeDecodeError) as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="supplier_import_form.html",
+        context={
+            "title": "Import Suppliers CSV",
+            "result": result,
+            "error": error,
         },
     )
 

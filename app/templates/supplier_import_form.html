@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <p><a href="/master-data/suppliers">Back to Suppliers</a></p>
+    <p class="muted-inline">CSV files exported from Excel are supported. Recommended format: CSV UTF-8. The importer also accepts common Windows/Latin encodings.</p>
+    <form action="/master-data/suppliers/import" method="post" enctype="multipart/form-data">
+      <label for="file">CSV file</label>
+      <input id="file" name="file" type="file" accept=".csv,text/csv" required>
+      <button type="submit">Import</button>
+    </form>
+  </section>
+
+  {% if result %}
+    <section>
+      <h2>Import Summary</h2>
+      <p><strong>File:</strong> {{ result.file_name }}</p>
+      <p><strong>Total rows read:</strong> {{ result.total_rows }}</p>
+      <p><strong>Suppliers created:</strong> {{ result.created }}</p>
+      <p><strong>Suppliers updated:</strong> {{ result.updated }}</p>
+      <p><strong>Skipped rows:</strong> {{ result.skipped }}</p>
+      <p><strong>Warnings:</strong> {{ result.warnings|length }}</p>
+    </section>
+
+    {% if result.warnings %}
+      <section>
+        <h2>Warnings</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>Warning</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for warning in result.warnings %}
+              <tr>
+                <td>{{ warning.row_number }}</td>
+                <td>{{ warning.message }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% endif %}
+  {% endif %}
+{% endblock %}
