@@ -320,6 +320,15 @@ def _product_form_context(
         "is_manufactured": product.is_manufactured if product else False,
         "is_purchased_product": product.is_purchased_product if product else False,
     }
+    return {
+        "title": title,
+        "form_action": form_action,
+        "product": product,
+        "product_data": data,
+        "categories": categories,
+        "suppliers": suppliers,
+        "error": error,
+    }
 
 
 def _b2c_customer_form_context(
@@ -331,15 +340,6 @@ def _b2c_customer_form_context(
     return {
         "title": title,
         "customer": customer,
-        "error": error,
-    }
-    return {
-        "title": title,
-        "form_action": form_action,
-        "product": product,
-        "product_data": data,
-        "categories": categories,
-        "suppliers": suppliers,
         "error": error,
     }
 
