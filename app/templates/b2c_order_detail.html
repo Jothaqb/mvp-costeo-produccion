@@ -6,13 +6,20 @@
     <h1>{{ order.order_number }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     <p><a href="/b2c/orders">Sales history</a></p>
+    <p class="muted-inline">This order keeps a historical customer snapshot. Later edits to the B2C customer master do not change saved order customer data.</p>
     <dl class="summary">
       <div><dt>Status</dt><dd>{{ order.status }}</dd></div>
       <div><dt>Order date</dt><dd>{{ order.order_date }}</dd></div>
       <div><dt>Channel</dt><dd>{{ order.channel }}</dd></div>
+      <div><dt>Linked B2C Customer</dt><dd>{% if order.customer %}<a href="/sales/b2c-customers/{{ order.customer.id }}">{{ order.customer.name }}</a>{% else %}Manual / none{% endif %}</dd></div>
       <div><dt>Customer</dt><dd>{{ order.customer_name or "" }}</dd></div>
       <div><dt>Phone</dt><dd>{{ order.customer_phone or "" }}</dd></div>
       <div><dt>Email</dt><dd>{{ order.customer_email or "" }}</dd></div>
+      <div><dt>Address</dt><dd>{{ order.customer_address_snapshot or "" }}</dd></div>
+      <div><dt>Province</dt><dd>{{ order.province_snapshot or "" }}</dd></div>
+      <div><dt>Canton</dt><dd>{{ order.canton_snapshot or "" }}</dd></div>
+      <div><dt>District</dt><dd>{{ order.district_snapshot or "" }}</dd></div>
+      <div><dt>Customer observations</dt><dd>{{ order.customer_observations_snapshot or "" }}</dd></div>
       <div><dt>Subtotal</dt><dd>{{ fmt.money_crc(order.subtotal_amount) }}</dd></div>
       <div><dt>Discount</dt><dd>{{ order.discount_name_snapshot or "" }}</dd></div>
       <div><dt>Discount value</dt><dd>{{ order.discount_value_snapshot if order.discount_value_snapshot is not none else "" }}</dd></div>
