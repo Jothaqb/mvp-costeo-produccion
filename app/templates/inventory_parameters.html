@@ -5,7 +5,7 @@
   <section class="page-hero">
     <p class="eyebrow">Planning</p>
     <h1>Inventory Parameters</h1>
-    <p class="lead">Maintain MOQ values. Imported legacy inventory, standard cost, supplier, and zone values come from the latest CSV snapshot.</p>
+    <p class="lead">Maintain MOQ, red zone, and yellow zone values. Imported legacy inventory, standard cost, supplier, and zone values come from the latest CSV snapshot.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -74,8 +74,8 @@
                 <td>{{ product.supplier or '' }}</td>
               {% endif %}
               <td><input name="moq_{{ product.id }}" value="{{ product.planning_moq if product.planning_moq is not none else '' }}" inputmode="decimal"></td>
-              <td>{{ fmt.number_3(product.low_stock_qty) }}</td>
-              <td>{{ fmt.number_3(product.optimal_stock_qty) }}</td>
+              <td><input name="red_zone_{{ product.id }}" value="{{ product.low_stock_qty if product.low_stock_qty is not none else '' }}" inputmode="decimal"></td>
+              <td><input name="yellow_zone_{{ product.id }}" value="{{ product.optimal_stock_qty if product.optimal_stock_qty is not none else '' }}" inputmode="decimal"></td>
               <td>{{ fmt.number_3(product.low_stock_qty + product.planning_moq) if product.low_stock_qty is not none and product.planning_moq is not none else '' }}</td>
             </tr>
           {% else %}
@@ -84,7 +84,7 @@
         </tbody>
       </table>
       <div class="actions form-actions">
-        <button type="submit">Save MOQ</button>
+        <button type="submit">Save planning parameters</button>
       </div>
     </form>
   </section>
