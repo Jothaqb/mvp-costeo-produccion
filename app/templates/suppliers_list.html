@@ -4,6 +4,21 @@
   <section>
     <h1>{{ title }}</h1>
     <p><a href="/master-data/suppliers/new">New supplier</a></p>
+    <form method="get" action="/master-data/suppliers">
+      <label for="q">Search supplier name, contact, phone or email</label>
+      <input id="q" name="q" value="{{ filters.q }}" placeholder="Search supplier name, contact, phone or email">
+
+      <label for="active">Active status</label>
+      <select id="active" name="active">
+        <option value="all" {% if filters.active == "all" %}selected{% endif %}>All</option>
+        <option value="active" {% if filters.active == "active" %}selected{% endif %}>Active</option>
+        <option value="inactive" {% if filters.active == "inactive" %}selected{% endif %}>Inactive</option>
+      </select>
+
+      <button type="submit">Search</button>
+      <a href="/master-data/suppliers">Clear</a>
+    </form>
+    <p class="muted-inline">Results: {{ result_count }}</p>
     <table>
       <thead>
         <tr>

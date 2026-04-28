@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import (
@@ -789,12 +790,38 @@ async def update_product_category_route(
 
 
 @app.get("/master-data/suppliers", response_class=HTMLResponse)
-def suppliers(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    supplier_rows = db.query(Supplier).order_by(Supplier.name, Supplier.id).all()
+def suppliers(
+    request: Request,
+    q: str = Query(""),
+    active: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    filters = {"q": q.strip(), "active": (active.strip().lower() or "all")}
+    supplier_query = db.query(Supplier)
+    if filters["q"]:
+        term = f"%{filters['q']}%"
+        supplier_query = supplier_query.filter(
+            or_(
+                Supplier.name.ilike(term),
+                Supplier.contact_name.ilike(term),
+                Supplier.phone.ilike(term),
+                Supplier.email.ilike(term),
+            )
+        )
+    if filters["active"] == "active":
+        supplier_query = supplier_query.filter(Supplier.active.is_(True))
+    elif filters["active"] == "inactive":
+        supplier_query = supplier_query.filter(Supplier.active.is_(False))
+    supplier_rows = supplier_query.order_by(Supplier.name, Supplier.id).all()
     return templates.TemplateResponse(
         request=request,
         name="suppliers_list.html",
-        context={"title": "Suppliers", "suppliers": supplier_rows},
+        context={
+            "title": "Suppliers",
+            "suppliers": supplier_rows,
+            "filters": filters,
+            "result_count": len(supplier_rows),
+        },
     )
 
 
@@ -1050,17 +1077,39 @@ async def update_discount_rule_route(discount_id: int, request: Request, db: Ses
 
 
 @app.get("/master-data/products", response_class=HTMLResponse)
-def products_master(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    products = (
+def products_master(
+    request: Request,
+    q: str = Query(""),
+    active: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    filters = {"q": q.strip(), "active": (active.strip().lower() or "all")}
+    product_query = (
         db.query(Product)
         .options(joinedload(Product.category), joinedload(Product.supplier_record))
-        .order_by(Product.sku, Product.id)
-        .all()
     )
+    if filters["q"]:
+        term = f"%{filters['q']}%"
+        product_query = product_query.filter(
+            or_(
+                Product.sku.ilike(term),
+                Product.name.ilike(term),
+            )
+        )
+    if filters["active"] == "active":
+        product_query = product_query.filter(Product.active.is_(True))
+    elif filters["active"] == "inactive":
+        product_query = product_query.filter(Product.active.is_(False))
+    products = product_query.order_by(Product.sku, Product.id).all()
     return templates.TemplateResponse(
         request=request,
         name="products_list.html",
-        context={"title": "Products / SKUs", "products": products},
+        context={
+            "title": "Products / SKUs",
+            "products": products,
+            "filters": filters,
+            "result_count": len(products),
+        },
     )
 
 
@@ -1391,17 +1440,36 @@ def sales_home(request: Request) -> HTMLResponse:
 @app.get("/sales/b2c-customers", response_class=HTMLResponse)
 def b2c_customers(
     request: Request,
+    q: str = Query(""),
+    active: str = Query("all"),
     message: str | None = Query(default=None),
     error: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    customers = db.query(B2CCustomer).order_by(B2CCustomer.active.desc(), B2CCustomer.name, B2CCustomer.id).all()
+    filters = {"q": q.strip(), "active": (active.strip().lower() or "all")}
+    customer_query = db.query(B2CCustomer)
+    if filters["q"]:
+        term = f"%{filters['q']}%"
+        customer_query = customer_query.filter(
+            or_(
+                B2CCustomer.name.ilike(term),
+                B2CCustomer.phone.ilike(term),
+                B2CCustomer.email.ilike(term),
+            )
+        )
+    if filters["active"] == "active":
+        customer_query = customer_query.filter(B2CCustomer.active.is_(True))
+    elif filters["active"] == "inactive":
+        customer_query = customer_query.filter(B2CCustomer.active.is_(False))
+    customers = customer_query.order_by(B2CCustomer.active.desc(), B2CCustomer.name, B2CCustomer.id).all()
     return templates.TemplateResponse(
         request=request,
         name="b2c_customers_list.html",
         context={
             "title": "B2C Customers",
             "customers": customers,
+            "filters": filters,
+            "result_count": len(customers),
             "message": message,
             "error": error,
         },
@@ -2445,12 +2513,38 @@ def _planning_view_sync_summary(rows: list) -> dict[str, str]:
     }
 
 @app.get("/b2b/customers", response_class=HTMLResponse)
-def b2b_customers(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    customers = db.query(B2BCustomer).order_by(B2BCustomer.customer_name).all()
+def b2b_customers(
+    request: Request,
+    q: str = Query(""),
+    active: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    filters = {"q": q.strip(), "active": (active.strip().lower() or "all")}
+    customer_query = db.query(B2BCustomer)
+    if filters["q"]:
+        term = f"%{filters['q']}%"
+        customer_query = customer_query.filter(
+            or_(
+                B2BCustomer.customer_name.ilike(term),
+                B2BCustomer.legal_name.ilike(term),
+                B2BCustomer.legal_id.ilike(term),
+                B2BCustomer.phone.ilike(term),
+            )
+        )
+    if filters["active"] == "active":
+        customer_query = customer_query.filter(B2BCustomer.active.is_(True))
+    elif filters["active"] == "inactive":
+        customer_query = customer_query.filter(B2BCustomer.active.is_(False))
+    customers = customer_query.order_by(B2BCustomer.customer_name, B2BCustomer.id).all()
     return templates.TemplateResponse(
         request=request,
         name="b2b_customers_list.html",
-        context={"title": "B2B Customers", "customers": customers},
+        context={
+            "title": "B2B Customers",
+            "customers": customers,
+            "filters": filters,
+            "result_count": len(customers),
+        },
     )
 
 
@@ -2991,11 +3085,20 @@ def update_b2b_order_status(
 @app.get("/b2c/orders", response_class=HTMLResponse)
 def b2c_orders(
     request: Request,
+    q: str = Query(""),
     status: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    filters = {"status": status.strip()}
+    filters = {"q": q.strip(), "status": status.strip()}
     order_query = db.query(B2CSalesOrder)
+    if filters["q"]:
+        term = f"%{filters['q']}%"
+        order_query = order_query.filter(
+            or_(
+                B2CSalesOrder.customer_name.ilike(term),
+                B2CSalesOrder.order_number.ilike(term),
+            )
+        )
     if filters["status"] in _b2c_statuses():
         order_query = order_query.filter(B2CSalesOrder.status == filters["status"])
     orders = order_query.order_by(B2CSalesOrder.created_at.desc(), B2CSalesOrder.id.desc()).all()
@@ -3007,6 +3110,7 @@ def b2c_orders(
             "orders": orders,
             "statuses": _b2c_statuses(),
             "filters": filters,
+            "result_count": len(orders),
         },
     )
 

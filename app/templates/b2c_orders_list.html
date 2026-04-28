@@ -6,6 +6,9 @@
     <h1>{{ title }}</h1>
     <p><a href="/b2c/orders/new">New B2C order</a></p>
     <form method="get" action="/b2c/orders">
+      <label for="q">Search customer name</label>
+      <input id="q" name="q" value="{{ filters.q }}" placeholder="Search customer name">
+
       <label for="status">Status</label>
       <select id="status" name="status">
         <option value="">All statuses</option>
@@ -17,6 +20,7 @@
       <button type="submit">Filter</button>
       <a href="/b2c/orders">Clear</a>
     </form>
+    <p class="muted-inline">Results: {{ result_count }}</p>
   </section>
 
   <section>
@@ -45,6 +49,8 @@
             <td>{{ order.created_at }}</td>
             <td><a href="/b2c/orders/{{ order.id }}">View</a></td>
           </tr>
+        {% else %}
+          <tr><td colspan="8">No B2C sales orders found.</td></tr>
         {% endfor %}
       </tbody>
     </table>

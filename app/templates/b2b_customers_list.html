@@ -4,6 +4,21 @@
   <section>
     <h1>{{ title }}</h1>
     <p><a href="/b2b/customers/new">New customer</a> | <a href="/b2b/orders">B2B orders</a></p>
+    <form method="get" action="/b2b/customers">
+      <label for="q">Search customer name, legal name, ID or phone</label>
+      <input id="q" name="q" value="{{ filters.q }}" placeholder="Search customer name, legal name, ID or phone">
+
+      <label for="active">Active status</label>
+      <select id="active" name="active">
+        <option value="all" {% if filters.active == "all" %}selected{% endif %}>All</option>
+        <option value="active" {% if filters.active == "active" %}selected{% endif %}>Active</option>
+        <option value="inactive" {% if filters.active == "inactive" %}selected{% endif %}>Inactive</option>
+      </select>
+
+      <button type="submit">Search</button>
+      <a href="/b2b/customers">Clear</a>
+    </form>
+    <p class="muted-inline">Results: {{ result_count }}</p>
     <table>
       <thead>
         <tr>
@@ -28,6 +43,8 @@
               <a href="/b2b/customers/{{ customer.id }}/products">Products</a>
             </td>
           </tr>
+        {% else %}
+          <tr><td colspan="6">No B2B customers found.</td></tr>
         {% endfor %}
       </tbody>
     </table>
