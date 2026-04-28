@@ -5,7 +5,7 @@
   <section class="page-hero">
     <p class="eyebrow">Planning</p>
     <h1>Inventory Parameters</h1>
-    <p class="lead">Maintain MOQ values. Imported inventory, cost, supplier, and zone values come from the latest CSV snapshot.</p>
+    <p class="lead">Maintain MOQ values. Imported legacy inventory, standard cost, supplier, and zone values come from the latest CSV snapshot.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -55,7 +55,7 @@
         <thead>
           <tr>
             <th>SKU</th>
-            <th>Description / Average Cost</th>
+            <th>Description / Standard cost (reference)</th>
             {% if product_type == 'manufactured' %}<th>Route</th>{% else %}<th>Supplier</th>{% endif %}
             <th>MOQ</th>
             <th>Red zone</th>

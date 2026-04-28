@@ -4,7 +4,9 @@
   <section class="page-hero">
     <p class="eyebrow">Inventory</p>
     <h1>Initialize Opening Balances</h1>
-    <p class="lead">Run the one-time opening balance seed from current Product inventory and cost fields without posting any operational workflows yet.</p>
+    <p class="lead">Run the one-time opening balance seed from legacy Product snapshot fields without posting any operational workflows yet.</p>
+    <p>Opening balances are initialized from legacy Product snapshot fields: Product.current_inventory_qty and Product.standard_cost. These fields are used only as bootstrap/reference inputs and are not the live ERP inventory source.</p>
+    <p>Live ERP inventory comes from InventoryBalance / Kardex, and live ERP average cost comes from InventoryBalance.average_unit_cost.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -45,7 +47,7 @@
       <form method="post" action="/inventory/initialize-opening-balances" class="wide-form">
         <label>
           <input type="checkbox" name="confirm_initialize" value="yes" required>
-          I understand this will create one-time opening balances from current Product inventory and cost fields.
+          I understand this will create one-time opening balances from legacy Product snapshot fields: Product.current_inventory_qty and Product.standard_cost.
         </label>
         <div class="inline-actions">
           <button type="submit">Run Opening Balance Initialization</button>

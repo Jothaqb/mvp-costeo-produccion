@@ -20,10 +20,11 @@
       <div><dt>Manufactured product</dt><dd>{{ "Yes" if product.is_manufactured else "No" }}</dd></div>
       <div><dt>Purchased product</dt><dd>{{ "Yes" if product.is_purchased_product else "No" }}</dd></div>
       <div><dt>B2C price</dt><dd>{{ fmt.money_crc(product.b2c_price) }}</dd></div>
-      <div><dt>Standard cost</dt><dd>{{ fmt.money_crc(product.standard_cost) }}</dd></div>
+      <div><dt>Standard cost (reference/fallback)</dt><dd>{{ fmt.money_crc(product.standard_cost) }}</dd></div>
       <div><dt>Description</dt><dd>{{ product.description or "" }}</dd></div>
       <div><dt>Observations</dt><dd>{{ product.observations or "" }}</dd></div>
     </dl>
+    <p class="muted-inline">Official ERP inventory and actual average cost come from InventoryBalance / Kardex. Standard cost is a reference/fallback field.</p>
 
     {% if not product.is_manufactured and not product.is_purchased_product %}
       <p class="muted-inline">This product is not yet classified as manufactured or purchased.</p>
@@ -88,6 +89,7 @@
 
   <section>
     <h2>Inventory Snapshot</h2>
+    <p class="muted-inline">This section shows the official ERP inventory and actual average cost from InventoryBalance / Kardex.</p>
     {% if balance %}
       <dl class="summary">
         <div><dt>On hand quantity</dt><dd>{{ fmt.number_3(balance.on_hand_qty) }}</dd></div>

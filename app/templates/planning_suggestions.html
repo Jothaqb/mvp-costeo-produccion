@@ -7,6 +7,7 @@
     <h1>Open DDMRP</h1>
     <p class="lead">Review replenishment signals from ERP inventory, direct customer demand, MRP demand, zones, MOQ, and saved planner quantities.</p>
     <p>Inventory source: ERP Kardex / InventoryBalance</p>
+    <p>Planning inventory comes from ERP Kardex / InventoryBalance. This refresh updates legacy/reference Product snapshot fields only.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -88,18 +89,18 @@
   <section>
     <dl class="summary">
       <div>
-        <dt>Last inventory sync</dt>
+        <dt>Last Loyverse legacy inventory refresh</dt>
         <dd>{{ view_sync_summary.inventory_last_sync }}</dd>
       </div>
       <div>
-        <dt>Last cost sync</dt>
+        <dt>Last Loyverse standard cost refresh</dt>
         <dd>{{ view_sync_summary.cost_last_sync }}</dd>
       </div>
     </dl>
   </section>
 
   <section class="actions">
-    <button type="submit" form="refresh-inventory-cost-form">Refresh inventory and cost</button>
+    <button type="submit" form="refresh-inventory-cost-form">Refresh Loyverse legacy inventory and standard cost</button>
     <button type="submit" form="planner-quantity-form">Save planner quantities</button>
     <button type="submit" form="clear-planner-quantities-form" class="secondary">Clear planner quantities</button>
   </section>
@@ -110,7 +111,7 @@
         <tr>
           <th>SKU</th>
           <th>Description</th>
-          <th>Cost</th>
+          <th>Standard cost (reference)</th>
           <th>MOQ</th>
           <th>Red zone</th>
           <th>Yellow zone</th>
