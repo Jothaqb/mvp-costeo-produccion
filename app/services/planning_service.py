@@ -9,6 +9,7 @@ from app.models import (
     B2BSalesOrderLine,
     ImportBatch,
     ImportedBomHeader,
+    InventoryBalance,
     Product,
     Route,
 )
@@ -30,6 +31,7 @@ class PlanningValidationError(Exception):
 @dataclass(frozen=True)
 class PlanningProductRow:
     product: Product
+    inventory_on_hand: Decimal
     green_zone: Decimal | None
     status: str
     suggested_quantity: Decimal | None
@@ -166,13 +168,17 @@ def build_planning_rows(
         if supplier_filter:
             query = query.filter(Product.supplier == supplier_filter)
 
+    products = query.order_by(Product.sku).all()
+    inventory_by_product_id = _inventory_qty_by_product_id(db, [product.id for product in products])
+
     rows = [
         _build_row(
             product,
+            inventory_by_product_id.get(product.id, ZERO),
             requirement_result.totals_by_sku.get(product.sku, ZERO),
             mrp_result.totals_by_sku.get(product.sku, ZERO) if normalized_type == PRODUCT_TYPE_PURCHASED else ZERO,
         )
-        for product in query.order_by(Product.sku).all()
+        for product in products
     ]
     status_filter = (status or "").strip()
     if status_filter in PLANNING_STATUSES:
@@ -208,6 +214,10 @@ def build_customer_order_requirements(db: Session) -> CustomerRequirementResult:
         descriptions.setdefault(sku, line.description_snapshot or sku)
 
     products_by_sku = {product.sku: product for product in db.query(Product).all()}
+    inventory_by_product_id = _inventory_qty_by_product_id(
+        db,
+        [product.id for sku, product in products_by_sku.items() if sku in direct],
+    )
     rows = []
     for sku in sorted(direct):
         product = products_by_sku.get(sku)
@@ -216,7 +226,7 @@ def build_customer_order_requirements(db: Session) -> CustomerRequirementResult:
                 sku=sku,
                 description=product.name if product else descriptions.get(sku, sku),
                 product_type=_product_type_label(product),
-                inventory=product.current_inventory_qty if product else None,
+                inventory=inventory_by_product_id.get(product.id, ZERO) if product else ZERO,
                 direct_requirement=direct[sku],
             )
         )
@@ -424,13 +434,26 @@ def _base_planning_query(db: Session, product_type: str):
     )
 
 
-def _build_row(product: Product, customer_order_requirement: Decimal, mrp_requirement: Decimal) -> PlanningProductRow:
+def _build_row(
+    product: Product,
+    inventory_on_hand: Decimal,
+    customer_order_requirement: Decimal,
+    mrp_requirement: Decimal,
+) -> PlanningProductRow:
     green_zone = _green_zone(product)
-    inventory_available = _inventory_available(product, customer_order_requirement, mrp_requirement)
+    inventory_available = _inventory_available(inventory_on_hand, customer_order_requirement, mrp_requirement)
     status = _status(product, green_zone, inventory_available)
-    suggested_quantity = _suggested_quantity(product, green_zone, status, customer_order_requirement, mrp_requirement)
+    suggested_quantity = _suggested_quantity(
+        product,
+        inventory_on_hand,
+        green_zone,
+        status,
+        customer_order_requirement,
+        mrp_requirement,
+    )
     return PlanningProductRow(
         product=product,
+        inventory_on_hand=inventory_on_hand,
         green_zone=green_zone,
         status=status,
         suggested_quantity=suggested_quantity,
@@ -447,13 +470,11 @@ def _green_zone(product: Product) -> Decimal | None:
 
 
 def _inventory_available(
-    product: Product,
+    inventory_on_hand: Decimal,
     customer_order_requirement: Decimal,
     mrp_requirement: Decimal,
-) -> Decimal | None:
-    if product.current_inventory_qty is None:
-        return None
-    return product.current_inventory_qty - customer_order_requirement - mrp_requirement
+) -> Decimal:
+    return inventory_on_hand - customer_order_requirement - mrp_requirement
 
 
 def _status(product: Product, green_zone: Decimal | None, inventory_available: Decimal | None) -> str:
@@ -474,6 +495,7 @@ def _status(product: Product, green_zone: Decimal | None, inventory_available: D
 
 def _suggested_quantity(
     product: Product,
+    inventory_on_hand: Decimal,
     green_zone: Decimal | None,
     status: str,
     customer_order_requirement: Decimal,
@@ -483,14 +505,25 @@ def _suggested_quantity(
         return None
     total_requirement = customer_order_requirement + mrp_requirement
     if total_requirement > ZERO:
-        if product.current_inventory_qty is None or product.optimal_stock_qty is None or green_zone is None:
+        if product.optimal_stock_qty is None or green_zone is None:
             return None
-        effective_inventory = product.current_inventory_qty
+        effective_inventory = inventory_on_hand
         if customer_order_requirement > ZERO and effective_inventory < ZERO:
             effective_inventory = ZERO
         suggested = ((green_zone - product.optimal_stock_qty) / TWO) + product.optimal_stock_qty + total_requirement - effective_inventory
         return suggested if suggested > ZERO else ZERO
     return product.planning_moq if status in {"Red", "Yellow"} else ZERO
+
+
+def _inventory_qty_by_product_id(db: Session, product_ids: list[int]) -> dict[int, Decimal]:
+    unique_ids = sorted({product_id for product_id in product_ids if product_id is not None})
+    if not unique_ids:
+        return {}
+
+    return {
+        balance.product_id: balance.on_hand_qty if balance.on_hand_qty is not None else ZERO
+        for balance in db.query(InventoryBalance).filter(InventoryBalance.product_id.in_(unique_ids)).all()
+    }
 
 
 def _component_skus_in_bom(bom_lookup: dict[str, list[ImportedBomHeader]]) -> set[str]:

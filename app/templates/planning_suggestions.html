@@ -5,7 +5,8 @@
   <section class="page-hero">
     <p class="eyebrow">Planning</p>
     <h1>Open DDMRP</h1>
-    <p class="lead">Review replenishment signals from current inventory, direct customer demand, MRP demand, zones, MOQ, and saved planner quantities.</p>
+    <p class="lead">Review replenishment signals from ERP inventory, direct customer demand, MRP demand, zones, MOQ, and saved planner quantities.</p>
+    <p>Inventory source: ERP Kardex / InventoryBalance</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -135,7 +136,7 @@
             <td>{{ fmt.number_3(product.low_stock_qty) }}</td>
             <td>{{ fmt.number_3(product.optimal_stock_qty) }}</td>
             <td>{{ fmt.number_3(row.green_zone) }}</td>
-            <td>{{ fmt.number_3(product.current_inventory_qty) }}</td>
+            <td>{{ fmt.number_3(row.inventory_on_hand) }}</td>
             <td>{{ fmt.number_3(row.customer_order_requirement) }}</td>
             {% if product_type == 'purchased' %}<td>{{ fmt.number_3(row.mrp_requirement) }}</td>{% endif %}
             <td>{{ fmt.number_3(row.inventory_available) }}</td>
