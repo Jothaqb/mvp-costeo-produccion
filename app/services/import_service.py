@@ -404,8 +404,9 @@ def _apply_planning_snapshot_fields(product: Product, row: list[str]) -> None:
     product.active = available_for_sale
     product.supplier = _cell(row, LOYVERSE_SUPPLIER_INDEX) or None
     product.current_inventory_qty = parse_decimal(_cell(row, LOYVERSE_INVENTORY_INDEX))
-    product.low_stock_qty = parse_decimal(_cell(row, LOYVERSE_LOW_STOCK_INDEX))
-    product.optimal_stock_qty = parse_decimal(_cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX))
+    if not getattr(product, "planning_zones_manual_override", False):
+        product.low_stock_qty = parse_decimal(_cell(row, LOYVERSE_LOW_STOCK_INDEX))
+        product.optimal_stock_qty = parse_decimal(_cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX))
 
 
 def _apply_category_enrichment(db: Session, product: Product, category_name: str | None) -> None:

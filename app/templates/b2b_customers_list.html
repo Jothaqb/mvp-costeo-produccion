@@ -3,7 +3,7 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
-    <p><a href="/b2b/customers/new">New customer</a> | <a href="/b2b/orders">B2B orders</a></p>
+    <p><a href="/b2b/customers/new">New customer</a> | <a href="/b2b/customers/import">Import B2B Customers CSV</a> | <a href="/b2b/orders">B2B orders</a></p>
     <form method="get" action="/b2b/customers">
       <label for="q">Search customer name, legal name, ID or phone</label>
       <input id="q" name="q" value="{{ filters.q }}" placeholder="Search customer name, legal name, ID or phone">

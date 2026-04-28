@@ -365,6 +365,38 @@ def update_product_moqs(db: Session, moq_inputs: dict[int, str]) -> None:
     db.commit()
 
 
+def update_product_inventory_parameters(
+    db: Session,
+    moq_inputs: dict[int, str],
+    red_zone_inputs: dict[int, str],
+    yellow_zone_inputs: dict[int, str],
+) -> None:
+    product_ids = sorted(set(moq_inputs) | set(red_zone_inputs) | set(yellow_zone_inputs))
+    for product_id in product_ids:
+        product = db.query(Product).filter(Product.id == product_id).one_or_none()
+        if product is None:
+            continue
+
+        if product_id in moq_inputs:
+            product.planning_moq = parse_moq(moq_inputs[product_id])
+
+        zone_changed = False
+        if product_id in red_zone_inputs:
+            red_zone = parse_zone_value(red_zone_inputs[product_id], "Red zone")
+            if product.low_stock_qty != red_zone:
+                product.low_stock_qty = red_zone
+                zone_changed = True
+        if product_id in yellow_zone_inputs:
+            yellow_zone = parse_zone_value(yellow_zone_inputs[product_id], "Yellow zone")
+            if product.optimal_stock_qty != yellow_zone:
+                product.optimal_stock_qty = yellow_zone
+                zone_changed = True
+
+        if zone_changed:
+            product.planning_zones_manual_override = True
+    db.commit()
+
+
 def update_product_planner_quantities(db: Session, quantity_inputs: dict[int, str]) -> None:
     for product_id, raw_value in quantity_inputs.items():
         product = db.query(Product).filter(Product.id == product_id).one_or_none()
@@ -388,6 +420,16 @@ def parse_moq(value: str | None) -> Decimal | None:
     value_decimal = _parse_decimal_text(text, "MOQ")
     if value_decimal < ZERO:
         raise PlanningValidationError("MOQ must be greater than or equal to 0.")
+    return value_decimal
+
+
+def parse_zone_value(value: str | None, field_name: str) -> Decimal | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    value_decimal = _parse_decimal_text(text, field_name)
+    if value_decimal < ZERO:
+        raise PlanningValidationError(f"{field_name} must be greater than or equal to 0.")
     return value_decimal
 
 

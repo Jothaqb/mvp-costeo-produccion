@@ -101,6 +101,11 @@ from app.services.b2b_loyverse_mapping_service import (
     refresh_loyverse_payment_type_mappings,
     refresh_loyverse_variant_mappings,
 )
+from app.services.b2b_customer_import_service import (
+    B2BCustomerImportResult,
+    B2BCustomerImportValidationError,
+    import_b2b_customers_csv,
+)
 from app.services.config_service import (
     ValidationError,
     parse_decimal,
@@ -176,7 +181,7 @@ from app.services.planning_service import (
     normalize_product_type,
     parse_moq,
     parse_planner_quantity,
-    update_product_moqs,
+    update_product_inventory_parameters,
     update_product_planner_quantities,
 )
 from app.services.supplier_import_service import (
@@ -1957,15 +1962,22 @@ async def update_inventory_parameters(request: Request, db: Session = Depends(ge
     route_id = str(form.get("route_id", "")).strip()
     supplier = str(form.get("supplier", "")).strip()
     moq_inputs: dict[int, str] = {}
+    red_zone_inputs: dict[int, str] = {}
+    yellow_zone_inputs: dict[int, str] = {}
     for key, value in form.items():
         key_text = str(key)
-        if not key_text.startswith("moq_"):
-            continue
-        product_id = int(key_text.replace("moq_", "", 1))
-        moq_inputs[product_id] = str(value)
+        if key_text.startswith("moq_"):
+            product_id = int(key_text.replace("moq_", "", 1))
+            moq_inputs[product_id] = str(value)
+        elif key_text.startswith("red_zone_"):
+            product_id = int(key_text.replace("red_zone_", "", 1))
+            red_zone_inputs[product_id] = str(value)
+        elif key_text.startswith("yellow_zone_"):
+            product_id = int(key_text.replace("yellow_zone_", "", 1))
+            yellow_zone_inputs[product_id] = str(value)
     try:
-        update_product_moqs(db, moq_inputs)
-        query = f"product_type={quote(product_type)}&message={quote('MOQ values saved.')}"
+        update_product_inventory_parameters(db, moq_inputs, red_zone_inputs, yellow_zone_inputs)
+        query = f"product_type={quote(product_type)}&message={quote('Planning parameters saved.')}"
         if sku:
             query += f"&sku={quote(sku)}"
         if route_id:
@@ -2587,6 +2599,48 @@ def b2b_customers(
             "customers": customers,
             "filters": filters,
             "result_count": len(customers),
+        },
+    )
+
+
+@app.get("/b2b/customers/import", response_class=HTMLResponse)
+def import_b2b_customers_form(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_customer_import_form.html",
+        context={
+            "title": "Import B2B Customers CSV",
+            "result": None,
+            "error": None,
+        },
+    )
+
+
+@app.post("/b2b/customers/import")
+async def import_b2b_customers_route(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    result: B2BCustomerImportResult | None = None
+    error: str | None = None
+    try:
+        file_bytes = await file.read()
+        result = import_b2b_customers_csv(
+            db,
+            file_name=file.filename or "b2b_customers.csv",
+            file_bytes=file_bytes,
+        )
+    except (B2BCustomerImportValidationError, UnicodeDecodeError) as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_customer_import_form.html",
+        context={
+            "title": "Import B2B Customers CSV",
+            "result": result,
+            "error": error,
         },
     )
 
