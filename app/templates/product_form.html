@@ -39,6 +39,9 @@
       <label for="b2c_price">B2C price</label>
       <input id="b2c_price" name="b2c_price" inputmode="decimal" value="{{ product_data.b2c_price if product_data.b2c_price is not none else '' }}">
 
+      <label for="b2b_price">B2B price</label>
+      <input id="b2b_price" name="b2b_price" inputmode="decimal" value="{{ product_data.b2b_price if product_data.b2b_price is not none else '' }}">
+
       <label for="standard_cost">Standard cost (reference/fallback)</label>
       <input id="standard_cost" name="standard_cost" inputmode="decimal" value="{{ product_data.standard_cost if product_data.standard_cost is not none else '' }}">
 

@@ -17,6 +17,7 @@
           <th>Manufactured</th>
           <th>Purchased</th>
           <th>B2C price</th>
+          <th>B2B price</th>
           <th>Standard cost (reference)</th>
           <th>Detail</th>
         </tr>
@@ -33,11 +34,12 @@
             <td>{{ "Yes" if product.is_manufactured else "No" }}</td>
             <td>{{ "Yes" if product.is_purchased_product else "No" }}</td>
             <td>{{ fmt.money_crc(product.b2c_price) }}</td>
+            <td>{{ fmt.money_crc(product.b2b_price) }}</td>
             <td>{{ fmt.money_crc(product.standard_cost) }}</td>
             <td><a href="/master-data/products/{{ product.id }}">View</a></td>
           </tr>
         {% else %}
-          <tr><td colspan="11">No products found.</td></tr>
+          <tr><td colspan="12">No products found.</td></tr>
         {% endfor %}
       </tbody>
     </table>

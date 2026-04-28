@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     AppSequence,
+    B2CCustomer,
     B2CSalesOrder,
     B2CSalesOrderLine,
     DiscountRule,
@@ -58,9 +59,15 @@ def create_b2c_sales_order(
     db: Session,
     *,
     order_date: date,
+    b2c_customer_id: str,
     customer_name: str,
     customer_phone: str,
     customer_email: str,
+    customer_address_snapshot: str,
+    province_snapshot: str,
+    canton_snapshot: str,
+    district_snapshot: str,
+    customer_observations_snapshot: str,
     channel: str,
     discount_rule_id: str,
     observations: str,
@@ -69,12 +76,19 @@ def create_b2c_sales_order(
     normalized_channel = _normalize_channel(channel)
     line_data = _build_b2c_line_data(db, line_inputs, require_at_least_one=True)
     discount_rule = _resolve_b2c_discount_rule(db, discount_rule_id)
+    customer = _resolve_b2c_customer(db, b2c_customer_id)
     order = B2CSalesOrder(
         order_number=_generate_b2c_order_number(db),
         order_date=order_date,
+        b2c_customer_id=customer.id if customer is not None else None,
         customer_name=_clean_optional_text(customer_name),
         customer_phone=_clean_optional_text(customer_phone),
         customer_email=_clean_optional_text(customer_email),
+        customer_address_snapshot=_clean_optional_text(customer_address_snapshot),
+        province_snapshot=_clean_optional_text(province_snapshot),
+        canton_snapshot=_clean_optional_text(canton_snapshot),
+        district_snapshot=_clean_optional_text(district_snapshot),
+        customer_observations_snapshot=_clean_optional_text(customer_observations_snapshot),
         channel=normalized_channel,
         status="draft",
         discount_amount=ZERO,
@@ -97,9 +111,15 @@ def update_b2c_sales_order(
     *,
     order_id: int,
     order_date: date,
+    b2c_customer_id: str,
     customer_name: str,
     customer_phone: str,
     customer_email: str,
+    customer_address_snapshot: str,
+    province_snapshot: str,
+    canton_snapshot: str,
+    district_snapshot: str,
+    customer_observations_snapshot: str,
     channel: str,
     discount_rule_id: str,
     observations: str,
@@ -114,10 +134,17 @@ def update_b2c_sales_order(
         .one()
     )
     _ensure_b2c_order_editable(order)
+    customer = _resolve_b2c_customer(db, b2c_customer_id, allow_inactive_customer_id=order.b2c_customer_id)
     order.order_date = order_date
+    order.b2c_customer_id = customer.id if customer is not None else None
     order.customer_name = _clean_optional_text(customer_name)
     order.customer_phone = _clean_optional_text(customer_phone)
     order.customer_email = _clean_optional_text(customer_email)
+    order.customer_address_snapshot = _clean_optional_text(customer_address_snapshot)
+    order.province_snapshot = _clean_optional_text(province_snapshot)
+    order.canton_snapshot = _clean_optional_text(canton_snapshot)
+    order.district_snapshot = _clean_optional_text(district_snapshot)
+    order.customer_observations_snapshot = _clean_optional_text(customer_observations_snapshot)
     order.channel = _normalize_channel(channel)
     order.observations = _clean_optional_text(observations)
     discount_rule = _resolve_b2c_discount_rule(
@@ -461,6 +488,26 @@ def _resolve_b2c_discount_rule(
     if discount_rule.discount_type != "percentage":
         raise B2CValidationError("Selected discount type is not supported.")
     return discount_rule
+
+
+def _resolve_b2c_customer(
+    db: Session,
+    raw_b2c_customer_id: str | int | None,
+    *,
+    allow_inactive_customer_id: int | None = None,
+) -> B2CCustomer | None:
+    text = str(raw_b2c_customer_id or "").strip()
+    if not text:
+        return None
+    if not text.isdigit():
+        raise B2CValidationError("Selected B2C customer is invalid.")
+    customer_id = int(text)
+    customer = db.query(B2CCustomer).filter(B2CCustomer.id == customer_id).one_or_none()
+    if customer is None:
+        raise B2CValidationError("Selected B2C customer does not exist.")
+    if not customer.active and customer.id != allow_inactive_customer_id:
+        raise B2CValidationError("Selected B2C customer is not active.")
+    return customer
 
 
 def _apply_discount_rule_snapshot(order: B2CSalesOrder, discount_rule: DiscountRule | None) -> None:

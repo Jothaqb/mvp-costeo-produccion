@@ -14,6 +14,7 @@ from app.database import (
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
     ensure_b2c_sales_tables,
+    ensure_b2c_customer_tables,
     ensure_b2b_loyverse_mapping_tables,
     ensure_app_sequences_table,
     ensure_discount_master_tables,
@@ -37,6 +38,7 @@ from app.models import (
     Activity,
     B2BCustomer,
     B2BCustomerProduct,
+    B2CCustomer,
     B2BSalesOrder,
     B2BSalesOrderLine,
     B2CSalesOrder,
@@ -84,6 +86,13 @@ from app.services.b2c_sales_service import (
     create_b2c_sales_order,
     invoice_b2c_order_in_erp,
     update_b2c_sales_order,
+)
+from app.services.b2c_customer_service import (
+    B2CCustomerValidationError,
+    create_b2c_customer,
+    initialize_b2c_customers_from_mappings,
+    list_b2c_customer_options,
+    update_b2c_customer,
 )
 from app.services.b2b_loyverse_mapping_service import (
     LoyverseMappingSyncError,
@@ -210,6 +219,7 @@ ensure_b2b_invoice_snapshot_columns()
 ensure_b2c_sales_tables()
 ensure_discount_master_tables()
 ensure_b2b_loyverse_mapping_tables()
+ensure_b2c_customer_tables()
 ensure_inventory_adjustment_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
@@ -303,11 +313,25 @@ def _product_form_context(
         "description": product.description if product and product.description else "",
         "observations": product.observations if product and product.observations else "",
         "b2c_price": product.b2c_price if product else None,
+        "b2b_price": product.b2b_price if product else None,
         "standard_cost": product.standard_cost if product else None,
         "active": product.active if product else True,
         "available_for_sale_gc": product.available_for_sale_gc if product else False,
         "is_manufactured": product.is_manufactured if product else False,
         "is_purchased_product": product.is_purchased_product if product else False,
+    }
+
+
+def _b2c_customer_form_context(
+    *,
+    title: str,
+    customer: B2CCustomer | None,
+    error: str | None = None,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "customer": customer,
+        "error": error,
     }
     return {
         "title": title,
@@ -1067,6 +1091,7 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
         "description": str(form.get("description", "")),
         "observations": str(form.get("observations", "")),
         "b2c_price": str(form.get("b2c_price", "")),
+        "b2b_price": str(form.get("b2b_price", "")),
         "standard_cost": str(form.get("standard_cost", "")),
         "active": _form_bool(form, "active"),
         "available_for_sale_gc": _form_bool(form, "available_for_sale_gc"),
@@ -1149,6 +1174,7 @@ async def update_product_master_route(
         "description": str(form.get("description", "")),
         "observations": str(form.get("observations", "")),
         "b2c_price": str(form.get("b2c_price", "")),
+        "b2b_price": str(form.get("b2b_price", "")),
         "standard_cost": str(form.get("standard_cost", "")),
         "active": _form_bool(form, "active"),
         "available_for_sale_gc": _form_bool(form, "available_for_sale_gc"),
@@ -1360,6 +1386,165 @@ def sales_home(request: Request) -> HTMLResponse:
         name="sales_home.html",
         context={"title": "Sales"},
     )
+
+
+@app.get("/sales/b2c-customers", response_class=HTMLResponse)
+def b2c_customers(
+    request: Request,
+    message: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    customers = db.query(B2CCustomer).order_by(B2CCustomer.active.desc(), B2CCustomer.name, B2CCustomer.id).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_customers_list.html",
+        context={
+            "title": "B2C Customers",
+            "customers": customers,
+            "message": message,
+            "error": error,
+        },
+    )
+
+
+@app.get("/sales/b2c-customers/new", response_class=HTMLResponse)
+def new_b2c_customer(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_customer_form.html",
+        context=_b2c_customer_form_context(title="New B2C Customer", customer=None),
+    )
+
+
+@app.post("/sales/b2c-customers")
+def create_b2c_customer_route(
+    request: Request,
+    name: str = Form(...),
+    phone: str = Form(""),
+    email: str = Form(""),
+    address: str = Form(""),
+    province: str = Form(""),
+    canton: str = Form(""),
+    district: str = Form(""),
+    observations: str = Form(""),
+    active: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        customer = create_b2c_customer(
+            db,
+            name=name,
+            phone=phone,
+            email=email,
+            address=address,
+            province=province,
+            canton=canton,
+            district=district,
+            observations=observations,
+            active=active,
+        )
+        return _redirect(f"/sales/b2c-customers/{customer.id}")
+    except B2CCustomerValidationError as exc:
+        db.rollback()
+        customer = B2CCustomer(
+            active=active,
+            name=name,
+            phone=phone or None,
+            email=email or None,
+            address=address or None,
+            province=province or None,
+            canton=canton or None,
+            district=district or None,
+            observations=observations or None,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_customer_form.html",
+            context=_b2c_customer_form_context(title="New B2C Customer", customer=customer, error=str(exc)),
+        )
+
+
+@app.get("/sales/b2c-customers/{customer_id}", response_class=HTMLResponse)
+def b2c_customer_detail(customer_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    customer = db.query(B2CCustomer).filter(B2CCustomer.id == customer_id).one()
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_customer_detail.html",
+        context={"title": "B2C Customer Detail", "customer": customer},
+    )
+
+
+@app.get("/sales/b2c-customers/{customer_id}/edit", response_class=HTMLResponse)
+def edit_b2c_customer(customer_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    customer = db.query(B2CCustomer).filter(B2CCustomer.id == customer_id).one()
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_customer_form.html",
+        context=_b2c_customer_form_context(title="Edit B2C Customer", customer=customer),
+    )
+
+
+@app.post("/sales/b2c-customers/{customer_id}/edit")
+def update_b2c_customer_route(
+    customer_id: int,
+    request: Request,
+    name: str = Form(...),
+    phone: str = Form(""),
+    email: str = Form(""),
+    address: str = Form(""),
+    province: str = Form(""),
+    canton: str = Form(""),
+    district: str = Form(""),
+    observations: str = Form(""),
+    active: bool = Form(False),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        update_b2c_customer(
+            db,
+            customer_id=customer_id,
+            name=name,
+            phone=phone,
+            email=email,
+            address=address,
+            province=province,
+            canton=canton,
+            district=district,
+            observations=observations,
+            active=active,
+        )
+        return _redirect(f"/sales/b2c-customers/{customer_id}")
+    except B2CCustomerValidationError as exc:
+        db.rollback()
+        customer = db.query(B2CCustomer).filter(B2CCustomer.id == customer_id).one()
+        customer.active = active
+        customer.name = name
+        customer.phone = phone or None
+        customer.email = email or None
+        customer.address = address or None
+        customer.province = province or None
+        customer.canton = canton or None
+        customer.district = district or None
+        customer.observations = observations or None
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_customer_form.html",
+            context=_b2c_customer_form_context(title="Edit B2C Customer", customer=customer, error=str(exc)),
+        )
+
+
+@app.post("/sales/b2c-customers/initialize-from-mappings")
+def initialize_b2c_customers_route(db: Session = Depends(get_db)) -> Response:
+    try:
+        result = initialize_b2c_customers_from_mappings(db)
+        message = (
+            f"B2C customers initialized from mappings. Created: {result.created}, skipped: {result.skipped}."
+        )
+        return _redirect(f"/sales/b2c-customers?message={quote(message)}")
+    except B2CCustomerValidationError as exc:
+        db.rollback()
+        return _redirect(f"/sales/b2c-customers?error={quote(str(exc))}")
 
 
 @app.get("/planning", response_class=HTMLResponse)
@@ -2830,6 +3015,7 @@ def b2c_orders(
 def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     products = _list_b2c_sellable_products(db)
     discount_rules = list_discount_rule_options(db)
+    b2c_customers = list_b2c_customer_options(db)
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_form.html",
@@ -2839,6 +3025,7 @@ def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             "product_skus": {product.sku for product in products},
             "discount_rules": discount_rules,
             "discount_rule_ids": {rule.id for rule in discount_rules},
+            "b2c_customers": b2c_customers,
             "channels": _b2c_channels(),
             "error": None,
             "default_order_date": date.today().isoformat(),
@@ -2851,9 +3038,15 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
     form = await request.form()
     order_date_text = str(form.get("order_date", "")).strip()
     line_inputs = _b2c_line_inputs_from_form(form, "line")
+    b2c_customer_id = str(form.get("b2c_customer_id", ""))
     customer_name = str(form.get("customer_name", ""))
     customer_phone = str(form.get("customer_phone", ""))
     customer_email = str(form.get("customer_email", ""))
+    customer_address_snapshot = str(form.get("customer_address_snapshot", ""))
+    province_snapshot = str(form.get("province_snapshot", ""))
+    canton_snapshot = str(form.get("canton_snapshot", ""))
+    district_snapshot = str(form.get("district_snapshot", ""))
+    customer_observations_snapshot = str(form.get("customer_observations_snapshot", ""))
     channel = str(form.get("channel", ""))
     discount_rule_id = str(form.get("discount_rule_id", ""))
     observations = str(form.get("observations", ""))
@@ -2862,9 +3055,15 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
         order = create_b2c_sales_order(
             db,
             order_date=order_date,
+            b2c_customer_id=b2c_customer_id,
             customer_name=customer_name,
             customer_phone=customer_phone,
             customer_email=customer_email,
+            customer_address_snapshot=customer_address_snapshot,
+            province_snapshot=province_snapshot,
+            canton_snapshot=canton_snapshot,
+            district_snapshot=district_snapshot,
+            customer_observations_snapshot=customer_observations_snapshot,
             channel=channel,
             discount_rule_id=discount_rule_id,
             observations=observations,
@@ -2876,6 +3075,8 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
         products = _list_b2c_sellable_products(db)
         current_discount_rule_id = int(discount_rule_id) if discount_rule_id.isdigit() else None
         discount_rules = list_discount_rule_options(db, current_discount_rule_id)
+        current_b2c_customer_id = int(b2c_customer_id) if b2c_customer_id.isdigit() else None
+        b2c_customers = list_b2c_customer_options(db, current_b2c_customer_id)
         return templates.TemplateResponse(
             request=request,
             name="b2c_order_form.html",
@@ -2885,12 +3086,19 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
                 "product_skus": {product.sku for product in products},
                 "discount_rules": discount_rules,
                 "discount_rule_ids": {rule.id for rule in discount_rules},
+                "b2c_customers": b2c_customers,
                 "channels": _b2c_channels(),
                 "error": str(exc),
                 "default_order_date": order_date_text or date.today().isoformat(),
+                "submitted_b2c_customer_id": b2c_customer_id,
                 "submitted_customer_name": customer_name,
                 "submitted_customer_phone": customer_phone,
                 "submitted_customer_email": customer_email,
+                "submitted_customer_address_snapshot": customer_address_snapshot,
+                "submitted_province_snapshot": province_snapshot,
+                "submitted_canton_snapshot": canton_snapshot,
+                "submitted_district_snapshot": district_snapshot,
+                "submitted_customer_observations_snapshot": customer_observations_snapshot,
                 "submitted_channel": channel,
                 "submitted_discount_rule_id": discount_rule_id,
                 "submitted_observations": observations,
@@ -2901,7 +3109,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
 
 @app.get("/b2c/orders/{order_id}", response_class=HTMLResponse)
 def b2c_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    order = db.query(B2CSalesOrder).filter(B2CSalesOrder.id == order_id).one()
+    order = db.query(B2CSalesOrder).options(joinedload(B2CSalesOrder.customer)).filter(B2CSalesOrder.id == order_id).one()
     lines = (
         db.query(B2CSalesOrderLine)
         .filter(B2CSalesOrderLine.sales_order_id == order_id)
@@ -2917,7 +3125,7 @@ def b2c_order_detail(order_id: int, request: Request, db: Session = Depends(get_
 
 @app.get("/b2c/orders/{order_id}/edit", response_class=HTMLResponse)
 def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    order = db.query(B2CSalesOrder).filter(B2CSalesOrder.id == order_id).one()
+    order = db.query(B2CSalesOrder).options(joinedload(B2CSalesOrder.customer)).filter(B2CSalesOrder.id == order_id).one()
     if order.status != "draft":
         return b2c_order_detail(order_id, request, db)
     lines = (
@@ -2928,6 +3136,7 @@ def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db
     )
     products = _list_b2c_sellable_products(db)
     discount_rules = list_discount_rule_options(db, order.discount_rule_id)
+    b2c_customers = list_b2c_customer_options(db, order.b2c_customer_id)
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_edit.html",
@@ -2939,6 +3148,7 @@ def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db
             "product_skus": {product.sku for product in products},
             "discount_rules": discount_rules,
             "discount_rule_ids": {rule.id for rule in discount_rules},
+            "b2c_customers": b2c_customers,
             "channels": _b2c_channels(),
             "error": None,
         },
@@ -2949,9 +3159,15 @@ def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db
 async def update_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
     form = await request.form()
     order_date_text = str(form.get("order_date", "")).strip()
+    b2c_customer_id = str(form.get("b2c_customer_id", ""))
     customer_name = str(form.get("customer_name", ""))
     customer_phone = str(form.get("customer_phone", ""))
     customer_email = str(form.get("customer_email", ""))
+    customer_address_snapshot = str(form.get("customer_address_snapshot", ""))
+    province_snapshot = str(form.get("province_snapshot", ""))
+    canton_snapshot = str(form.get("canton_snapshot", ""))
+    district_snapshot = str(form.get("district_snapshot", ""))
+    customer_observations_snapshot = str(form.get("customer_observations_snapshot", ""))
     channel = str(form.get("channel", ""))
     discount_rule_id = str(form.get("discount_rule_id", ""))
     observations = str(form.get("observations", ""))
@@ -2973,9 +3189,15 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
             db,
             order_id=order_id,
             order_date=order_date,
+            b2c_customer_id=b2c_customer_id,
             customer_name=customer_name,
             customer_phone=customer_phone,
             customer_email=customer_email,
+            customer_address_snapshot=customer_address_snapshot,
+            province_snapshot=province_snapshot,
+            canton_snapshot=canton_snapshot,
+            district_snapshot=district_snapshot,
+            customer_observations_snapshot=customer_observations_snapshot,
             channel=channel,
             discount_rule_id=discount_rule_id,
             observations=observations,
@@ -2986,7 +3208,7 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
         return _redirect(f"/b2c/orders/{order_id}")
     except (B2CValidationError, ValueError) as exc:
         db.rollback()
-        order = db.query(B2CSalesOrder).filter(B2CSalesOrder.id == order_id).one()
+        order = db.query(B2CSalesOrder).options(joinedload(B2CSalesOrder.customer)).filter(B2CSalesOrder.id == order_id).one()
         lines = (
             db.query(B2CSalesOrderLine)
             .filter(B2CSalesOrderLine.sales_order_id == order_id)
@@ -2997,6 +3219,8 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
         products = _list_b2c_sellable_products(db)
         current_discount_rule_id = int(discount_rule_id) if discount_rule_id.isdigit() else order.discount_rule_id
         discount_rules = list_discount_rule_options(db, current_discount_rule_id)
+        current_b2c_customer_id = int(b2c_customer_id) if b2c_customer_id.isdigit() else order.b2c_customer_id
+        b2c_customers = list_b2c_customer_options(db, current_b2c_customer_id)
         return templates.TemplateResponse(
             request=request,
             name="b2c_order_edit.html",
@@ -3008,12 +3232,19 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
                 "product_skus": {product.sku for product in products},
                 "discount_rules": discount_rules,
                 "discount_rule_ids": {rule.id for rule in discount_rules},
+                "b2c_customers": b2c_customers,
                 "channels": _b2c_channels(),
                 "error": str(exc),
                 "submitted_order_date": order_date_text,
+                "submitted_b2c_customer_id": b2c_customer_id,
                 "submitted_customer_name": customer_name,
                 "submitted_customer_phone": customer_phone,
                 "submitted_customer_email": customer_email,
+                "submitted_customer_address_snapshot": customer_address_snapshot,
+                "submitted_province_snapshot": province_snapshot,
+                "submitted_canton_snapshot": canton_snapshot,
+                "submitted_district_snapshot": district_snapshot,
+                "submitted_customer_observations_snapshot": customer_observations_snapshot,
                 "submitted_channel": channel,
                 "submitted_discount_rule_id": discount_rule_id,
                 "submitted_observations": observations,
@@ -3072,7 +3303,8 @@ def list_imports(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
                 "id": batch.id,
                 "file_name": batch.file_name,
                 "imported_at": batch.imported_at,
-                "product_count": len(headers),
+                "product_master_upsert_count": batch.product_master_upsert_count,
+                "bom_parent_count": len(headers),
                 "line_count": line_count,
             }
         )
@@ -3143,7 +3375,8 @@ def review_import(
             "batch": batch,
             "headers": headers,
             "lines": lines,
-            "product_count": len(headers),
+            "product_master_upsert_count": batch.product_master_upsert_count,
+            "bom_parent_count": len(headers),
             "bom_line_count": len(lines),
             "component_type_counts": dict(component_type_counts),
             "unknown_count": component_type_counts[ComponentType.UNKNOWN.value],

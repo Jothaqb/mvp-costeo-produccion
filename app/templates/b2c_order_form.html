@@ -10,6 +10,29 @@
       <label for="order_date">Order date</label>
       <input id="order_date" name="order_date" type="date" value="{{ default_order_date }}" required>
 
+      <label for="b2c_customer_search">Saved customer</label>
+      <input
+        id="b2c_customer_id"
+        name="b2c_customer_id"
+        type="hidden"
+        value="{{ submitted_b2c_customer_id if submitted_b2c_customer_id is defined else '' }}"
+      >
+      <div class="customer-search" style="position: relative;">
+        <input
+          id="b2c_customer_search"
+          type="text"
+          autocomplete="off"
+          placeholder="Type name, phone, or email"
+          aria-describedby="b2c_customer_search_hint"
+        >
+        <small id="b2c_customer_search_hint">Search by name, phone, or email.</small>
+        <div
+          id="b2c_customer_results"
+          style="display: none; position: absolute; z-index: 10; width: 100%; max-height: 16rem; overflow-y: auto; background: #fff; border: 1px solid #ccc; margin-top: 0.25rem;"
+        ></div>
+      </div>
+      <button id="b2c_customer_manual" type="button">Manual / no saved customer</button>
+
       <label for="customer_name">Customer name</label>
       <input id="customer_name" name="customer_name" value="{{ submitted_customer_name or '' }}">
 
@@ -19,6 +42,21 @@
       <label for="customer_email">Customer email</label>
       <input id="customer_email" name="customer_email" type="email" value="{{ submitted_customer_email or '' }}">
 
+      <label for="customer_address_snapshot">Customer address</label>
+      <textarea id="customer_address_snapshot" name="customer_address_snapshot">{{ submitted_customer_address_snapshot or "" }}</textarea>
+
+      <label for="province_snapshot">Province</label>
+      <input id="province_snapshot" name="province_snapshot" value="{{ submitted_province_snapshot or '' }}">
+
+      <label for="canton_snapshot">Canton</label>
+      <input id="canton_snapshot" name="canton_snapshot" value="{{ submitted_canton_snapshot or '' }}">
+
+      <label for="district_snapshot">District</label>
+      <input id="district_snapshot" name="district_snapshot" value="{{ submitted_district_snapshot or '' }}">
+
+      <label for="customer_observations_snapshot">Customer observations</label>
+      <textarea id="customer_observations_snapshot" name="customer_observations_snapshot">{{ submitted_customer_observations_snapshot or "" }}</textarea>
+
       <label for="channel">Channel</label>
       <select id="channel" name="channel" required>
         <option value="">Select channel...</option>
@@ -27,7 +65,7 @@
         {% endfor %}
       </select>
 
-      <label for="observations">Observations</label>
+      <label for="observations">Order observations</label>
       <textarea id="observations" name="observations">{{ submitted_observations or "" }}</textarea>
 
       <label for="discount_rule_id">Discount</label>
@@ -112,9 +150,136 @@
   </section>
 
   <script>
+    const b2cCustomerOptions = [
+      {% for customer in b2c_customers %}
+        {
+          id: "{{ customer.id }}",
+          name: {{ (customer.name or "")|tojson }},
+          phone: {{ (customer.phone or "")|tojson }},
+          email: {{ (customer.email or "")|tojson }},
+          address: {{ (customer.address or "")|tojson }},
+          province: {{ (customer.province or "")|tojson }},
+          canton: {{ (customer.canton or "")|tojson }},
+          district: {{ (customer.district or "")|tojson }},
+          observations: {{ (customer.observations or "")|tojson }},
+          active: {{ "true" if customer.active else "false" }},
+        }{{ "," if not loop.last else "" }}
+      {% endfor %}
+    ];
+
     function b2cNumber(value) {
       const parsed = Number(String(value || "").replace(",", "."));
       return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function b2cCustomerLabel(customer) {
+      const name = String(customer.name || "").trim() || "Unnamed customer";
+      const phone = String(customer.phone || "").trim() || "no phone";
+      const email = String(customer.email || "").trim() || "no email";
+      return `${name} — ${phone} — ${email}`;
+    }
+
+    function b2cFindCustomerById(customerId) {
+      return b2cCustomerOptions.find((customer) => customer.id === String(customerId)) || null;
+    }
+
+    function b2cClearSavedCustomerSelection(clearSearch) {
+      const hiddenInput = document.getElementById("b2c_customer_id");
+      const searchInput = document.getElementById("b2c_customer_search");
+      if (hiddenInput) {
+        hiddenInput.value = "";
+      }
+      if (clearSearch && searchInput) {
+        searchInput.value = "";
+      }
+    }
+
+    function b2cPopulateCustomerFields(customer, overwriteFields) {
+      if (!customer) {
+        return;
+      }
+      const fieldMap = {
+        customer_name: customer.name || "",
+        customer_phone: customer.phone || "",
+        customer_email: customer.email || "",
+        customer_address_snapshot: customer.address || "",
+        province_snapshot: customer.province || "",
+        canton_snapshot: customer.canton || "",
+        district_snapshot: customer.district || "",
+        customer_observations_snapshot: customer.observations || "",
+      };
+      Object.entries(fieldMap).forEach(([fieldId, value]) => {
+        const field = document.getElementById(fieldId);
+        if (!field) {
+          return;
+        }
+        const currentValue = String(field.value || "").trim();
+        if (overwriteFields || !currentValue) {
+          field.value = value;
+        }
+      });
+    }
+
+    function b2cRenderCustomerMatches(matches) {
+      const results = document.getElementById("b2c_customer_results");
+      if (!results) {
+        return;
+      }
+      if (!b2cCustomerOptions.length) {
+        results.innerHTML = '<div style="padding: 0.5rem; color: #17212b; background: #fff;">No saved B2C customers available.</div>';
+        results.style.display = "block";
+        return;
+      }
+      if (!matches.length) {
+        results.innerHTML = '<div style="padding: 0.5rem; color: #17212b; background: #fff;">No matching customers found.</div>';
+        results.style.display = "block";
+        return;
+      }
+      results.innerHTML = matches.map((customer) => `
+        <button
+          type="button"
+          data-customer-id="${customer.id}"
+          style="display: block; width: 100%; text-align: left; padding: 0.5rem; border: 0; border-bottom: 1px solid #eee; background: #fff; color: #17212b;"
+        >${b2cEscapeHtml(b2cCustomerLabel(customer))}</button>
+      `).join("");
+      results.style.display = "block";
+    }
+
+    function b2cEscapeHtml(value) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function b2cFilterCustomers(term) {
+      const normalized = String(term || "").trim().toLowerCase();
+      const matches = b2cCustomerOptions.filter((customer) => {
+        if (!normalized) {
+          return true;
+        }
+        return [customer.name, customer.phone, customer.email]
+          .filter(Boolean)
+          .some((value) => String(value).toLowerCase().includes(normalized));
+      });
+      return matches.slice(0, 12);
+    }
+
+    function b2cSelectCustomer(customerId, overwriteFields) {
+      const customer = b2cFindCustomerById(customerId);
+      const hiddenInput = document.getElementById("b2c_customer_id");
+      const searchInput = document.getElementById("b2c_customer_search");
+      const results = document.getElementById("b2c_customer_results");
+      if (!customer || !hiddenInput || !searchInput) {
+        return;
+      }
+      hiddenInput.value = customer.id;
+      searchInput.value = b2cCustomerLabel(customer);
+      b2cPopulateCustomerFields(customer, overwriteFields);
+      if (results) {
+        results.style.display = "none";
+      }
     }
 
     function b2cFormatMoney(value) {
@@ -232,6 +397,46 @@
       b2cDiscountSelect.addEventListener("change", b2cRecalculate);
     }
 
+    const b2cCustomerSearch = document.getElementById("b2c_customer_search");
+    const b2cCustomerResults = document.getElementById("b2c_customer_results");
+    const b2cCustomerManual = document.getElementById("b2c_customer_manual");
+    const b2cCustomerHidden = document.getElementById("b2c_customer_id");
+
+    if (b2cCustomerSearch && b2cCustomerResults) {
+      b2cCustomerSearch.addEventListener("focus", () => {
+        b2cRenderCustomerMatches(b2cFilterCustomers(b2cCustomerSearch.value));
+      });
+      b2cCustomerSearch.addEventListener("input", () => {
+        if (!String(b2cCustomerSearch.value || "").trim()) {
+          b2cClearSavedCustomerSelection(false);
+        } else if (b2cCustomerHidden && b2cCustomerHidden.value) {
+          b2cCustomerHidden.value = "";
+        }
+        b2cRenderCustomerMatches(b2cFilterCustomers(b2cCustomerSearch.value));
+      });
+      b2cCustomerResults.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-customer-id]");
+        if (!button) {
+          return;
+        }
+        b2cSelectCustomer(button.dataset.customerId, true);
+      });
+      document.addEventListener("click", (event) => {
+        if (!event.target.closest(".customer-search") && event.target !== b2cCustomerManual) {
+          b2cCustomerResults.style.display = "none";
+        }
+      });
+    }
+
+    if (b2cCustomerManual) {
+      b2cCustomerManual.addEventListener("click", () => {
+        b2cClearSavedCustomerSelection(true);
+        if (b2cCustomerResults) {
+          b2cCustomerResults.style.display = "none";
+        }
+      });
+    }
+
     if (b2cAddLineButton && b2cLineTemplate && b2cLinesBody) {
       b2cAddLineButton.addEventListener("click", () => {
         const index = String(b2cNextLineIndex);
@@ -245,6 +450,13 @@
     document.querySelectorAll("#b2c-lines-body .b2c-order-line").forEach((row) => {
       b2cApplyProductSelection(row, false);
     });
+    if (b2cCustomerHidden && b2cCustomerHidden.value && b2cCustomerSearch) {
+      const selectedCustomer = b2cFindCustomerById(b2cCustomerHidden.value);
+      if (selectedCustomer) {
+        b2cCustomerSearch.value = b2cCustomerLabel(selectedCustomer);
+        b2cPopulateCustomerFields(selectedCustomer, false);
+      }
+    }
     b2cRecalculate();
   </script>
 {% endblock %}

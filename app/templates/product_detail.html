@@ -20,6 +20,7 @@
       <div><dt>Manufactured product</dt><dd>{{ "Yes" if product.is_manufactured else "No" }}</dd></div>
       <div><dt>Purchased product</dt><dd>{{ "Yes" if product.is_purchased_product else "No" }}</dd></div>
       <div><dt>B2C price</dt><dd>{{ fmt.money_crc(product.b2c_price) }}</dd></div>
+      <div><dt>B2B price</dt><dd>{{ fmt.money_crc(product.b2b_price) }}</dd></div>
       <div><dt>Standard cost (reference/fallback)</dt><dd>{{ fmt.money_crc(product.standard_cost) }}</dd></div>
       <div><dt>Description</dt><dd>{{ product.description or "" }}</dd></div>
       <div><dt>Observations</dt><dd>{{ product.observations or "" }}</dd></div>

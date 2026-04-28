@@ -171,6 +171,7 @@ def create_product_master(
     description: str,
     observations: str,
     b2c_price: str,
+    b2b_price: str,
     standard_cost: str,
     active: bool,
     available_for_sale_gc: bool,
@@ -189,6 +190,7 @@ def create_product_master(
         description=description,
         observations=observations,
         b2c_price=b2c_price,
+        b2b_price=b2b_price,
         standard_cost=standard_cost,
         active=active,
         available_for_sale_gc=available_for_sale_gc,
@@ -213,6 +215,7 @@ def update_product_master(
     description: str,
     observations: str,
     b2c_price: str,
+    b2b_price: str,
     standard_cost: str,
     active: bool,
     available_for_sale_gc: bool,
@@ -231,6 +234,7 @@ def update_product_master(
         description=description,
         observations=observations,
         b2c_price=b2c_price,
+        b2b_price=b2b_price,
         standard_cost=standard_cost,
         active=active,
         available_for_sale_gc=available_for_sale_gc,
@@ -386,6 +390,7 @@ def _assign_product_fields(
     description: str,
     observations: str,
     b2c_price: str,
+    b2b_price: str,
     standard_cost: str,
     active: bool,
     available_for_sale_gc: bool,
@@ -409,6 +414,7 @@ def _assign_product_fields(
     product.description = _optional_text(description)
     product.observations = _optional_text(observations)
     product.b2c_price = _parse_nonnegative_decimal(b2c_price, "B2C price")
+    product.b2b_price = _parse_nonnegative_decimal(b2b_price, "B2B price")
     product.standard_cost = _parse_nonnegative_decimal(standard_cost, "Standard cost")
     product.active = active
     product.available_for_sale_gc = available_for_sale_gc

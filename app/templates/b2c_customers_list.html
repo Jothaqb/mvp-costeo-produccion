@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <div class="actions">
+      <a class="button" href="/sales/b2c-customers/new">New B2C Customer</a>
+      <form method="post" action="/sales/b2c-customers/initialize-from-mappings">
+        <button type="submit">Initialize from Customer Mappings</button>
+      </form>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Email</th>
+          <th>Province</th>
+          <th>Canton</th>
+          <th>District</th>
+          <th>Active</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for customer in customers %}
+          <tr>
+            <td>{{ customer.name }}</td>
+            <td>{{ customer.phone or "" }}</td>
+            <td>{{ customer.email or "" }}</td>
+            <td>{{ customer.province or "" }}</td>
+            <td>{{ customer.canton or "" }}</td>
+            <td>{{ customer.district or "" }}</td>
+            <td>{{ "yes" if customer.active else "no" }}</td>
+            <td>
+              <a href="/sales/b2c-customers/{{ customer.id }}">View</a>
+              <a href="/sales/b2c-customers/{{ customer.id }}/edit">Edit</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="8">No B2C customers found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

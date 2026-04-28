@@ -10,7 +10,8 @@
             <th>Batch</th>
             <th>File</th>
             <th>Imported at</th>
-            <th>Products</th>
+            <th>Product Master upserts</th>
+            <th>BOM parent products</th>
             <th>BOM lines</th>
             <th></th>
           </tr>
@@ -21,7 +22,8 @@
               <td>{{ batch.id }}</td>
               <td>{{ batch.file_name }}</td>
               <td>{{ batch.imported_at }}</td>
-              <td>{{ batch.product_count }}</td>
+              <td>{{ batch.product_master_upsert_count }}</td>
+              <td>{{ batch.bom_parent_count }}</td>
               <td>{{ batch.line_count }}</td>
               <td><a href="/imports/{{ batch.id }}">Review</a></td>
             </tr>

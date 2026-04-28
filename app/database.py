@@ -130,6 +130,7 @@ def ensure_master_data_tables() -> None:
                 "description": "TEXT",
                 "observations": "TEXT",
                 "b2c_price": "NUMERIC(12, 4)",
+                "b2b_price": "NUMERIC(12, 4)",
                 "is_purchased_product": "BOOLEAN NOT NULL DEFAULT 0",
             },
         )
@@ -138,6 +139,21 @@ def ensure_master_data_tables() -> None:
         )
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_products_supplier_id ON products (supplier_id)"
+        )
+        _ensure_columns(
+            connection,
+            "imported_bom_headers",
+            {
+                "category_name_snapshot": "VARCHAR(255)",
+                "b2b_price_snapshot": "NUMERIC(12, 4)",
+            },
+        )
+        _ensure_columns(
+            connection,
+            "import_batches",
+            {
+                "product_master_upsert_count": "INTEGER NOT NULL DEFAULT 0",
+            },
         )
 
 
@@ -519,6 +535,55 @@ def ensure_b2c_sales_tables() -> None:
         )
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_b2c_sales_order_lines_sales_order_id ON b2c_sales_order_lines (sales_order_id)"
+        )
+
+
+def ensure_b2c_customer_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS b2c_customers (
+                id INTEGER NOT NULL PRIMARY KEY,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                name VARCHAR(255) NOT NULL,
+                phone VARCHAR(100),
+                email VARCHAR(255),
+                address VARCHAR(500),
+                province VARCHAR(100),
+                canton VARCHAR(100),
+                district VARCHAR(100),
+                observations TEXT,
+                source_customer_mapping_id INTEGER UNIQUE,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(source_customer_mapping_id) REFERENCES loyverse_customer_mappings (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_customers_active_name ON b2c_customers (active, name)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_customers_source_customer_mapping_id "
+            "ON b2c_customers (source_customer_mapping_id)"
+        )
+        _ensure_columns(
+            connection,
+            "b2c_sales_orders",
+            {
+                "b2c_customer_id": "INTEGER",
+                "customer_address_snapshot": "VARCHAR(500)",
+                "province_snapshot": "VARCHAR(100)",
+                "canton_snapshot": "VARCHAR(100)",
+                "district_snapshot": "VARCHAR(100)",
+                "customer_observations_snapshot": "TEXT",
+            },
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_b2c_customer_id ON b2c_sales_orders (b2c_customer_id)"
         )
 
 

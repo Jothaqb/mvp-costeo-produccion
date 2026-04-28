@@ -6,9 +6,10 @@ from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import ImportBatch, ImportedBomHeader, ImportedBomLine, Product
+from app.models import ImportBatch, ImportedBomHeader, ImportedBomLine, Product, ProductCategory
 from app.schemas import ComponentType
 
 
@@ -79,9 +80,11 @@ PACKAGING_PATTERNS = (
 
 LOYVERSE_PARENT_SKU_INDEX = 1
 LOYVERSE_PARENT_NAME_INDEX = 2
+LOYVERSE_CATEGORY_INDEX = 3
 LOYVERSE_AVERAGE_COST_INDEX = 12
 LOYVERSE_SUPPLIER_INDEX = 18
 LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX = 20
+LOYVERSE_B2B_PRICE_INDEX = 21
 LOYVERSE_INVENTORY_INDEX = 22
 LOYVERSE_LOW_STOCK_INDEX = 23
 LOYVERSE_OPTIMAL_STOCK_INDEX = 24
@@ -107,7 +110,8 @@ EXCLUDED_BOM_INCLUDED_SKUS = {
 @dataclass(frozen=True)
 class ImportSummary:
     batch_id: int
-    product_count: int
+    product_master_upsert_count: int
+    bom_parent_product_count: int
     bom_line_count: int
     component_type_counts: dict[str, int]
     unknown_count: int
@@ -144,10 +148,17 @@ def parse_decimal(value: str | int | float | Decimal | None) -> Decimal | None:
     if not text:
         return None
 
-    text = text.replace(" ", "")
+    text = text.replace("\xa0", "").replace(" ", "")
     text = re.sub(r"[^\d,.\-]", "", text)
     if not text or text in {"-", ".", ","}:
         return None
+
+    if text.count("-") > 1 or ("-" in text and not text.startswith("-")):
+        return None
+
+    sign = "-" if text.startswith("-") else ""
+    if sign:
+        text = text[1:]
 
     if "," in text and "." in text:
         if text.rfind(",") > text.rfind("."):
@@ -155,7 +166,15 @@ def parse_decimal(value: str | int | float | Decimal | None) -> Decimal | None:
         else:
             text = text.replace(",", "")
     elif "," in text:
-        text = text.replace(",", ".")
+        if re.fullmatch(r"\d{1,3}(,\d{3})+", text):
+            text = text.replace(",", "")
+        else:
+            text = text.replace(",", ".")
+    elif "." in text:
+        if re.fullmatch(r"\d{1,3}(\.\d{3})+", text):
+            text = text.replace(".", "")
+
+    text = f"{sign}{text}"
 
     try:
         return Decimal(text)
@@ -166,6 +185,11 @@ def parse_decimal(value: str | int | float | Decimal | None) -> Decimal | None:
 def parse_bool(value: str | None) -> bool:
     text = normalize_text(value)
     return text in {"1", "true", "yes", "y", "si", "sí", "x"}
+
+
+def parse_available_for_sale(value: str | None) -> bool:
+    text = normalize_text(value)
+    return text in {"1", "true", "yes", "y", "si", "sí", "available", "active"}
 
 
 def classify_component(component_sku: str | None, component_name: str | None) -> ComponentType:
@@ -191,13 +215,14 @@ def should_include_in_real_cost(component_type: ComponentType) -> bool:
 
 def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSummary:
     text = _decode_csv_content(content)
-    csv_rows = list(csv.reader(io.StringIO(text)))
+    csv_rows, detected_delimiter = _parse_csv_rows(text)
 
     batch = ImportBatch(file_name=file_name)
     db.add(batch)
     db.flush()
 
     current_header: ImportedBomHeader | None = None
+    upserted_product_skus: set[str] = set()
     imported_products: set[str] = set()
     component_type_counts: Counter[str] = Counter()
     bom_line_count = 0
@@ -206,12 +231,13 @@ def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSu
         if row_number == 1 and _looks_like_header_row(row):
             continue
 
-        if _is_loyverse_parent_row(row):
-            if _is_manufactured_parent_row(row):
-                current_header = _create_parent_records_from_loyverse_row(db, batch, row)
+        product = _upsert_product_master_from_loyverse_row(db, row)
+        if product is not None:
+            upserted_product_skus.add(product.sku)
+            if product.is_manufactured:
+                current_header = _create_parent_records_from_loyverse_row(db, batch, row, product)
                 imported_products.add(current_header.product_sku)
             else:
-                _upsert_non_manufactured_product_from_loyverse_row(db, row)
                 current_header = None
 
         component = _extract_component_from_loyverse_row(row)
@@ -236,10 +262,20 @@ def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSu
         component_type_counts[component_type.value] += 1
         bom_line_count += 1
 
+    batch.product_master_upsert_count = len(upserted_product_skus)
+
+    if batch.product_master_upsert_count == 0 and bom_line_count == 0 and _has_nonempty_rows(csv_rows):
+        batch.notes = (
+            "Warning: No products or BOM lines were imported. "
+            f"The CSV did not match the expected Loyverse structure after delimiter detection "
+            f"('{_delimiter_name(detected_delimiter)}')."
+        )
+
     db.commit()
     return ImportSummary(
         batch_id=batch.id,
-        product_count=len(imported_products),
+        product_master_upsert_count=batch.product_master_upsert_count,
+        bom_parent_product_count=len(imported_products),
         bom_line_count=bom_line_count,
         component_type_counts=dict(component_type_counts),
         unknown_count=component_type_counts[ComponentType.UNKNOWN.value],
@@ -248,6 +284,30 @@ def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSu
 
 def _normalize_row(row: dict[str, str]) -> dict[str, str]:
     return {normalize_key(key): (value or "").strip() for key, value in row.items()}
+
+
+def _parse_csv_rows(text: str) -> tuple[list[list[str]], str]:
+    delimiter = _detect_csv_delimiter(text)
+    rows = list(csv.reader(io.StringIO(text), delimiter=delimiter, quotechar='"'))
+    return rows, delimiter
+
+
+def _detect_csv_delimiter(text: str) -> str:
+    sample_lines = [line for line in text.splitlines() if line.strip()][:20]
+    sample = "\n".join(sample_lines)
+    if sample:
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+            if dialect.delimiter in {",", ";"}:
+                return dialect.delimiter
+        except csv.Error:
+            pass
+
+    semicolon_count = sum(line.count(";") for line in sample_lines)
+    comma_count = sum(line.count(",") for line in sample_lines)
+    if semicolon_count > comma_count:
+        return ";"
+    return ","
 
 
 def _cell(row: list[str], index: int) -> str:
@@ -263,8 +323,20 @@ def _looks_like_header_row(row: list[str]) -> bool:
     return "sku" in parent_sku or "name" in parent_name or "included" in component_sku
 
 
+def _has_nonempty_rows(rows: list[list[str]]) -> bool:
+    return any(any((cell or "").strip() for cell in row) for row in rows)
+
+
+def _delimiter_name(delimiter: str) -> str:
+    return "semicolon" if delimiter == ";" else "comma"
+
+
 def _is_loyverse_parent_row(row: list[str]) -> bool:
     return bool(_cell(row, LOYVERSE_PARENT_SKU_INDEX))
+
+
+def _is_valid_loyverse_product_row(row: list[str]) -> bool:
+    return bool(_cell(row, LOYVERSE_PARENT_SKU_INDEX) and _cell(row, LOYVERSE_PARENT_NAME_INDEX))
 
 
 def _is_manufactured_parent_row(row: list[str]) -> bool:
@@ -281,10 +353,36 @@ def _create_parent_records_from_loyverse_row(
     db: Session,
     batch: ImportBatch,
     row: list[str],
+    product: Product,
 ) -> ImportedBomHeader:
+    sku = product.sku
+    name = product.name
+    imported_category_name = _clean_optional_text(_cell(row, LOYVERSE_CATEGORY_INDEX))
+    imported_b2b_price = parse_decimal(_cell(row, LOYVERSE_B2B_PRICE_INDEX))
+
+    header = ImportedBomHeader(
+        import_batch=batch,
+        product_sku=sku,
+        product_name=name,
+        category_name_snapshot=imported_category_name,
+        b2b_price_snapshot=_valid_import_b2b_price(imported_b2b_price),
+        standard_cost=product.standard_cost,
+        use_production=True,
+    )
+    db.add(header)
+    db.flush()
+    return header
+
+
+def _upsert_product_master_from_loyverse_row(db: Session, row: list[str]) -> Product | None:
+    if not _is_valid_loyverse_product_row(row):
+        return None
+
     sku = _cell(row, LOYVERSE_PARENT_SKU_INDEX)
     name = _cell(row, LOYVERSE_PARENT_NAME_INDEX) or sku
     standard_cost = parse_decimal(_cell(row, LOYVERSE_AVERAGE_COST_INDEX))
+    imported_category_name = _clean_optional_text(_cell(row, LOYVERSE_CATEGORY_INDEX))
+    imported_b2b_price = parse_decimal(_cell(row, LOYVERSE_B2B_PRICE_INDEX))
 
     product = db.query(Product).filter(Product.sku == sku).one_or_none()
     if product is None:
@@ -293,52 +391,58 @@ def _create_parent_records_from_loyverse_row(
 
     product.name = name
     product.standard_cost = standard_cost
-    product.is_manufactured = True
-    product.active = True
+    product.is_manufactured = _is_manufactured_parent_row(row)
+    _apply_category_enrichment(db, product, imported_category_name)
+    _apply_b2b_price_enrichment(product, imported_b2b_price)
     _apply_planning_snapshot_fields(product, row)
-
-    header = ImportedBomHeader(
-        import_batch=batch,
-        product_sku=sku,
-        product_name=name,
-        standard_cost=standard_cost,
-        use_production=True,
-    )
-    db.add(header)
-    db.flush()
-    return header
-
-
-def _upsert_non_manufactured_product_from_loyverse_row(db: Session, row: list[str]) -> None:
-    sku = _cell(row, LOYVERSE_PARENT_SKU_INDEX)
-    if not sku:
-        return
-
-    use_production = normalize_text(_cell(row, LOYVERSE_USE_PRODUCTION_INDEX))
-    available_for_sale = parse_bool(_cell(row, LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX))
-    is_planning_purchased = available_for_sale and use_production in {"n", ""}
-    product = db.query(Product).filter(Product.sku == sku).one_or_none()
-    if not is_planning_purchased:
-        if product is not None and not available_for_sale:
-            product.available_for_sale_gc = False
-        return
-    if product is None:
-        product = Product(sku=sku, name=_cell(row, LOYVERSE_PARENT_NAME_INDEX) or sku)
-        db.add(product)
-
-    product.name = _cell(row, LOYVERSE_PARENT_NAME_INDEX) or sku
-    product.standard_cost = parse_decimal(_cell(row, LOYVERSE_AVERAGE_COST_INDEX))
-    product.is_manufactured = False
-    product.active = True
-    _apply_planning_snapshot_fields(product, row)
+    return product
 
 
 def _apply_planning_snapshot_fields(product: Product, row: list[str]) -> None:
-    product.available_for_sale_gc = parse_bool(_cell(row, LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX))
+    available_for_sale = parse_available_for_sale(_cell(row, LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX))
+    product.available_for_sale_gc = available_for_sale
+    product.active = available_for_sale
     product.supplier = _cell(row, LOYVERSE_SUPPLIER_INDEX) or None
     product.current_inventory_qty = parse_decimal(_cell(row, LOYVERSE_INVENTORY_INDEX))
     product.low_stock_qty = parse_decimal(_cell(row, LOYVERSE_LOW_STOCK_INDEX))
     product.optimal_stock_qty = parse_decimal(_cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX))
+
+
+def _apply_category_enrichment(db: Session, product: Product, category_name: str | None) -> None:
+    if not category_name:
+        return
+
+    category = (
+        db.query(ProductCategory)
+        .filter(func.lower(ProductCategory.name) == category_name.lower())
+        .one_or_none()
+    )
+    if category is None:
+        category = ProductCategory(
+            name=category_name,
+            active=True,
+        )
+        db.add(category)
+        db.flush()
+    product.category_id = category.id
+
+
+def _apply_b2b_price_enrichment(product: Product, imported_b2b_price: Decimal | None) -> None:
+    valid_b2b_price = _valid_import_b2b_price(imported_b2b_price)
+    if valid_b2b_price is None:
+        return
+    product.b2b_price = valid_b2b_price
+
+
+def _valid_import_b2b_price(imported_b2b_price: Decimal | None) -> Decimal | None:
+    if imported_b2b_price is None or imported_b2b_price < 0:
+        return None
+    return imported_b2b_price
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    cleaned = (value or "").strip()
+    return cleaned or None
 
 def _extract_component_from_loyverse_row(row: list[str]) -> dict[str, str | Decimal | None]:
     component_sku = _cell(row, LOYVERSE_BOM_INCLUDED_SKU_INDEX)

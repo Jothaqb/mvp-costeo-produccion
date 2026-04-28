@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ customer.name }}</h1>
+    <div class="actions">
+      <a role="button" href="/sales/b2c-customers/{{ customer.id }}/edit">Edit customer</a>
+      <a role="button" class="secondary" href="/sales/b2c-customers">Back to B2C Customers</a>
+    </div>
+    <dl class="summary">
+      <div><dt>Active</dt><dd>{{ "Yes" if customer.active else "No" }}</dd></div>
+      <div><dt>Phone</dt><dd>{{ customer.phone or "" }}</dd></div>
+      <div><dt>Email</dt><dd>{{ customer.email or "" }}</dd></div>
+      <div><dt>Address</dt><dd>{{ customer.address or "" }}</dd></div>
+      <div><dt>Province</dt><dd>{{ customer.province or "" }}</dd></div>
+      <div><dt>Canton</dt><dd>{{ customer.canton or "" }}</dd></div>
+      <div><dt>District</dt><dd>{{ customer.district or "" }}</dd></div>
+      <div><dt>Observations</dt><dd>{{ customer.observations or "" }}</dd></div>
+      <div><dt>Source mapping id</dt><dd>{{ customer.source_customer_mapping_id or "" }}</dd></div>
+    </dl>
+  </section>
+{% endblock %}

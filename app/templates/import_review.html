@@ -3,6 +3,9 @@
 {% block content %}
   <section>
     <h1>Import Review</h1>
+    {% if batch.notes %}
+      <p class="error">{{ batch.notes }}</p>
+    {% endif %}
     <form method="get" action="/imports/{{ batch.id }}">
       <label for="q">Search product SKU or name</label>
       <input id="q" name="q" value="{{ search or '' }}" placeholder="SKU or partial product name">
@@ -19,8 +22,12 @@
         <dd>{{ batch.file_name }}</dd>
       </div>
       <div>
-        <dt>Total imported products</dt>
-        <dd>{{ product_count }}</dd>
+        <dt>Product Master rows upserted</dt>
+        <dd>{{ product_master_upsert_count }}</dd>
+      </div>
+      <div>
+        <dt>BOM parent products</dt>
+        <dd>{{ bom_parent_count }}</dd>
       </div>
       <div>
         <dt>Total BOM lines</dt>
@@ -52,18 +59,20 @@
       </tbody>
     </table>
     {% if search and not headers %}
-      <p>No imported products matched "{{ search }}".</p>
+      <p>No BOM parent products matched "{{ search }}".</p>
     {% endif %}
   </section>
 
   <section>
-    <h2>Products</h2>
+    <h2>BOM Parent Products</h2>
     <p class="muted-inline">Imported inventory and standard cost are legacy/reference Product snapshots. ERP live inventory and actual average cost come from InventoryBalance / Kardex.</p>
     <table>
       <thead>
         <tr>
           <th>SKU</th>
           <th>Name</th>
+          <th>Imported category</th>
+          <th>Imported B2B price</th>
           <th>Imported standard cost (reference)</th>
         </tr>
       </thead>
@@ -72,6 +81,8 @@
           <tr>
             <td>{{ header.product_sku }}</td>
             <td>{{ header.product_name }}</td>
+            <td>{{ header.category_name_snapshot or "" }}</td>
+            <td>{{ header.b2b_price_snapshot or "" }}</td>
             <td>{{ header.standard_cost or "" }}</td>
           </tr>
         {% endfor %}
