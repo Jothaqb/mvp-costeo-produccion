@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Sales</p>
+    <h1>Total Sales</h1>
+    <p class="lead">Review invoiced B2B and B2C sales from the ERP in one simple commercial table.</p>
+    <p class="muted-inline">B2B report date uses the order created timestamp because B2B orders do not currently store an explicit order date. Category is resolved from the current Product Master when available and is not a historical category snapshot.</p>
+  </section>
+
+  <section>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="get" action="/sales/total">
+      <label for="date_from">Date from</label>
+      <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
+
+      <label for="date_to">Date to</label>
+      <input id="date_to" name="date_to" type="date" value="{{ filters.date_to }}">
+
+      <label for="sales_type">Sales type</label>
+      <select id="sales_type" name="sales_type">
+        <option value="all" {% if filters.sales_type == "all" %}selected{% endif %}>All</option>
+        <option value="b2b" {% if filters.sales_type == "b2b" %}selected{% endif %}>B2B</option>
+        <option value="b2c" {% if filters.sales_type == "b2c" %}selected{% endif %}>B2C</option>
+      </select>
+
+      <button type="submit">Apply filters</button>
+    </form>
+    <p class="muted-inline">{{ result_count }} invoiced sales lines found.</p>
+  </section>
+
+  <section>
+    <table>
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Order</th>
+          <th>Report date</th>
+          <th>Customer</th>
+          <th>Channel</th>
+          <th>SKU</th>
+          <th>Description</th>
+          <th>Category</th>
+          <th>Quantity</th>
+          <th>Unit price</th>
+          <th>Discount</th>
+          <th>Line total</th>
+          <th>Status</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          <tr>
+            <td>{{ row.sales_source }}</td>
+            <td>{{ row.order_number }}</td>
+            <td>{{ row.order_date }}</td>
+            <td>{{ row.customer_name or "" }}</td>
+            <td>{{ row.channel_name or "" }}</td>
+            <td>{{ row.sku }}</td>
+            <td>{{ row.description }}</td>
+            <td>{{ row.category_name or "" }}</td>
+            <td>{{ row.quantity }}</td>
+            <td>{{ fmt.money_crc(row.unit_price) }}</td>
+            <td>{{ fmt.money_crc(row.discount_amount) if row.discount_amount is not none else "" }}</td>
+            <td>{{ fmt.money_crc(row.line_total) }}</td>
+            <td>{{ row.order_status }}</td>
+            <td>
+              {% if row.sales_source == "B2B" %}
+                <a href="/b2b/orders/{{ row.order_id }}">View</a>
+              {% else %}
+                <a href="/b2c/orders/{{ row.order_id }}">View</a>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        {% if not rows %}
+          <tr>
+            <td colspan="14">No invoiced sales match the current filters.</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

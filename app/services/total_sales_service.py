@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
+
+from sqlalchemy.orm import Session
+
+from app.models import B2BSalesOrder, B2BSalesOrderLine, B2CSalesOrder, B2CSalesOrderLine, Product, ProductCategory
+
+
+@dataclass(frozen=True)
+class TotalSalesRow:
+    sales_source: str
+    order_id: int
+    order_number: str
+    order_date: date
+    customer_name: str | None
+    channel_name: str | None
+    sku: str
+    description: str
+    category_name: str | None
+    quantity: Decimal
+    unit_price: Decimal
+    discount_amount: Decimal | None
+    line_total: Decimal
+    order_status: str
+    order_created_at: datetime
+    line_number: int
+
+
+def get_total_sales_rows(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sales_type: str = "all",
+) -> list[TotalSalesRow]:
+    normalized_sales_type = (sales_type or "all").strip().lower()
+    if normalized_sales_type not in {"all", "b2b", "b2c"}:
+        normalized_sales_type = "all"
+
+    b2b_rows: list[TotalSalesRow] = []
+    b2c_rows: list[TotalSalesRow] = []
+
+    if normalized_sales_type in {"all", "b2b"}:
+        b2b_rows = _get_b2b_sales_rows(db, date_from=date_from, date_to=date_to)
+    if normalized_sales_type in {"all", "b2c"}:
+        b2c_rows = _get_b2c_sales_rows(db, date_from=date_from, date_to=date_to)
+
+    rows = b2b_rows + b2c_rows
+    category_by_sku = _current_category_name_by_sku(db, {row.sku for row in rows})
+    enriched_rows = [
+        TotalSalesRow(
+            sales_source=row.sales_source,
+            order_id=row.order_id,
+            order_number=row.order_number,
+            order_date=row.order_date,
+            customer_name=row.customer_name,
+            channel_name=row.channel_name,
+            sku=row.sku,
+            description=row.description,
+            # Category is resolved from current Product Master by SKU. This is not a historical snapshot.
+            category_name=category_by_sku.get(row.sku),
+            quantity=row.quantity,
+            unit_price=row.unit_price,
+            discount_amount=row.discount_amount,
+            line_total=row.line_total,
+            order_status=row.order_status,
+            order_created_at=row.order_created_at,
+            line_number=row.line_number,
+        )
+        for row in rows
+    ]
+    return sorted(
+        enriched_rows,
+        key=lambda row: (
+            row.order_date,
+            row.order_created_at,
+            row.order_number,
+        ),
+        reverse=True,
+    )
+
+
+def _get_b2b_sales_rows(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[TotalSalesRow]:
+    query = (
+        db.query(B2BSalesOrder, B2BSalesOrderLine)
+        .join(B2BSalesOrderLine, B2BSalesOrderLine.sales_order_id == B2BSalesOrder.id)
+        .filter(B2BSalesOrder.status == "invoiced")
+    )
+    if date_from is not None:
+        query = query.filter(B2BSalesOrder.created_at >= datetime.combine(date_from, time.min))
+    if date_to is not None:
+        next_day = date_to + timedelta(days=1)
+        # Keep the user-facing date_to inclusive by filtering before the next day at 00:00.
+        query = query.filter(B2BSalesOrder.created_at < datetime.combine(next_day, time.min))
+
+    rows: list[TotalSalesRow] = []
+    for order, line in query.order_by(
+        B2BSalesOrder.created_at.desc(),
+        B2BSalesOrder.id.desc(),
+        B2BSalesOrderLine.line_number.asc(),
+    ).all():
+        # For B2B, report date uses created_at because B2B orders do not have explicit order_date.
+        rows.append(
+            TotalSalesRow(
+                sales_source="B2B",
+                order_id=order.id,
+                order_number=order.order_number,
+                order_date=order.created_at.date(),
+                customer_name=order.customer_name_snapshot,
+                channel_name=order.b2b_channel_name_snapshot,
+                sku=line.sku_snapshot,
+                description=line.description_snapshot,
+                category_name=None,
+                quantity=line.quantity,
+                unit_price=line.unit_price_snapshot,
+                discount_amount=None,
+                line_total=line.line_total,
+                order_status=order.status,
+                order_created_at=order.created_at,
+                line_number=line.line_number,
+            )
+        )
+    return rows
+
+
+def _get_b2c_sales_rows(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> list[TotalSalesRow]:
+    query = (
+        db.query(B2CSalesOrder, B2CSalesOrderLine)
+        .join(B2CSalesOrderLine, B2CSalesOrderLine.sales_order_id == B2CSalesOrder.id)
+        .filter(B2CSalesOrder.status == "invoiced")
+    )
+    if date_from is not None:
+        query = query.filter(B2CSalesOrder.order_date >= date_from)
+    if date_to is not None:
+        query = query.filter(B2CSalesOrder.order_date <= date_to)
+
+    rows: list[TotalSalesRow] = []
+    for order, line in query.order_by(
+        B2CSalesOrder.order_date.desc(),
+        B2CSalesOrder.id.desc(),
+        B2CSalesOrderLine.line_number.asc(),
+    ).all():
+        rows.append(
+            TotalSalesRow(
+                sales_source="B2C",
+                order_id=order.id,
+                order_number=order.order_number,
+                order_date=order.order_date,
+                customer_name=order.customer_name,
+                channel_name=order.channel,
+                sku=line.sku_snapshot,
+                description=line.description_snapshot,
+                category_name=None,
+                quantity=line.quantity,
+                unit_price=line.unit_price_snapshot,
+                discount_amount=line.discount_amount_snapshot,
+                line_total=line.net_line_total_snapshot if line.net_line_total_snapshot is not None else line.line_total,
+                order_status=order.status,
+                order_created_at=order.created_at,
+                line_number=line.line_number,
+            )
+        )
+    return rows
+
+
+def _current_category_name_by_sku(db: Session, skus: set[str]) -> dict[str, str | None]:
+    if not skus:
+        return {}
+    rows = (
+        db.query(Product.sku, ProductCategory.name)
+        .outerjoin(ProductCategory, Product.category_id == ProductCategory.id)
+        .filter(Product.sku.in_(skus))
+        .all()
+    )
+    return {sku: category_name for sku, category_name in rows}
