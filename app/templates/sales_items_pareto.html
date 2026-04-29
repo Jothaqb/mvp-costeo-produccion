@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Sales</p>
+    <h1>Sales by Items Pareto</h1>
+    <p class="lead">Review invoiced B2B and B2C sales grouped by SKU using the same unified ERP sales foundation.</p>
+  </section>
+
+  <section>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="get" action="/sales/items-pareto">
+      <label for="date_from">Date from</label>
+      <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
+
+      <label for="date_to">Date to</label>
+      <input id="date_to" name="date_to" type="date" value="{{ filters.date_to }}">
+
+      <label for="sales_type">Sales type</label>
+      <select id="sales_type" name="sales_type">
+        <option value="all" {% if filters.sales_type == "all" %}selected{% endif %}>All</option>
+        <option value="b2b" {% if filters.sales_type == "b2b" %}selected{% endif %}>B2B</option>
+        <option value="b2c" {% if filters.sales_type == "b2c" %}selected{% endif %}>B2C</option>
+      </select>
+
+      <button type="submit">Apply filters</button>
+    </form>
+  </section>
+
+  {% if pareto %}
+    <section class="module-grid" aria-label="Sales by items Pareto KPIs">
+      <div class="module-card">
+        <p class="eyebrow">Net sales</p>
+        <h2>{{ fmt.money_crc(pareto.summary.total_net_sales) }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Items</p>
+        <h2>{{ pareto.summary.total_items }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Quantity</p>
+        <h2>{{ pareto.summary.total_quantity }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">A items</p>
+        <h2>{{ pareto.summary.a_items_count }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">B items</p>
+        <h2>{{ pareto.summary.b_items_count }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">C items</p>
+        <h2>{{ pareto.summary.c_items_count }}</h2>
+      </div>
+    </section>
+
+    <section>
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>SKU</th>
+            <th>Description</th>
+            <th>Net sales</th>
+            <th>Quantity</th>
+            <th>Orders</th>
+            <th>Lines</th>
+            <th>Discount</th>
+            <th>% sales</th>
+            <th>Cumulative %</th>
+            <th>Class</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in pareto.rows %}
+            <tr>
+              <td>{{ row.rank }}</td>
+              <td>{{ row.sku }}</td>
+              <td>{{ row.description }}</td>
+              <td>{{ fmt.money_crc(row.net_sales) }}</td>
+              <td>{{ row.quantity }}</td>
+              <td>{{ row.orders }}</td>
+              <td>{{ row.lines }}</td>
+              <td>{{ fmt.money_crc(row.discount) }}</td>
+              <td>{{ "{:,.1f}".format(row.percent_of_total_sales) }}%</td>
+              <td>{{ "{:,.1f}".format(row.cumulative_percent) }}%</td>
+              <td>{{ row.pareto_class }}</td>
+            </tr>
+          {% endfor %}
+          {% if not pareto.rows %}
+            <tr>
+              <td colspan="11">No invoiced sales match the current filters.</td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+{% endblock %}

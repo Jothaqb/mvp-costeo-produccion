@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -52,6 +53,37 @@ class SalesSummary:
     total: SalesSummaryBucket
     b2b: SalesSummaryBucket
     b2c: SalesSummaryBucket
+
+
+@dataclass(frozen=True)
+class SalesItemParetoRow:
+    rank: int
+    sku: str
+    description: str
+    net_sales: Decimal
+    quantity: Decimal
+    lines: int
+    orders: int
+    discount: Decimal
+    percent_of_total_sales: Decimal
+    cumulative_percent: Decimal
+    pareto_class: str
+
+
+@dataclass(frozen=True)
+class SalesItemsParetoSummary:
+    total_net_sales: Decimal
+    total_items: int
+    total_quantity: Decimal
+    a_items_count: int
+    b_items_count: int
+    c_items_count: int
+
+
+@dataclass(frozen=True)
+class SalesItemsPareto:
+    summary: SalesItemsParetoSummary
+    rows: list[SalesItemParetoRow]
 
 
 def get_total_sales_rows(
@@ -139,6 +171,22 @@ def get_sales_summary(
         sales_percent=total_percent,
     )
     return SalesSummary(total=total_bucket, b2b=b2b_bucket, b2c=b2c_bucket)
+
+
+def get_sales_items_pareto(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sales_type: str = "all",
+) -> SalesItemsPareto:
+    rows = get_total_sales_rows(
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        sales_type=sales_type,
+    )
+    return _build_sales_items_pareto(rows)
 
 
 def _get_b2b_sales_rows(
@@ -274,6 +322,104 @@ def _build_sales_summary_bucket(
         average_line_value=average_line_value,
         sales_percent=sales_percent,
     )
+
+
+def _build_sales_items_pareto(rows: list[TotalSalesRow]) -> SalesItemsPareto:
+    grouped_rows: dict[str, list[TotalSalesRow]] = {}
+    for row in rows:
+        sku = (row.sku or "").strip() or "(sin SKU)"
+        grouped_rows.setdefault(sku, []).append(row)
+
+    total_net_sales = sum((row.line_total for row in rows), ZERO)
+    total_quantity = sum((row.quantity for row in rows), ZERO)
+
+    ranked_base: list[tuple[str, str, Decimal, Decimal, int, int, Decimal]] = []
+    for sku, sku_rows in grouped_rows.items():
+        net_sales = sum((row.line_total for row in sku_rows), ZERO)
+        quantity = sum((row.quantity for row in sku_rows), ZERO)
+        lines = len(sku_rows)
+        orders = len({(row.sales_source, row.order_id) for row in sku_rows})
+        discount = sum(((row.discount_amount or ZERO) for row in sku_rows), ZERO)
+        ranked_base.append(
+            (
+                sku,
+                _resolve_pareto_description(sku_rows),
+                net_sales,
+                quantity,
+                lines,
+                orders,
+                discount,
+            )
+        )
+
+    ranked_base.sort(key=lambda item: (item[2], item[0]), reverse=True)
+
+    pareto_rows: list[SalesItemParetoRow] = []
+    running_sales = ZERO
+    a_items_count = 0
+    b_items_count = 0
+    c_items_count = 0
+    for index, item in enumerate(ranked_base, start=1):
+        sku, description, net_sales, quantity, lines, orders, discount = item
+        percent_of_total_sales = _safe_percent(net_sales, total_net_sales)
+        running_sales += net_sales
+        cumulative_percent = _safe_percent(running_sales, total_net_sales)
+        pareto_class = _classify_pareto(cumulative_percent)
+        if pareto_class == "A":
+            a_items_count += 1
+        elif pareto_class == "B":
+            b_items_count += 1
+        else:
+            c_items_count += 1
+        pareto_rows.append(
+            SalesItemParetoRow(
+                rank=index,
+                sku=sku,
+                description=description,
+                net_sales=net_sales,
+                quantity=quantity,
+                lines=lines,
+                orders=orders,
+                discount=discount,
+                percent_of_total_sales=percent_of_total_sales,
+                cumulative_percent=cumulative_percent,
+                pareto_class=pareto_class,
+            )
+        )
+
+    summary = SalesItemsParetoSummary(
+        total_net_sales=total_net_sales,
+        total_items=len(pareto_rows),
+        total_quantity=total_quantity,
+        a_items_count=a_items_count,
+        b_items_count=b_items_count,
+        c_items_count=c_items_count,
+    )
+    return SalesItemsPareto(summary=summary, rows=pareto_rows)
+
+
+def _resolve_pareto_description(rows: list[TotalSalesRow]) -> str:
+    # Pareto groups by SKU; description is informational and resolved from the most frequent
+    # non-empty historical snapshot for that SKU.
+    non_empty_descriptions = [(row.description or "").strip() for row in rows if (row.description or "").strip()]
+    if not non_empty_descriptions:
+        return ""
+    description_counts = Counter(non_empty_descriptions)
+    max_count = max(description_counts.values())
+    for description in non_empty_descriptions:
+        if description_counts[description] == max_count:
+            return description
+    return non_empty_descriptions[0]
+
+
+def _classify_pareto(cumulative_percent: Decimal) -> str:
+    # Pareto class uses the cumulative percentage after adding the item:
+    # A if cumulative_percent <= 80, B if cumulative_percent <= 95, C otherwise.
+    if cumulative_percent <= Decimal("80"):
+        return "A"
+    if cumulative_percent <= Decimal("95"):
+        return "B"
+    return "C"
 
 
 def _safe_divide(numerator: Decimal, denominator: Decimal) -> Decimal:
