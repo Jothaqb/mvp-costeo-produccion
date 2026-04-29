@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p><a href="/master-data/channels/new">New Channel</a></p>
+  </section>
+
+  <section>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Active</th>
+          <th>B2B</th>
+          <th>B2C</th>
+          <th>Observations</th>
+          <th>Edit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for channel in channels %}
+          <tr>
+            <td>{{ channel.name }}</td>
+            <td>{{ "yes" if channel.active else "no" }}</td>
+            <td>{{ "yes" if channel.applies_to_b2b else "no" }}</td>
+            <td>{{ "yes" if channel.applies_to_b2c else "no" }}</td>
+            <td>{{ channel.observations or "" }}</td>
+            <td><a href="/master-data/channels/{{ channel.id }}/edit">Edit</a></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

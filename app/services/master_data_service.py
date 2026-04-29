@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import DiscountRule, InventoryBalance, Product, ProductCategory, Supplier
+from app.models import Channel, DiscountRule, InventoryBalance, Product, ProductCategory, Supplier
 
 
 ZERO = Decimal("0")
@@ -100,6 +100,56 @@ def update_supplier(
     db.commit()
     db.refresh(supplier)
     return supplier
+
+
+def create_channel(
+    db: Session,
+    *,
+    name: str,
+    active: bool,
+    applies_to_b2b: bool,
+    applies_to_b2c: bool,
+    observations: str,
+) -> Channel:
+    channel = Channel()
+    _assign_channel_fields(
+        db,
+        channel,
+        name=name,
+        active=active,
+        applies_to_b2b=applies_to_b2b,
+        applies_to_b2c=applies_to_b2c,
+        observations=observations,
+    )
+    db.add(channel)
+    db.commit()
+    db.refresh(channel)
+    return channel
+
+
+def update_channel(
+    db: Session,
+    *,
+    channel_id: int,
+    name: str,
+    active: bool,
+    applies_to_b2b: bool,
+    applies_to_b2c: bool,
+    observations: str,
+) -> Channel:
+    channel = db.query(Channel).filter(Channel.id == channel_id).one()
+    _assign_channel_fields(
+        db,
+        channel,
+        name=name,
+        active=active,
+        applies_to_b2b=applies_to_b2b,
+        applies_to_b2c=applies_to_b2c,
+        observations=observations,
+    )
+    db.commit()
+    db.refresh(channel)
+    return channel
 
 
 def create_discount_rule(
@@ -286,6 +336,32 @@ def list_discount_rule_options(
     return query.order_by(DiscountRule.name, DiscountRule.id).all()
 
 
+def list_channel_options(
+    db: Session,
+    current_channel_id: int | None = None,
+    *,
+    applies_to: str | None = None,
+) -> list[Channel]:
+    query = db.query(Channel)
+    applicability_filter = None
+    if applies_to == "b2b":
+        applicability_filter = Channel.applies_to_b2b.is_(True)
+    elif applies_to == "b2c":
+        applicability_filter = Channel.applies_to_b2c.is_(True)
+
+    if current_channel_id is None:
+        if applicability_filter is not None:
+            query = query.filter(applicability_filter)
+        query = query.filter(Channel.active.is_(True))
+    else:
+        active_and_applicable = Channel.active.is_(True)
+        if applicability_filter is not None:
+            active_and_applicable = active_and_applicable & applicability_filter
+        query = query.filter(active_and_applicable | (Channel.id == current_channel_id))
+
+    return query.order_by(Channel.name, Channel.id).all()
+
+
 def get_product_for_detail(db: Session, product_id: int) -> Product:
     return (
         db.query(Product)
@@ -341,6 +417,30 @@ def _assign_supplier_fields(
     supplier.email = _optional_text(email)
     supplier.notes = _optional_text(notes)
     supplier.active = active
+
+
+def _assign_channel_fields(
+    db: Session,
+    channel: Channel,
+    *,
+    name: str,
+    active: bool,
+    applies_to_b2b: bool,
+    applies_to_b2c: bool,
+    observations: str,
+) -> None:
+    normalized_name = _required_text(name, "Channel name")
+    existing = db.query(Channel.id).filter(func.lower(Channel.name) == normalized_name.lower()).first()
+    if existing is not None and existing[0] != channel.id:
+        raise MasterDataValidationError(f"Channel '{normalized_name}' already exists.")
+    if not applies_to_b2b and not applies_to_b2c:
+        raise MasterDataValidationError("Channel must apply to B2B, B2C, or both.")
+
+    channel.name = normalized_name
+    channel.active = active
+    channel.applies_to_b2b = applies_to_b2b
+    channel.applies_to_b2c = applies_to_b2c
+    channel.observations = _optional_text(observations)
 
 
 def _assign_discount_rule_fields(

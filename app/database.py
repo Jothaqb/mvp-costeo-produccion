@@ -158,6 +158,62 @@ def ensure_master_data_tables() -> None:
         )
 
 
+def ensure_channel_master_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS channels (
+                id INTEGER NOT NULL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL UNIQUE,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                applies_to_b2b BOOLEAN NOT NULL DEFAULT 0,
+                applies_to_b2c BOOLEAN NOT NULL DEFAULT 0,
+                observations TEXT,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_channels_name ON channels (name)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_channels_active ON channels (active)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_channels_b2b_active ON channels (applies_to_b2b, active, name)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_channels_b2c_active ON channels (applies_to_b2c, active, name)"
+        )
+
+        _ensure_columns(
+            connection,
+            "b2b_sales_orders",
+            {
+                "channel_id": "INTEGER",
+            },
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2b_sales_orders_channel_id ON b2b_sales_orders (channel_id)"
+        )
+
+        _ensure_b2c_sales_orders_channel_constraint_removed(connection)
+        _ensure_columns(
+            connection,
+            "b2c_sales_orders",
+            {
+                "channel_id": "INTEGER",
+            },
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_channel_id ON b2c_sales_orders (channel_id)"
+        )
+
+
 def ensure_discount_master_tables() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -494,7 +550,7 @@ def ensure_b2c_sales_tables() -> None:
                 customer_name VARCHAR(255),
                 customer_phone VARCHAR(100),
                 customer_email VARCHAR(255),
-                channel VARCHAR(50) NOT NULL,
+                channel VARCHAR(255) NOT NULL,
                 status VARCHAR(50) NOT NULL,
                 subtotal_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
                 total_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
@@ -953,6 +1009,135 @@ def ensure_b2b_loyverse_mapping_tables() -> None:
             "CREATE INDEX IF NOT EXISTS ix_loyverse_payment_type_mappings_loyverse_payment_type_id "
             "ON loyverse_payment_type_mappings (loyverse_payment_type_id)"
         )
+
+
+def _ensure_b2c_sales_orders_channel_constraint_removed(connection) -> None:
+    create_sql_row = connection.exec_driver_sql(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='b2c_sales_orders'"
+    ).fetchone()
+    create_sql = (create_sql_row[0] or "") if create_sql_row else ""
+    if "ck_b2c_sales_orders_channel" not in create_sql and "channel IN ('whatsapp', 'website', 'other')" not in create_sql:
+        return
+
+    connection.exec_driver_sql("ALTER TABLE b2c_sales_orders RENAME TO b2c_sales_orders_old")
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE b2c_sales_orders (
+            id INTEGER NOT NULL PRIMARY KEY,
+            order_number VARCHAR(100) NOT NULL UNIQUE,
+            order_date DATE NOT NULL,
+            b2c_customer_id INTEGER,
+            customer_name VARCHAR(255),
+            customer_phone VARCHAR(100),
+            customer_email VARCHAR(255),
+            customer_address_snapshot VARCHAR(500),
+            province_snapshot VARCHAR(100),
+            canton_snapshot VARCHAR(100),
+            district_snapshot VARCHAR(100),
+            customer_observations_snapshot TEXT,
+            channel VARCHAR(255) NOT NULL,
+            channel_id INTEGER,
+            status VARCHAR(50) NOT NULL,
+            discount_rule_id INTEGER,
+            discount_name_snapshot VARCHAR(255),
+            discount_type_snapshot VARCHAR(50),
+            discount_value_snapshot NUMERIC(12, 4),
+            subtotal_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
+            discount_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
+            total_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
+            cost_total_snapshot NUMERIC(12, 4),
+            gross_margin_amount NUMERIC(12, 4),
+            gross_margin_percent NUMERIC(12, 4),
+            observations TEXT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            CONSTRAINT ck_b2c_sales_orders_status CHECK (status IN ('draft', 'invoiced', 'cancelled')),
+            FOREIGN KEY(b2c_customer_id) REFERENCES b2c_customers (id),
+            FOREIGN KEY(discount_rule_id) REFERENCES discount_rules (id),
+            FOREIGN KEY(channel_id) REFERENCES channels (id)
+        )
+        """
+    )
+    connection.exec_driver_sql(
+        """
+        INSERT INTO b2c_sales_orders (
+            id,
+            order_number,
+            order_date,
+            b2c_customer_id,
+            customer_name,
+            customer_phone,
+            customer_email,
+            customer_address_snapshot,
+            province_snapshot,
+            canton_snapshot,
+            district_snapshot,
+            customer_observations_snapshot,
+            channel,
+            channel_id,
+            status,
+            discount_rule_id,
+            discount_name_snapshot,
+            discount_type_snapshot,
+            discount_value_snapshot,
+            subtotal_amount,
+            discount_amount,
+            total_amount,
+            cost_total_snapshot,
+            gross_margin_amount,
+            gross_margin_percent,
+            observations,
+            created_at,
+            updated_at
+        )
+        SELECT
+            id,
+            order_number,
+            order_date,
+            b2c_customer_id,
+            customer_name,
+            customer_phone,
+            customer_email,
+            customer_address_snapshot,
+            province_snapshot,
+            canton_snapshot,
+            district_snapshot,
+            customer_observations_snapshot,
+            channel,
+            NULL,
+            status,
+            discount_rule_id,
+            discount_name_snapshot,
+            discount_type_snapshot,
+            discount_value_snapshot,
+            subtotal_amount,
+            discount_amount,
+            total_amount,
+            cost_total_snapshot,
+            gross_margin_amount,
+            gross_margin_percent,
+            observations,
+            created_at,
+            updated_at
+        FROM b2c_sales_orders_old
+        """
+    )
+    connection.exec_driver_sql("DROP TABLE b2c_sales_orders_old")
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_order_number ON b2c_sales_orders (order_number)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_order_date ON b2c_sales_orders (order_date)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_status ON b2c_sales_orders (status)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_b2c_customer_id ON b2c_sales_orders (b2c_customer_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_discount_rule_id ON b2c_sales_orders (discount_rule_id)"
+    )
 
 
 def _ensure_columns(connection, table_name: str, column_definitions: dict[str, str]) -> None:

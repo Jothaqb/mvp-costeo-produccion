@@ -46,6 +46,27 @@ class Supplier(Base):
     products: Mapped[list["Product"]] = relationship("Product", back_populates="supplier_record")
 
 
+class Channel(Base):
+    __tablename__ = "channels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    applies_to_b2b: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    applies_to_b2c: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    observations: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    b2b_orders: Mapped[list["B2BSalesOrder"]] = relationship("B2BSalesOrder", back_populates="channel_record")
+    b2c_orders: Mapped[list["B2CSalesOrder"]] = relationship("B2CSalesOrder", back_populates="channel_record")
+
+
 class DiscountRule(Base):
     __tablename__ = "discount_rules"
     __table_args__ = (
@@ -59,7 +80,7 @@ class DiscountRule(Base):
     discount_type: Mapped[str] = mapped_column(String(50), nullable=False)
     value: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     applies_to: Mapped[str] = mapped_column(String(50), nullable=False)
-    channel: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel: Mapped[str] = mapped_column(String(255), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -285,6 +306,7 @@ class B2BSalesOrder(Base):
     legal_id_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
     phone_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
     loyverse_customer_id_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
     delivery_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
     total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
@@ -307,6 +329,7 @@ class B2BSalesOrder(Base):
     )
 
     customer: Mapped[B2BCustomer] = relationship(back_populates="orders")
+    channel_record: Mapped["Channel | None"] = relationship("Channel", back_populates="b2b_orders")
     lines: Mapped[list["B2BSalesOrderLine"]] = relationship(
         back_populates="sales_order",
         cascade="all, delete-orphan",
@@ -344,10 +367,6 @@ class B2CSalesOrder(Base):
     __tablename__ = "b2c_sales_orders"
     __table_args__ = (
         CheckConstraint(
-            "channel IN ('whatsapp', 'website', 'other')",
-            name="ck_b2c_sales_orders_channel",
-        ),
-        CheckConstraint(
             "status IN ('draft', 'invoiced', 'cancelled')",
             name="ck_b2c_sales_orders_status",
         ),
@@ -365,7 +384,8 @@ class B2CSalesOrder(Base):
     canton_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
     district_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
     customer_observations_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
-    channel: Mapped[str] = mapped_column(String(50), nullable=False)
+    channel: Mapped[str] = mapped_column(String(255), nullable=False)
+    channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
     discount_rule_id: Mapped[int | None] = mapped_column(ForeignKey("discount_rules.id"), nullable=True)
     discount_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -387,6 +407,7 @@ class B2CSalesOrder(Base):
     )
 
     customer: Mapped["B2CCustomer | None"] = relationship(back_populates="orders")
+    channel_record: Mapped["Channel | None"] = relationship("Channel", back_populates="b2c_orders")
     discount_rule: Mapped["DiscountRule | None"] = relationship("DiscountRule", back_populates="b2c_orders")
     lines: Mapped[list["B2CSalesOrderLine"]] = relationship(
         back_populates="sales_order",

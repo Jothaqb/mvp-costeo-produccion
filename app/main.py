@@ -14,6 +14,7 @@ from app.database import (
     engine,
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
+    ensure_channel_master_tables,
     ensure_b2c_sales_tables,
     ensure_b2c_customer_tables,
     ensure_b2b_loyverse_mapping_tables,
@@ -44,6 +45,7 @@ from app.models import (
     B2BSalesOrderLine,
     B2CSalesOrder,
     B2CSalesOrderLine,
+    Channel,
     DiscountRule,
     ImportBatch,
     ImportedBomHeader,
@@ -129,6 +131,7 @@ from app.services.inventory_adjustment_service import (
 )
 from app.services.master_data_service import (
     MasterDataValidationError,
+    create_channel,
     create_discount_rule,
     create_product_category,
     create_product_master,
@@ -136,8 +139,10 @@ from app.services.master_data_service import (
     get_product_balance,
     get_product_for_detail,
     list_category_options,
+    list_channel_options,
     list_discount_rule_options,
     list_supplier_options,
+    update_channel,
     update_discount_rule,
     update_product_category,
     update_product_master,
@@ -231,6 +236,7 @@ ensure_b2c_sales_tables()
 ensure_discount_master_tables()
 ensure_b2b_loyverse_mapping_tables()
 ensure_b2c_customer_tables()
+ensure_channel_master_tables()
 ensure_inventory_adjustment_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
@@ -264,8 +270,25 @@ def _b2c_statuses() -> list[str]:
     return ["draft", "invoiced", "cancelled"]
 
 
-def _b2c_channels() -> list[str]:
-    return ["whatsapp", "website", "other"]
+def _default_channel_selection(
+    channels: list[Channel],
+    *,
+    current_channel_id: int | None = None,
+    snapshot_name: str | None = None,
+) -> str:
+    if current_channel_id is not None:
+        for channel in channels:
+            if channel.id == current_channel_id:
+                return str(channel.id)
+
+    normalized_snapshot = (snapshot_name or "").strip().casefold()
+    if not normalized_snapshot:
+        return ""
+
+    for channel in channels:
+        if channel.name.strip().casefold() == normalized_snapshot:
+            return str(channel.id)
+    return ""
 
 
 def _discount_types() -> list[str]:
@@ -988,6 +1011,116 @@ async def update_supplier_route(supplier_id: int, request: Request, db: Session 
                 "title": "Edit Supplier",
                 "form_action": f"/master-data/suppliers/{supplier.id}/edit",
                 "supplier": supplier,
+                "form_data": form_data,
+                "error": str(exc),
+            },
+        )
+
+
+@app.get("/master-data/channels", response_class=HTMLResponse)
+def channels_master(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    channels = db.query(Channel).order_by(Channel.name, Channel.id).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="channels_list.html",
+        context={"title": "Channels", "channels": channels},
+    )
+
+
+@app.get("/master-data/channels/new", response_class=HTMLResponse)
+def new_channel(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="channel_form.html",
+        context={
+            "title": "New Channel",
+            "form_action": "/master-data/channels",
+            "channel": None,
+            "form_data": {
+                "name": "",
+                "active": True,
+                "applies_to_b2b": False,
+                "applies_to_b2c": False,
+                "observations": "",
+            },
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/channels")
+async def create_channel_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    form_data = {
+        "name": str(form.get("name", "")),
+        "active": _form_bool(form, "active"),
+        "applies_to_b2b": _form_bool(form, "applies_to_b2b"),
+        "applies_to_b2c": _form_bool(form, "applies_to_b2c"),
+        "observations": str(form.get("observations", "")),
+    }
+    try:
+        channel = create_channel(db, **form_data)
+        return _redirect(f"/master-data/channels/{channel.id}/edit")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="channel_form.html",
+            context={
+                "title": "New Channel",
+                "form_action": "/master-data/channels",
+                "channel": None,
+                "form_data": form_data,
+                "error": str(exc),
+            },
+        )
+
+
+@app.get("/master-data/channels/{channel_id}/edit", response_class=HTMLResponse)
+def edit_channel(channel_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    channel = db.query(Channel).filter(Channel.id == channel_id).one()
+    return templates.TemplateResponse(
+        request=request,
+        name="channel_form.html",
+        context={
+            "title": "Edit Channel",
+            "form_action": f"/master-data/channels/{channel.id}/edit",
+            "channel": channel,
+            "form_data": {
+                "name": channel.name,
+                "active": channel.active,
+                "applies_to_b2b": channel.applies_to_b2b,
+                "applies_to_b2c": channel.applies_to_b2c,
+                "observations": channel.observations or "",
+            },
+            "error": None,
+        },
+    )
+
+
+@app.post("/master-data/channels/{channel_id}/edit")
+async def update_channel_route(channel_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    form = await request.form()
+    form_data = {
+        "name": str(form.get("name", "")),
+        "active": _form_bool(form, "active"),
+        "applies_to_b2b": _form_bool(form, "applies_to_b2b"),
+        "applies_to_b2c": _form_bool(form, "applies_to_b2c"),
+        "observations": str(form.get("observations", "")),
+    }
+    try:
+        update_channel(db, channel_id=channel_id, **form_data)
+        return _redirect("/master-data/channels")
+    except MasterDataValidationError as exc:
+        db.rollback()
+        channel = db.query(Channel).filter(Channel.id == channel_id).one()
+        return templates.TemplateResponse(
+            request=request,
+            name="channel_form.html",
+            context={
+                "title": "Edit Channel",
+                "form_action": f"/master-data/channels/{channel.id}/edit",
+                "channel": channel,
                 "form_data": form_data,
                 "error": str(exc),
             },
@@ -2940,12 +3073,7 @@ def new_b2b_order(
     customers = db.query(B2BCustomer).filter(B2BCustomer.active.is_(True)).order_by(B2BCustomer.customer_name).all()
     selected_customer = None
     catalog = []
-    payment_types = (
-        db.query(LoyversePaymentTypeMapping)
-        .filter(LoyversePaymentTypeMapping.active.is_(True))
-        .order_by(LoyversePaymentTypeMapping.name)
-        .all()
-    )
+    channels = list_channel_options(db, applies_to="b2b")
     if customer_id.strip():
         selected_customer = db.query(B2BCustomer).filter(B2BCustomer.id == int(customer_id)).one_or_none()
         if selected_customer is not None:
@@ -2966,7 +3094,7 @@ def new_b2b_order(
             "customers": customers,
             "selected_customer": selected_customer,
             "catalog": catalog,
-            "payment_types": payment_types,
+            "channels": channels,
             "error": None,
             "min_delivery_date": date.today() + timedelta(days=1),
         },
@@ -2989,12 +3117,7 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
         customers = db.query(B2BCustomer).filter(B2BCustomer.active.is_(True)).order_by(B2BCustomer.customer_name).all()
         selected_customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one_or_none()
         catalog = []
-        payment_types = (
-            db.query(LoyversePaymentTypeMapping)
-            .filter(LoyversePaymentTypeMapping.active.is_(True))
-            .order_by(LoyversePaymentTypeMapping.name)
-            .all()
-        )
+        channels = list_channel_options(db, applies_to="b2b")
         if selected_customer is not None:
             catalog = (
                 db.query(B2BCustomerProduct)
@@ -3010,7 +3133,7 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
                 "customers": customers,
                 "selected_customer": selected_customer,
                 "catalog": catalog,
-                "payment_types": payment_types,
+                "channels": channels,
                 "error": str(exc),
                 "min_delivery_date": date.today() + timedelta(days=1),
                 "submitted_observations": observations,
@@ -3071,12 +3194,7 @@ def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db
         .all()
     )
     catalog_by_sku = {item.sku: item for item in catalog}
-    payment_types = (
-        db.query(LoyversePaymentTypeMapping)
-        .filter(LoyversePaymentTypeMapping.active.is_(True))
-        .order_by(LoyversePaymentTypeMapping.name)
-        .all()
-    )
+    channels = list_channel_options(db, order.channel_id, applies_to="b2b")
     return templates.TemplateResponse(
         request=request,
         name="b2b_order_edit.html",
@@ -3086,7 +3204,12 @@ def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db
             "lines": lines,
             "catalog": catalog,
             "catalog_by_sku": catalog_by_sku,
-            "payment_types": payment_types,
+            "channels": channels,
+            "selected_channel_id": _default_channel_selection(
+                channels,
+                current_channel_id=order.channel_id,
+                snapshot_name=order.b2b_channel_name_snapshot,
+            ),
             "error": None,
         },
     )
@@ -3127,12 +3250,7 @@ async def update_b2b_order(order_id: int, request: Request, db: Session = Depend
             .all()
         )
         catalog_by_sku = {item.sku: item for item in catalog}
-        payment_types = (
-            db.query(LoyversePaymentTypeMapping)
-            .filter(LoyversePaymentTypeMapping.active.is_(True))
-            .order_by(LoyversePaymentTypeMapping.name)
-            .all()
-        )
+        channels = list_channel_options(db, order.channel_id, applies_to="b2b")
         return templates.TemplateResponse(
             request=request,
             name="b2b_order_edit.html",
@@ -3142,7 +3260,12 @@ async def update_b2b_order(order_id: int, request: Request, db: Session = Depend
                 "lines": lines,
                 "catalog": catalog,
                 "catalog_by_sku": catalog_by_sku,
-                "payment_types": payment_types,
+                "channels": channels,
+                "selected_channel_id": _default_channel_selection(
+                    channels,
+                    current_channel_id=order.channel_id,
+                    snapshot_name=order.b2b_channel_name_snapshot,
+                ),
                 "error": str(exc),
                 "submitted_observations": observations,
                 "submitted_b2b_channel_id": b2b_channel_id,
@@ -3217,6 +3340,7 @@ def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
     products = _list_b2c_sellable_products(db)
     discount_rules = list_discount_rule_options(db)
     b2c_customers = list_b2c_customer_options(db)
+    channels = list_channel_options(db, applies_to="b2c")
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_form.html",
@@ -3227,7 +3351,7 @@ def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             "discount_rules": discount_rules,
             "discount_rule_ids": {rule.id for rule in discount_rules},
             "b2c_customers": b2c_customers,
-            "channels": _b2c_channels(),
+            "channels": channels,
             "error": None,
             "default_order_date": date.today().isoformat(),
         },
@@ -3248,7 +3372,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
     canton_snapshot = str(form.get("canton_snapshot", ""))
     district_snapshot = str(form.get("district_snapshot", ""))
     customer_observations_snapshot = str(form.get("customer_observations_snapshot", ""))
-    channel = str(form.get("channel", ""))
+    channel_id = str(form.get("channel_id", ""))
     discount_rule_id = str(form.get("discount_rule_id", ""))
     observations = str(form.get("observations", ""))
     try:
@@ -3265,7 +3389,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
             canton_snapshot=canton_snapshot,
             district_snapshot=district_snapshot,
             customer_observations_snapshot=customer_observations_snapshot,
-            channel=channel,
+            channel_id=channel_id,
             discount_rule_id=discount_rule_id,
             observations=observations,
             line_inputs=line_inputs,
@@ -3278,6 +3402,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
         discount_rules = list_discount_rule_options(db, current_discount_rule_id)
         current_b2c_customer_id = int(b2c_customer_id) if b2c_customer_id.isdigit() else None
         b2c_customers = list_b2c_customer_options(db, current_b2c_customer_id)
+        channels = list_channel_options(db, applies_to="b2c")
         return templates.TemplateResponse(
             request=request,
             name="b2c_order_form.html",
@@ -3288,7 +3413,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
                 "discount_rules": discount_rules,
                 "discount_rule_ids": {rule.id for rule in discount_rules},
                 "b2c_customers": b2c_customers,
-                "channels": _b2c_channels(),
+                "channels": channels,
                 "error": str(exc),
                 "default_order_date": order_date_text or date.today().isoformat(),
                 "submitted_b2c_customer_id": b2c_customer_id,
@@ -3300,7 +3425,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
                 "submitted_canton_snapshot": canton_snapshot,
                 "submitted_district_snapshot": district_snapshot,
                 "submitted_customer_observations_snapshot": customer_observations_snapshot,
-                "submitted_channel": channel,
+                "submitted_channel_id": channel_id,
                 "submitted_discount_rule_id": discount_rule_id,
                 "submitted_observations": observations,
                 "submitted_lines": line_inputs,
@@ -3338,6 +3463,7 @@ def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db
     products = _list_b2c_sellable_products(db)
     discount_rules = list_discount_rule_options(db, order.discount_rule_id)
     b2c_customers = list_b2c_customer_options(db, order.b2c_customer_id)
+    channels = list_channel_options(db, order.channel_id, applies_to="b2c")
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_edit.html",
@@ -3350,7 +3476,12 @@ def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db
             "discount_rules": discount_rules,
             "discount_rule_ids": {rule.id for rule in discount_rules},
             "b2c_customers": b2c_customers,
-            "channels": _b2c_channels(),
+            "channels": channels,
+            "selected_channel_id": _default_channel_selection(
+                channels,
+                current_channel_id=order.channel_id,
+                snapshot_name=order.channel,
+            ),
             "error": None,
         },
     )
@@ -3369,7 +3500,7 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
     canton_snapshot = str(form.get("canton_snapshot", ""))
     district_snapshot = str(form.get("district_snapshot", ""))
     customer_observations_snapshot = str(form.get("customer_observations_snapshot", ""))
-    channel = str(form.get("channel", ""))
+    channel_id = str(form.get("channel_id", ""))
     discount_rule_id = str(form.get("discount_rule_id", ""))
     observations = str(form.get("observations", ""))
     line_ids = form.getlist("line_id")
@@ -3399,7 +3530,7 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
             canton_snapshot=canton_snapshot,
             district_snapshot=district_snapshot,
             customer_observations_snapshot=customer_observations_snapshot,
-            channel=channel,
+            channel_id=channel_id,
             discount_rule_id=discount_rule_id,
             observations=observations,
             line_updates=line_updates,
@@ -3422,6 +3553,7 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
         discount_rules = list_discount_rule_options(db, current_discount_rule_id)
         current_b2c_customer_id = int(b2c_customer_id) if b2c_customer_id.isdigit() else order.b2c_customer_id
         b2c_customers = list_b2c_customer_options(db, current_b2c_customer_id)
+        channels = list_channel_options(db, order.channel_id, applies_to="b2c")
         return templates.TemplateResponse(
             request=request,
             name="b2c_order_edit.html",
@@ -3434,7 +3566,12 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
                 "discount_rules": discount_rules,
                 "discount_rule_ids": {rule.id for rule in discount_rules},
                 "b2c_customers": b2c_customers,
-                "channels": _b2c_channels(),
+                "channels": channels,
+                "selected_channel_id": _default_channel_selection(
+                    channels,
+                    current_channel_id=order.channel_id,
+                    snapshot_name=order.channel,
+                ),
                 "error": str(exc),
                 "submitted_order_date": order_date_text,
                 "submitted_b2c_customer_id": b2c_customer_id,
@@ -3446,7 +3583,7 @@ async def update_b2c_order(order_id: int, request: Request, db: Session = Depend
                 "submitted_canton_snapshot": canton_snapshot,
                 "submitted_district_snapshot": district_snapshot,
                 "submitted_customer_observations_snapshot": customer_observations_snapshot,
-                "submitted_channel": channel,
+                "submitted_channel_id": channel_id,
                 "submitted_discount_rule_id": discount_rule_id,
                 "submitted_observations": observations,
                 "submitted_line_updates": submitted_line_updates,

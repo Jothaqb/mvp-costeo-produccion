@@ -10,8 +10,8 @@ from app.models import (
     B2BCustomerProduct,
     B2BSalesOrder,
     B2BSalesOrderLine,
+    Channel,
     InventoryTransaction,
-    LoyversePaymentTypeMapping,
     Product,
 )
 from app.services.inventory_ledger_service import (
@@ -232,14 +232,14 @@ def create_sales_order(
     delivery_date: date,
     line_inputs: list[dict[str, str]],
     observations: str,
-    b2b_channel_id: str,
+    channel_id: str,
 ) -> B2BSalesOrder:
     validate_future_delivery_date(delivery_date)
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one_or_none()
     if customer is None or not customer.active:
         raise B2BValidationError("Active customer is required.")
 
-    channel = _active_payment_type_for_id(db, b2b_channel_id)
+    channel = _active_channel_for_id(db, channel_id, requires_b2b=True)
     line_data = _build_line_data(db, customer.id, line_inputs, require_at_least_one=True)
     order = B2BSalesOrder(
         order_number=_generate_b2b_order_number(db),
@@ -253,12 +253,12 @@ def create_sales_order(
         legal_id_snapshot=customer.legal_id,
         phone_snapshot=customer.phone,
         loyverse_customer_id_snapshot=customer.loyverse_customer_id,
+        channel_id=channel.id,
         delivery_date=delivery_date,
         status="draft",
         total_amount=ZERO,
         observations=observations.strip() or None,
         b2b_channel_name_snapshot=channel.name,
-        loyverse_payment_type_id_snapshot=channel.loyverse_payment_type_id,
     )
     db.add(order)
     db.flush()
@@ -276,14 +276,19 @@ def update_sales_order_lines(
     deleted_line_ids: list[int],
     new_line_inputs: list[dict[str, str]],
     observations: str,
-    b2b_channel_id: str,
+    channel_id: str,
 ) -> B2BSalesOrder:
     order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
     _ensure_order_editable(order)
-    channel = _active_payment_type_for_id(db, b2b_channel_id)
+    channel = _active_channel_for_id(
+        db,
+        channel_id,
+        requires_b2b=True,
+        allow_inactive_channel_id=order.channel_id,
+    )
     order.observations = observations.strip() or None
+    order.channel_id = channel.id
     order.b2b_channel_name_snapshot = channel.name
-    order.loyverse_payment_type_id_snapshot = channel.loyverse_payment_type_id
     catalog_by_sku = _active_customer_catalog_by_sku(db, order.customer_id)
 
     deleted_ids = set(deleted_line_ids)
@@ -510,21 +515,29 @@ def _submitted_line_inputs(line_inputs: list[dict[str, str]]) -> list[dict[str, 
     ]
 
 
-def _active_payment_type_for_id(db: Session, payment_type_id: str) -> LoyversePaymentTypeMapping:
-    selected_id = (payment_type_id or "").strip()
+def _active_channel_for_id(
+    db: Session,
+    channel_id: str,
+    *,
+    requires_b2b: bool = False,
+    allow_inactive_channel_id: int | None = None,
+) -> Channel:
+    selected_id = (channel_id or "").strip()
     if not selected_id:
         raise B2BValidationError("B2B Channel is required.")
-    payment_type = (
-        db.query(LoyversePaymentTypeMapping)
-        .filter(
-            LoyversePaymentTypeMapping.active.is_(True),
-            LoyversePaymentTypeMapping.loyverse_payment_type_id == selected_id,
-        )
-        .one_or_none()
-    )
-    if payment_type is None:
-        raise B2BValidationError("Selected B2B Channel is not active in the Loyverse mapping cache.")
-    return payment_type
+
+    if not selected_id.isdigit():
+        raise B2BValidationError("Selected B2B Channel is invalid.")
+
+    selected_channel_id = int(selected_id)
+    channel = db.query(Channel).filter(Channel.id == selected_channel_id).one_or_none()
+    if channel is None:
+        raise B2BValidationError("Selected B2B Channel does not exist.")
+    if requires_b2b and not channel.applies_to_b2b and channel.id != allow_inactive_channel_id:
+        raise B2BValidationError("Selected B2B Channel is not valid for B2B orders.")
+    if not channel.active and channel.id != allow_inactive_channel_id:
+        raise B2BValidationError("Selected B2B Channel is not active.")
+    return channel
 
 
 def _active_customer_catalog_by_sku(db: Session, customer_id: int) -> dict[str, B2BCustomerProduct]:

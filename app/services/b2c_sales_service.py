@@ -9,6 +9,7 @@ from app.models import (
     B2CCustomer,
     B2CSalesOrder,
     B2CSalesOrderLine,
+    Channel,
     DiscountRule,
     InventoryTransaction,
     Product,
@@ -22,7 +23,6 @@ from app.services.inventory_ledger_service import (
 
 B2C_SEQUENCE_NAME = "b2c_sales_order"
 B2C_ORDER_PREFIX = "B2C"
-B2C_CHANNELS = {"whatsapp", "website", "other"}
 EDITABLE_STATUSES = {"draft"}
 ORDER_STATUSES = {"draft", "invoiced", "cancelled"}
 ALLOWED_STATUS_TRANSITIONS = {
@@ -68,12 +68,12 @@ def create_b2c_sales_order(
     canton_snapshot: str,
     district_snapshot: str,
     customer_observations_snapshot: str,
-    channel: str,
+    channel_id: str,
     discount_rule_id: str,
     observations: str,
     line_inputs: list[dict[str, str]],
 ) -> B2CSalesOrder:
-    normalized_channel = _normalize_channel(channel)
+    selected_channel = _resolve_b2c_channel(db, channel_id)
     line_data = _build_b2c_line_data(db, line_inputs, require_at_least_one=True)
     discount_rule = _resolve_b2c_discount_rule(db, discount_rule_id)
     customer = _resolve_b2c_customer(db, b2c_customer_id)
@@ -89,7 +89,8 @@ def create_b2c_sales_order(
         canton_snapshot=_clean_optional_text(canton_snapshot),
         district_snapshot=_clean_optional_text(district_snapshot),
         customer_observations_snapshot=_clean_optional_text(customer_observations_snapshot),
-        channel=normalized_channel,
+        channel=selected_channel.name,
+        channel_id=selected_channel.id,
         status="draft",
         discount_amount=ZERO,
         subtotal_amount=ZERO,
@@ -120,7 +121,7 @@ def update_b2c_sales_order(
     canton_snapshot: str,
     district_snapshot: str,
     customer_observations_snapshot: str,
-    channel: str,
+    channel_id: str,
     discount_rule_id: str,
     observations: str,
     line_updates: list[dict[str, str]],
@@ -145,7 +146,13 @@ def update_b2c_sales_order(
     order.canton_snapshot = _clean_optional_text(canton_snapshot)
     order.district_snapshot = _clean_optional_text(district_snapshot)
     order.customer_observations_snapshot = _clean_optional_text(customer_observations_snapshot)
-    order.channel = _normalize_channel(channel)
+    selected_channel = _resolve_b2c_channel(
+        db,
+        channel_id,
+        allow_inactive_channel_id=order.channel_id,
+    )
+    order.channel_id = selected_channel.id
+    order.channel = selected_channel.name
     order.observations = _clean_optional_text(observations)
     discount_rule = _resolve_b2c_discount_rule(
         db,
@@ -609,11 +616,27 @@ def _bootstrap_next_b2c_order_sequence(db: Session) -> int:
     return highest + 1
 
 
-def _normalize_channel(channel: str) -> str:
-    normalized = (channel or "").strip().lower()
-    if normalized not in B2C_CHANNELS:
+def _resolve_b2c_channel(
+    db: Session,
+    raw_channel_id: str | int | None,
+    *,
+    allow_inactive_channel_id: int | None = None,
+) -> Channel:
+    text = str(raw_channel_id or "").strip()
+    if not text:
         raise B2CValidationError("Channel is required.")
-    return normalized
+    if not text.isdigit():
+        raise B2CValidationError("Selected channel is invalid.")
+
+    channel_id = int(text)
+    channel = db.query(Channel).filter(Channel.id == channel_id).one_or_none()
+    if channel is None:
+        raise B2CValidationError("Selected channel does not exist.")
+    if not channel.applies_to_b2c and channel.id != allow_inactive_channel_id:
+        raise B2CValidationError("Selected channel is not valid for B2C orders.")
+    if not channel.active and channel.id != allow_inactive_channel_id:
+        raise B2CValidationError("Selected channel is not active.")
+    return channel
 
 
 def _clean_optional_text(value: str) -> str | None:

@@ -6,6 +6,9 @@
     <h1>Edit {{ order.order_number }}</h1>
     <p>Order date: {{ order.order_date }} | Channel: {{ order.channel }}</p>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if not order.channel_id and order.channel %}
+      <p class="muted-inline">Legacy channel snapshot: {{ order.channel }}. Saving this order with a selected Channel Master value will link it internally without changing historical text on other orders.</p>
+    {% endif %}
 
     <form method="post" action="/b2c/orders/{{ order.id }}/edit">
       <label for="order_date">Order date</label>
@@ -54,12 +57,12 @@
       <label for="customer_observations_snapshot">Customer observations</label>
       <textarea id="customer_observations_snapshot" name="customer_observations_snapshot">{{ submitted_customer_observations_snapshot if submitted_customer_observations_snapshot is defined else order.customer_observations_snapshot or "" }}</textarea>
 
-      <label for="channel">Channel</label>
-      {% set selected_channel = submitted_channel if submitted_channel is defined else order.channel %}
-      <select id="channel" name="channel" required>
+      <label for="channel_id">Channel</label>
+      {% set current_channel_id = submitted_channel_id if submitted_channel_id is defined else selected_channel_id %}
+      <select id="channel_id" name="channel_id" required>
         <option value="">Select channel...</option>
         {% for channel in channels %}
-          <option value="{{ channel }}" {% if selected_channel == channel %}selected{% endif %}>{{ channel }}</option>
+          <option value="{{ channel.id }}" {% if current_channel_id == (channel.id|string) %}selected{% endif %}>{{ channel.name }}{% if not channel.active %} (inactive){% endif %}</option>
         {% endfor %}
       </select>
 

@@ -57,11 +57,11 @@
       <label for="customer_observations_snapshot">Customer observations</label>
       <textarea id="customer_observations_snapshot" name="customer_observations_snapshot">{{ submitted_customer_observations_snapshot or "" }}</textarea>
 
-      <label for="channel">Channel</label>
-      <select id="channel" name="channel" required>
+      <label for="channel_id">Channel</label>
+      <select id="channel_id" name="channel_id" required>
         <option value="">Select channel...</option>
         {% for channel in channels %}
-          <option value="{{ channel }}" {% if submitted_channel is defined and submitted_channel == channel %}selected{% endif %}>{{ channel }}</option>
+          <option value="{{ channel.id }}" {% if submitted_channel_id is defined and submitted_channel_id == (channel.id|string) %}selected{% endif %}>{{ channel.name }}</option>
         {% endfor %}
       </select>
 

@@ -6,14 +6,17 @@
     <h1>Edit {{ order.order_number }}</h1>
     <p>{{ order.customer_name_snapshot }} | Delivery: {{ order.delivery_date }}</p>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if not order.channel_id and order.b2b_channel_name_snapshot %}
+      <p class="muted-inline">Legacy channel snapshot: {{ order.b2b_channel_name_snapshot }}. Saving this order with a selected Channel Master value will link it internally without changing historical text on other orders.</p>
+    {% endif %}
 
     <form method="post" action="/b2b/orders/{{ order.id }}/edit">
       <label for="b2b_channel_id">B2B Channel</label>
       <select id="b2b_channel_id" name="b2b_channel_id" required>
         <option value="">Select channel...</option>
-        {% set selected_channel_id = submitted_b2b_channel_id if submitted_b2b_channel_id is defined else order.loyverse_payment_type_id_snapshot %}
-        {% for payment_type in payment_types %}
-          <option value="{{ payment_type.loyverse_payment_type_id }}" {% if selected_channel_id == payment_type.loyverse_payment_type_id %}selected{% endif %}>{{ payment_type.name }}</option>
+        {% set current_channel_id = submitted_b2b_channel_id if submitted_b2b_channel_id is defined else selected_channel_id %}
+        {% for channel in channels %}
+          <option value="{{ channel.id }}" {% if current_channel_id == (channel.id|string) %}selected{% endif %}>{{ channel.name }}{% if not channel.active %} (inactive){% endif %}</option>
         {% endfor %}
       </select>
 
