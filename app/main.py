@@ -194,7 +194,7 @@ from app.services.supplier_import_service import (
     SupplierImportValidationError,
     import_suppliers_csv,
 )
-from app.services.total_sales_service import get_total_sales_rows
+from app.services.total_sales_service import get_sales_summary, get_total_sales_rows
 from app.services.production_loyverse_inventory_preview_service import (
     ProductionInventoryPreviewError,
     build_production_inventory_preview,
@@ -1668,6 +1668,58 @@ def total_sales(
             "filters": filters,
             "error": error,
             "result_count": len(rows),
+        },
+    )
+
+
+@app.get("/sales/summary", response_class=HTMLResponse)
+def sales_summary(
+    request: Request,
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sales_type: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    filters = {
+        "date_from": date_from.strip(),
+        "date_to": date_to.strip(),
+        "sales_type": (sales_type.strip().lower() or "all"),
+    }
+    error = None
+    summary = None
+
+    try:
+        parsed_date_from = _parse_optional_date(filters["date_from"])
+        parsed_date_to = _parse_optional_date(filters["date_to"])
+        if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
+            raise ValueError("Date from cannot be later than date to.")
+        if filters["sales_type"] not in {"all", "b2b", "b2c"}:
+            filters["sales_type"] = "all"
+        summary = get_sales_summary(
+            db,
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
+            sales_type=filters["sales_type"],
+        )
+    except ValueError:
+        error = "Dates must use YYYY-MM-DD."
+        if filters["date_from"] and filters["date_to"]:
+            try:
+                parsed_date_from = _parse_optional_date(filters["date_from"])
+                parsed_date_to = _parse_optional_date(filters["date_to"])
+                if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
+                    error = "Date from cannot be later than date to."
+            except ValueError:
+                pass
+
+    return templates.TemplateResponse(
+        request=request,
+        name="sales_summary.html",
+        context={
+            "title": "Sales Summary",
+            "summary": summary,
+            "filters": filters,
+            "error": error,
         },
     )
 

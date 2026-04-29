@@ -9,6 +9,11 @@ from sqlalchemy.orm import Session
 from app.models import B2BSalesOrder, B2BSalesOrderLine, B2CSalesOrder, B2CSalesOrderLine, Product, ProductCategory
 
 
+ZERO = Decimal("0")
+HUNDRED = Decimal("100")
+PERCENT_QUANT = Decimal("0.1")
+
+
 @dataclass(frozen=True)
 class TotalSalesRow:
     sales_source: str
@@ -27,6 +32,26 @@ class TotalSalesRow:
     order_status: str
     order_created_at: datetime
     line_number: int
+
+
+@dataclass(frozen=True)
+class SalesSummaryBucket:
+    label: str
+    total_net_sales: Decimal
+    total_orders: int
+    total_lines: int
+    total_quantity: Decimal
+    total_discount: Decimal
+    average_order_value: Decimal
+    average_line_value: Decimal
+    sales_percent: Decimal
+
+
+@dataclass(frozen=True)
+class SalesSummary:
+    total: SalesSummaryBucket
+    b2b: SalesSummaryBucket
+    b2c: SalesSummaryBucket
 
 
 def get_total_sales_rows(
@@ -81,6 +106,39 @@ def get_total_sales_rows(
         ),
         reverse=True,
     )
+
+
+def get_sales_summary(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sales_type: str = "all",
+) -> SalesSummary:
+    rows = get_total_sales_rows(
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        sales_type=sales_type,
+    )
+    total_bucket = _build_sales_summary_bucket("Total", rows, total_net_sales_base=None)
+    b2b_rows = [row for row in rows if row.sales_source == "B2B"]
+    b2c_rows = [row for row in rows if row.sales_source == "B2C"]
+    b2b_bucket = _build_sales_summary_bucket("B2B", b2b_rows, total_net_sales_base=total_bucket.total_net_sales)
+    b2c_bucket = _build_sales_summary_bucket("B2C", b2c_rows, total_net_sales_base=total_bucket.total_net_sales)
+    total_percent = HUNDRED if total_bucket.total_net_sales > ZERO else ZERO
+    total_bucket = SalesSummaryBucket(
+        label=total_bucket.label,
+        total_net_sales=total_bucket.total_net_sales,
+        total_orders=total_bucket.total_orders,
+        total_lines=total_bucket.total_lines,
+        total_quantity=total_bucket.total_quantity,
+        total_discount=total_bucket.total_discount,
+        average_order_value=total_bucket.average_order_value,
+        average_line_value=total_bucket.average_line_value,
+        sales_percent=total_percent,
+    )
+    return SalesSummary(total=total_bucket, b2b=b2b_bucket, b2c=b2c_bucket)
 
 
 def _get_b2b_sales_rows(
@@ -186,3 +244,45 @@ def _current_category_name_by_sku(db: Session, skus: set[str]) -> dict[str, str 
         .all()
     )
     return {sku: category_name for sku, category_name in rows}
+
+
+def _build_sales_summary_bucket(
+    label: str,
+    rows: list[TotalSalesRow],
+    *,
+    total_net_sales_base: Decimal | None,
+) -> SalesSummaryBucket:
+    total_net_sales = sum((row.line_total for row in rows), ZERO)
+    total_lines = len(rows)
+    total_quantity = sum((row.quantity for row in rows), ZERO)
+    total_discount = sum((((row.discount_amount or ZERO) for row in rows)), ZERO)
+    total_orders = len({(row.sales_source, row.order_id) for row in rows})
+    average_order_value = _safe_divide(total_net_sales, Decimal(total_orders))
+    average_line_value = _safe_divide(total_net_sales, Decimal(total_lines))
+    if total_net_sales_base is None:
+        sales_percent = ZERO
+    else:
+        sales_percent = _safe_percent(total_net_sales, total_net_sales_base)
+    return SalesSummaryBucket(
+        label=label,
+        total_net_sales=total_net_sales,
+        total_orders=total_orders,
+        total_lines=total_lines,
+        total_quantity=total_quantity,
+        total_discount=total_discount,
+        average_order_value=average_order_value,
+        average_line_value=average_line_value,
+        sales_percent=sales_percent,
+    )
+
+
+def _safe_divide(numerator: Decimal, denominator: Decimal) -> Decimal:
+    if denominator == ZERO:
+        return ZERO
+    return numerator / denominator
+
+
+def _safe_percent(part: Decimal, whole: Decimal) -> Decimal:
+    if whole == ZERO:
+        return ZERO
+    return ((part * HUNDRED) / whole).quantize(PERCENT_QUANT)

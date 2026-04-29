@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Sales</p>
+    <h1>Sales Summary</h1>
+    <p class="lead">Review a simple summary of invoiced B2B and B2C sales from the ERP foundation created in Total Sales.</p>
+  </section>
+
+  <section>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form method="get" action="/sales/summary">
+      <label for="date_from">Date from</label>
+      <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
+
+      <label for="date_to">Date to</label>
+      <input id="date_to" name="date_to" type="date" value="{{ filters.date_to }}">
+
+      <label for="sales_type">Sales type</label>
+      <select id="sales_type" name="sales_type">
+        <option value="all" {% if filters.sales_type == "all" %}selected{% endif %}>All</option>
+        <option value="b2b" {% if filters.sales_type == "b2b" %}selected{% endif %}>B2B</option>
+        <option value="b2c" {% if filters.sales_type == "b2c" %}selected{% endif %}>B2C</option>
+      </select>
+
+      <button type="submit">Apply filters</button>
+    </form>
+  </section>
+
+  {% if summary %}
+    <section class="module-grid" aria-label="Sales summary KPIs">
+      <div class="module-card">
+        <p class="eyebrow">Net sales</p>
+        <h2>{{ fmt.money_crc(summary.total.total_net_sales) }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Orders</p>
+        <h2>{{ summary.total.total_orders }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Lines</p>
+        <h2>{{ summary.total.total_lines }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Quantity</p>
+        <h2>{{ summary.total.total_quantity }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Discount</p>
+        <h2>{{ fmt.money_crc(summary.total.total_discount) }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Average order value</p>
+        <h2>{{ fmt.money_crc(summary.total.average_order_value) }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Average line value</p>
+        <h2>{{ fmt.money_crc(summary.total.average_line_value) }}</h2>
+      </div>
+      <div class="module-card">
+        <p class="eyebrow">Mix</p>
+        <h2>B2B {{ "{:,.1f}".format(summary.b2b.sales_percent) }}% / B2C {{ "{:,.1f}".format(summary.b2c.sales_percent) }}%</h2>
+      </div>
+    </section>
+
+    <section>
+      <table>
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>Net sales</th>
+            <th>Orders</th>
+            <th>Lines</th>
+            <th>Quantity</th>
+            <th>Discount</th>
+            <th>Average order value</th>
+            <th>Average line value</th>
+            <th>Sales mix %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for bucket in [summary.b2b, summary.b2c, summary.total] %}
+            <tr>
+              <td>{{ bucket.label }}</td>
+              <td>{{ fmt.money_crc(bucket.total_net_sales) }}</td>
+              <td>{{ bucket.total_orders }}</td>
+              <td>{{ bucket.total_lines }}</td>
+              <td>{{ bucket.total_quantity }}</td>
+              <td>{{ fmt.money_crc(bucket.total_discount) }}</td>
+              <td>{{ fmt.money_crc(bucket.average_order_value) }}</td>
+              <td>{{ fmt.money_crc(bucket.average_line_value) }}</td>
+              <td>{{ "{:,.1f}".format(bucket.sales_percent) }}%</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+{% endblock %}
