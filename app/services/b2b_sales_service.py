@@ -374,6 +374,7 @@ def invoice_b2b_order_in_erp(db: Session, order_id: int) -> B2BSalesOrder:
         for prepared_line in prepared_lines:
             _post_b2b_invoice_line(db, order, prepared_line, transaction_date)
 
+        _snapshot_b2b_order_invoice_margin(order)
         order.status = "invoiced"
         db.commit()
         db.refresh(order)
@@ -486,6 +487,21 @@ def _append_warning_notes(base_note: str, warnings: list[str]) -> str:
     if not unique_warnings:
         return base_note
     return f"{base_note} " + " ".join(f"Warning: {warning}" for warning in unique_warnings)
+
+
+def _snapshot_b2b_order_invoice_margin(order: B2BSalesOrder) -> None:
+    net_sales = sum((line.line_total or ZERO for line in order.lines), ZERO).quantize(SNAPSHOT_QUANT)
+    cost_total_snapshot = sum((line.cost_total_snapshot or ZERO for line in order.lines), ZERO).quantize(SNAPSHOT_QUANT)
+    gross_margin_amount = (net_sales - cost_total_snapshot).quantize(SNAPSHOT_QUANT)
+    gross_margin_percent = (
+        (gross_margin_amount / net_sales).quantize(SNAPSHOT_QUANT)
+        if net_sales > ZERO
+        else ZERO.quantize(SNAPSHOT_QUANT)
+    )
+
+    order.cost_total_snapshot = cost_total_snapshot
+    order.gross_margin_amount = gross_margin_amount
+    order.gross_margin_percent = gross_margin_percent
 
 
 def _build_line_data(

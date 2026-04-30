@@ -35,7 +35,10 @@
           <th>Customer</th>
           <th>Delivery date</th>
           <th>Status</th>
-          <th>Total</th>
+          <th>Net Sales</th>
+          <th>COGS</th>
+          <th>Gross Profit</th>
+          <th>Gross Profit %</th>
           <th>Created</th>
           <th>Detail</th>
         </tr>
@@ -48,6 +51,9 @@
             <td>{{ order.delivery_date }}</td>
             <td>{{ order.status }}</td>
             <td>{{ fmt.money_crc(order.total_amount) }}</td>
+            <td>{{ fmt.money_crc(order.cost_total_snapshot) if order.cost_total_snapshot is not none else "—" }}</td>
+            <td>{{ fmt.money_crc(order.gross_margin_amount) if order.gross_margin_amount is not none else "—" }}</td>
+            <td>{{ "{:.2f}%".format(order.gross_margin_percent * 100) if order.gross_margin_percent is not none else "—" }}</td>
             <td>{{ order.created_at }}</td>
             <td><a href="/b2b/orders/{{ order.id }}">View</a></td>
           </tr>

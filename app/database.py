@@ -526,6 +526,15 @@ def ensure_b2b_invoice_snapshot_columns() -> None:
     with engine.begin() as connection:
         _ensure_columns(
             connection,
+            "b2b_sales_orders",
+            {
+                "cost_total_snapshot": "NUMERIC(12, 4)",
+                "gross_margin_amount": "NUMERIC(12, 4)",
+                "gross_margin_percent": "NUMERIC(12, 4)",
+            },
+        )
+        _ensure_columns(
+            connection,
             "b2b_sales_order_lines",
             {
                 "cost_unit_snapshot": "NUMERIC(12, 4)",

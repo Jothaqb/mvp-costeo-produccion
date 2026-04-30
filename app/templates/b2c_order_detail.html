@@ -24,10 +24,10 @@
       <div><dt>Discount</dt><dd>{{ order.discount_name_snapshot or "" }}</dd></div>
       <div><dt>Discount value</dt><dd>{{ order.discount_value_snapshot if order.discount_value_snapshot is not none else "" }}</dd></div>
       <div><dt>Discount amount</dt><dd>{{ fmt.money_crc(order.discount_amount) }}</dd></div>
-      <div><dt>Total</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
-      <div><dt>Order cost snapshot</dt><dd>{{ fmt.money_crc(order.cost_total_snapshot) }}</dd></div>
-      <div><dt>Order gross margin</dt><dd>{{ fmt.money_crc(order.gross_margin_amount) }}</dd></div>
-      <div><dt>Order gross margin %</dt><dd>{{ order.gross_margin_percent if order.gross_margin_percent is not none else "" }}</dd></div>
+      <div><dt>Net Sales</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
+      <div><dt>COGS</dt><dd>{{ fmt.money_crc(order.cost_total_snapshot) }}</dd></div>
+      <div><dt>Gross Profit</dt><dd>{{ fmt.money_crc(order.gross_margin_amount) }}</dd></div>
+      <div><dt>Gross Profit %</dt><dd>{{ "{:.2f}%".format(order.gross_margin_percent * 100) if order.gross_margin_percent is not none else "" }}</dd></div>
       <div><dt>Observations</dt><dd>{{ order.observations or "" }}</dd></div>
     </dl>
 
@@ -62,9 +62,9 @@
           <th>Gross line total</th>
           <th>Discount snapshot</th>
           <th>Net line total</th>
-          <th>Cost total snapshot</th>
-          <th>Gross margin</th>
-          <th>Gross margin %</th>
+          <th>COGS</th>
+          <th>Gross Profit</th>
+          <th>Gross Profit %</th>
         </tr>
       </thead>
       <tbody>
@@ -80,7 +80,7 @@
             <td>{{ fmt.money_crc(line.net_line_total_snapshot) }}</td>
             <td>{{ fmt.money_crc(line.cost_total_snapshot) }}</td>
             <td>{{ fmt.money_crc(line.gross_margin_amount) }}</td>
-            <td>{{ line.gross_margin_percent if line.gross_margin_percent is not none else "" }}</td>
+            <td>{{ "{:.2f}%".format(line.gross_margin_percent * 100) if line.gross_margin_percent is not none else "" }}</td>
           </tr>
         {% endfor %}
       </tbody>

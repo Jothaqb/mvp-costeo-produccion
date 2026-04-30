@@ -10,7 +10,10 @@
       <div><dt>Status</dt><dd>{{ order.status }}</dd></div>
       <div><dt>Customer</dt><dd>{{ order.customer_name_snapshot }}</dd></div>
       <div><dt>Delivery date</dt><dd>{{ order.delivery_date }}</dd></div>
-      <div><dt>Total</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
+      <div><dt>Net Sales</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
+      <div><dt>COGS</dt><dd>{{ fmt.money_crc(order.cost_total_snapshot) if order.cost_total_snapshot is not none else "—" }}</dd></div>
+      <div><dt>Gross Profit</dt><dd>{{ fmt.money_crc(order.gross_margin_amount) if order.gross_margin_amount is not none else "—" }}</dd></div>
+      <div><dt>Gross Profit %</dt><dd>{{ "{:.2f}%".format(order.gross_margin_percent * 100) if order.gross_margin_percent is not none else "—" }}</dd></div>
       <div><dt>B2B Channel</dt><dd>{{ order.b2b_channel_name_snapshot or "" }}</dd></div>
       <div><dt>Address</dt><dd>{{ order.address_snapshot or "" }}</dd></div>
       <div><dt>Legal name</dt><dd>{{ order.legal_name_snapshot or "" }}</dd></div>
