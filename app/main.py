@@ -203,6 +203,12 @@ from app.services.planning_service import (
     update_product_inventory_parameters,
     update_product_planner_quantities,
 )
+from app.services.purchase_order_historical_import_service import (
+    EXPECTED_HEADERS as PURCHASE_ORDER_HISTORICAL_IMPORT_HEADERS,
+    PurchaseOrderHistoricalImportResult,
+    PurchaseOrderHistoricalImportValidationError,
+    import_historical_purchase_orders_csv,
+)
 from app.services.supplier_import_service import (
     SupplierImportResult,
     SupplierImportValidationError,
@@ -2765,6 +2771,55 @@ def purchase_orders(
             "error": error,
             "message": message,
         },
+    )
+
+
+@app.get("/planning/purchase-orders/import", response_class=HTMLResponse)
+def purchase_orders_import_form(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="purchase_order_import_form.html",
+        context={"title": "Import Historical Purchase Orders", "error": None, "result": None},
+    )
+
+
+@app.get("/planning/purchase-orders/import/template")
+def download_purchase_orders_import_template() -> Response:
+    return _csv_attachment_response(
+        filename="purchase_orders_historical_import_template.csv",
+        headers=PURCHASE_ORDER_HISTORICAL_IMPORT_HEADERS,
+        example_row=(
+            "PO-HIST-001",
+            "2025-01-15",
+            "Proveedor Ejemplo",
+            "SKU001",
+            "Producto ejemplo",
+            "10",
+            "10",
+            "1500",
+            "15000",
+            "Historical purchase order example",
+        ),
+    )
+
+
+@app.post("/planning/purchase-orders/import", response_class=HTMLResponse)
+async def import_purchase_orders(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    result: PurchaseOrderHistoricalImportResult | None = None
+    error = None
+    try:
+        result = import_historical_purchase_orders_csv(
+            db,
+            file_name=file.filename or "historical_purchase_orders.csv",
+            file_bytes=await file.read(),
+        )
+    except PurchaseOrderHistoricalImportValidationError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="purchase_order_import_form.html",
+        context={"title": "Import Historical Purchase Orders", "error": error, "result": result},
     )
 
 

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <p><a href="/planning/purchase-orders">Back to Purchase Orders</a></p>
+    <p><a href="/planning/purchase-orders/import/template">Download Purchase Orders CSV Template</a></p>
+    <p class="muted-inline">Historical imports create closed Purchase Orders for reporting only. They do not create Kardex, InventoryTransaction, or inventory movements.</p>
+    <form action="/planning/purchase-orders/import" method="post" enctype="multipart/form-data">
+      <label for="file">CSV file</label>
+      <input id="file" name="file" type="file" accept=".csv,text/csv" required>
+      <button type="submit">Import</button>
+    </form>
+  </section>
+
+  {% if result %}
+    <section>
+      <h2>Import Summary</h2>
+      <p><strong>File:</strong> {{ result.file_name }}</p>
+      <p><strong>Total rows read:</strong> {{ result.total_rows }}</p>
+      <p><strong>Purchase Orders created:</strong> {{ result.created_purchase_orders }}</p>
+      <p><strong>Existing Purchase Orders skipped:</strong> {{ result.skipped_existing_purchase_orders }}</p>
+      <p><strong>Lines created:</strong> {{ result.created_lines }}</p>
+      <p><strong>Invalid rows:</strong> {{ result.invalid_rows }}</p>
+      <p><strong>Warnings:</strong> {{ result.warnings|length }}</p>
+      <p><strong>Errors:</strong> {{ result.errors|length }}</p>
+    </section>
+
+    {% if result.warnings %}
+      <section>
+        <h2>Warnings</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>Warning</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for warning in result.warnings %}
+              <tr>
+                <td>{{ warning.row_number }}</td>
+                <td>{{ warning.message }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% endif %}
+
+    {% if result.errors %}
+      <section>
+        <h2>Errors</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Row</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for error_item in result.errors %}
+              <tr>
+                <td>{{ error_item.row_number }}</td>
+                <td>{{ error_item.message }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    {% endif %}
+  {% endif %}
+{% endblock %}
