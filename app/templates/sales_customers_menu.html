@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Sales</p>
+    <h1>Customers</h1>
+    <p class="lead">Choose the customer workspace you want to open.</p>
+    <p><a href="/sales">Back to Sales</a></p>
+  </section>
+
+  <section class="module-grid" aria-label="Customers sections">
+    <a class="module-card module-link-card" href="/b2b/customers" aria-label="Open B2B Customers">
+      <div>
+        <p class="eyebrow">Customers</p>
+        <h2>B2B Customers</h2>
+        <p>Maintain business customer master data and customer-specific commercial setup.</p>
+      </div>
+      <span class="module-entry">Open B2B Customers</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/sales/b2c-customers" aria-label="Open B2C Customers">
+      <div>
+        <p class="eyebrow">Customers</p>
+        <h2>B2C Customers</h2>
+        <p>Maintain direct-to-consumer customer records and reuse them in B2C orders.</p>
+      </div>
+      <span class="module-entry">Open B2C Customers</span>
+    </a>
+  </section>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Sales</p>
+    <h1>Sales Orders</h1>
+    <p class="lead">Choose the operational sales order workspace you want to open.</p>
+    <p><a href="/sales">Back to Sales</a></p>
+  </section>
+
+  <section class="module-grid" aria-label="Sales Orders sections">
+    <a class="module-card module-link-card" href="/b2b/orders" aria-label="Open B2B Sales Orders">
+      <div>
+        <p class="eyebrow">Orders</p>
+        <h2>B2B Sales Orders</h2>
+        <p>Review and manage business-to-business sales orders from the ERP commercial workflow.</p>
+      </div>
+      <span class="module-entry">Open B2B Sales Orders</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/b2c/orders" aria-label="Open B2C Sales Orders">
+      <div>
+        <p class="eyebrow">Orders</p>
+        <h2>B2C Sales Orders</h2>
+        <p>Capture and invoice direct-to-consumer orders from the ERP commercial workflow.</p>
+      </div>
+      <span class="module-entry">Open B2C Sales Orders</span>
+    </a>
+  </section>
+{% endblock %}

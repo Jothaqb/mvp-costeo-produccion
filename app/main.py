@@ -1625,6 +1625,33 @@ def sales_home(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/sales/orders-menu", response_class=HTMLResponse)
+def sales_orders_menu(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="sales_orders_menu.html",
+        context={"title": "Sales Orders"},
+    )
+
+
+@app.get("/sales/customers-menu", response_class=HTMLResponse)
+def sales_customers_menu(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="sales_customers_menu.html",
+        context={"title": "Customers"},
+    )
+
+
+@app.get("/sales/reporting", response_class=HTMLResponse)
+def sales_reporting_menu(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="sales_reporting_menu.html",
+        context={"title": "Reporting"},
+    )
+
+
 @app.get("/sales/total", response_class=HTMLResponse)
 def total_sales(
     request: Request,

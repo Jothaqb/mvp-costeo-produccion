@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Sales</p>
+    <h1>Reporting</h1>
+    <p class="lead">Choose the sales reporting view you want to review.</p>
+    <p><a href="/sales">Back to Sales</a></p>
+  </section>
+
+  <section class="module-grid" aria-label="Reporting sections">
+    <a class="module-card module-link-card" href="/sales/total" aria-label="Open Total Sales">
+      <div>
+        <p class="eyebrow">Reporting</p>
+        <h2>Total Sales</h2>
+        <p>Read invoiced B2B and B2C sales together from the ERP without changing the operational sales flow.</p>
+      </div>
+      <span class="module-entry">Open Total Sales</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/sales/summary" aria-label="Open Sales by Business Activity">
+      <div>
+        <p class="eyebrow">Reporting</p>
+        <h2>Sales by Business Activity</h2>
+        <p>Review simple KPI totals for invoiced B2B and B2C sales using the same unified ERP sales foundation.</p>
+      </div>
+      <span class="module-entry">Open Sales by Business Activity</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/sales/items-pareto" aria-label="Open Sales by Items Pareto">
+      <div>
+        <p class="eyebrow">Reporting</p>
+        <h2>Sales by Items Pareto</h2>
+        <p>Review net sales concentration by SKU using the same invoiced B2B and B2C reporting foundation.</p>
+      </div>
+      <span class="module-entry">Open Sales by Items Pareto</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/sales/categories-pareto" aria-label="Open Sales by Category Pareto">
+      <div>
+        <p class="eyebrow">Reporting</p>
+        <h2>Sales by Category Pareto</h2>
+        <p>Review net sales concentration by current category using the same invoiced B2B and B2C reporting foundation.</p>
+      </div>
+      <span class="module-entry">Open Sales by Category Pareto</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/sales/orders" aria-label="Open Sales by Order">
+      <div>
+        <p class="eyebrow">Reporting</p>
+        <h2>Sales by Order</h2>
+        <p>Review invoiced B2B and B2C sales consolidated by order using the same unified reporting foundation.</p>
+      </div>
+      <span class="module-entry">Open Sales by Order</span>
+    </a>
+
+    <a class="module-card module-link-card" href="/b2b/loyverse-mappings" aria-label="Open B2B Loyverse">
+      <div>
+        <p class="eyebrow">Integration</p>
+        <h2>B2B Loyverse</h2>
+        <p>Review mappings and invoicing readiness for the B2B Loyverse integration flow.</p>
+      </div>
+      <span class="module-entry">Open B2B Loyverse</span>
+    </a>
+  </section>
+{% endblock %}
