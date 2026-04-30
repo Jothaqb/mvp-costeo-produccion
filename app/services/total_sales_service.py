@@ -117,6 +117,41 @@ class SalesCategoriesPareto:
     rows: list[SalesCategoryParetoRow]
 
 
+@dataclass(frozen=True)
+class SalesByOrderRow:
+    sales_source: str
+    order_id: int
+    order_number: str
+    order_date: date | None
+    customer_name: str | None
+    channel_name: str | None
+    order_status: str
+    net_sales: Decimal
+    total_quantity: Decimal
+    total_discount: Decimal
+    lines_count: int
+    items_count: int
+    categories_count: int
+    average_line_value: Decimal
+    detail_url: str
+
+
+@dataclass(frozen=True)
+class SalesByOrderSummary:
+    total_net_sales: Decimal
+    total_orders: int
+    total_quantity: Decimal
+    average_order_value: Decimal
+    b2b_orders: int
+    b2c_orders: int
+
+
+@dataclass(frozen=True)
+class SalesByOrderResult:
+    summary: SalesByOrderSummary
+    rows: list[SalesByOrderRow]
+
+
 def get_total_sales_rows(
     db: Session,
     *,
@@ -234,6 +269,22 @@ def get_sales_categories_pareto(
         sales_type=sales_type,
     )
     return _build_sales_categories_pareto(rows)
+
+
+def get_sales_by_order(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sales_type: str = "all",
+) -> SalesByOrderResult:
+    rows = get_total_sales_rows(
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        sales_type=sales_type,
+    )
+    return _build_sales_by_order(rows)
 
 
 def _get_b2b_sales_rows(
@@ -518,6 +569,68 @@ def _build_sales_categories_pareto(rows: list[TotalSalesRow]) -> SalesCategories
         c_categories_count=c_categories_count,
     )
     return SalesCategoriesPareto(summary=summary, rows=pareto_rows)
+
+
+def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
+    grouped_rows: dict[tuple[str, int], list[TotalSalesRow]] = {}
+    for row in rows:
+        grouped_rows.setdefault((row.sales_source, row.order_id), []).append(row)
+
+    order_rows: list[SalesByOrderRow] = []
+    for (sales_source, order_id), order_group_rows in grouped_rows.items():
+        first_row = order_group_rows[0]
+        net_sales = sum((row.line_total for row in order_group_rows), ZERO)
+        total_quantity = sum((row.quantity for row in order_group_rows), ZERO)
+        total_discount = sum(((row.discount_amount or ZERO) for row in order_group_rows), ZERO)
+        lines_count = len(order_group_rows)
+        items_count = len({((row.sku or "").strip() or "(sin SKU)") for row in order_group_rows})
+        categories_count = len({((row.category_name or "").strip() or "(sin categoría)") for row in order_group_rows})
+        average_line_value = _safe_divide(net_sales, Decimal(lines_count))
+        detail_url = f"/b2b/orders/{order_id}" if sales_source == "B2B" else f"/b2c/orders/{order_id}"
+        order_rows.append(
+            SalesByOrderRow(
+                sales_source=sales_source,
+                order_id=order_id,
+                order_number=first_row.order_number,
+                order_date=first_row.order_date,
+                customer_name=first_row.customer_name,
+                channel_name=first_row.channel_name,
+                order_status=first_row.order_status,
+                net_sales=net_sales,
+                total_quantity=total_quantity,
+                total_discount=total_discount,
+                lines_count=lines_count,
+                items_count=items_count,
+                categories_count=categories_count,
+                average_line_value=average_line_value,
+                detail_url=detail_url,
+            )
+        )
+
+    order_rows.sort(
+        key=lambda row: (
+            row.order_date is not None,
+            row.order_date or date.min,
+            row.order_number,
+        ),
+        reverse=True,
+    )
+
+    total_net_sales = sum((row.net_sales for row in order_rows), ZERO)
+    total_orders = len(order_rows)
+    total_quantity = sum((row.total_quantity for row in order_rows), ZERO)
+    average_order_value = _safe_divide(total_net_sales, Decimal(total_orders))
+    b2b_orders = sum((1 for row in order_rows if row.sales_source == "B2B"))
+    b2c_orders = sum((1 for row in order_rows if row.sales_source == "B2C"))
+    summary = SalesByOrderSummary(
+        total_net_sales=total_net_sales,
+        total_orders=total_orders,
+        total_quantity=total_quantity,
+        average_order_value=average_order_value,
+        b2b_orders=b2b_orders,
+        b2c_orders=b2c_orders,
+    )
+    return SalesByOrderResult(summary=summary, rows=order_rows)
 
 
 def _resolve_pareto_description(rows: list[TotalSalesRow]) -> str:
