@@ -86,6 +86,37 @@ class SalesItemsPareto:
     rows: list[SalesItemParetoRow]
 
 
+@dataclass(frozen=True)
+class SalesCategoryParetoRow:
+    rank: int
+    category_name: str
+    net_sales: Decimal
+    quantity: Decimal
+    lines: int
+    orders: int
+    items_count: int
+    discount: Decimal
+    percent_of_total_sales: Decimal
+    cumulative_percent: Decimal
+    pareto_class: str
+
+
+@dataclass(frozen=True)
+class SalesCategoriesParetoSummary:
+    total_net_sales: Decimal
+    total_categories: int
+    total_quantity: Decimal
+    a_categories_count: int
+    b_categories_count: int
+    c_categories_count: int
+
+
+@dataclass(frozen=True)
+class SalesCategoriesPareto:
+    summary: SalesCategoriesParetoSummary
+    rows: list[SalesCategoryParetoRow]
+
+
 def get_total_sales_rows(
     db: Session,
     *,
@@ -187,6 +218,22 @@ def get_sales_items_pareto(
         sales_type=sales_type,
     )
     return _build_sales_items_pareto(rows)
+
+
+def get_sales_categories_pareto(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sales_type: str = "all",
+) -> SalesCategoriesPareto:
+    rows = get_total_sales_rows(
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        sales_type=sales_type,
+    )
+    return _build_sales_categories_pareto(rows)
 
 
 def _get_b2b_sales_rows(
@@ -396,6 +443,81 @@ def _build_sales_items_pareto(rows: list[TotalSalesRow]) -> SalesItemsPareto:
         c_items_count=c_items_count,
     )
     return SalesItemsPareto(summary=summary, rows=pareto_rows)
+
+
+def _build_sales_categories_pareto(rows: list[TotalSalesRow]) -> SalesCategoriesPareto:
+    grouped_rows: dict[str, list[TotalSalesRow]] = {}
+    for row in rows:
+        category_name = (row.category_name or "").strip() or "(sin categoría)"
+        grouped_rows.setdefault(category_name, []).append(row)
+
+    total_net_sales = sum((row.line_total for row in rows), ZERO)
+    total_quantity = sum((row.quantity for row in rows), ZERO)
+
+    ranked_base: list[tuple[str, Decimal, Decimal, int, int, int, Decimal]] = []
+    for category_name, category_rows in grouped_rows.items():
+        net_sales = sum((row.line_total for row in category_rows), ZERO)
+        quantity = sum((row.quantity for row in category_rows), ZERO)
+        lines = len(category_rows)
+        orders = len({(row.sales_source, row.order_id) for row in category_rows})
+        items_count = len({((row.sku or "").strip() or "(sin SKU)") for row in category_rows})
+        discount = sum(((row.discount_amount or ZERO) for row in category_rows), ZERO)
+        ranked_base.append(
+            (
+                category_name,
+                net_sales,
+                quantity,
+                lines,
+                orders,
+                items_count,
+                discount,
+            )
+        )
+
+    ranked_base.sort(key=lambda item: (item[1], item[0]), reverse=True)
+
+    pareto_rows: list[SalesCategoryParetoRow] = []
+    running_sales = ZERO
+    a_categories_count = 0
+    b_categories_count = 0
+    c_categories_count = 0
+    for index, item in enumerate(ranked_base, start=1):
+        category_name, net_sales, quantity, lines, orders, items_count, discount = item
+        percent_of_total_sales = _safe_percent(net_sales, total_net_sales)
+        running_sales += net_sales
+        cumulative_percent = _safe_percent(running_sales, total_net_sales)
+        pareto_class = _classify_pareto(cumulative_percent)
+        if pareto_class == "A":
+            a_categories_count += 1
+        elif pareto_class == "B":
+            b_categories_count += 1
+        else:
+            c_categories_count += 1
+        pareto_rows.append(
+            SalesCategoryParetoRow(
+                rank=index,
+                category_name=category_name,
+                net_sales=net_sales,
+                quantity=quantity,
+                lines=lines,
+                orders=orders,
+                items_count=items_count,
+                discount=discount,
+                percent_of_total_sales=percent_of_total_sales,
+                cumulative_percent=cumulative_percent,
+                pareto_class=pareto_class,
+            )
+        )
+
+    summary = SalesCategoriesParetoSummary(
+        total_net_sales=total_net_sales,
+        total_categories=len(pareto_rows),
+        total_quantity=total_quantity,
+        a_categories_count=a_categories_count,
+        b_categories_count=b_categories_count,
+        c_categories_count=c_categories_count,
+    )
+    return SalesCategoriesPareto(summary=summary, rows=pareto_rows)
 
 
 def _resolve_pareto_description(rows: list[TotalSalesRow]) -> str:
