@@ -1,3 +1,5 @@
+import csv
+import io
 from collections import Counter
 from datetime import date, datetime, timedelta
 from urllib.parse import quote
@@ -107,6 +109,18 @@ from app.services.b2b_customer_import_service import (
     B2BCustomerImportResult,
     B2BCustomerImportValidationError,
     import_b2b_customers_csv,
+)
+from app.services.b2b_sales_historical_import_service import (
+    B2BHistoricalSalesImportResult,
+    B2BHistoricalSalesImportValidationError,
+    EXPECTED_HEADERS as B2B_HISTORICAL_IMPORT_HEADERS,
+    import_b2b_historical_sales_csv,
+)
+from app.services.b2c_sales_historical_import_service import (
+    B2CHistoricalSalesImportResult,
+    B2CHistoricalSalesImportValidationError,
+    EXPECTED_HEADERS as B2C_HISTORICAL_IMPORT_HEADERS,
+    import_b2c_historical_sales_csv,
 )
 from app.services.config_service import (
     ValidationError,
@@ -253,6 +267,18 @@ templates = Jinja2Templates(directory="app/templates")
 
 def _redirect(url: str) -> RedirectResponse:
     return RedirectResponse(url=url, status_code=303)
+
+
+def _csv_attachment_response(*, filename: str, headers: tuple[str, ...], example_row: tuple[str, ...]) -> Response:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(headers)
+    writer.writerow(example_row)
+    return Response(
+        content=buffer.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _parse_optional_date(value: str) -> date | None:
@@ -3473,6 +3499,59 @@ def b2b_orders(
     )
 
 
+@app.get("/b2b/orders/import", response_class=HTMLResponse)
+def b2b_orders_import_form(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_order_import_form.html",
+        context={"title": "Import Historical B2B Sales Orders", "error": None, "result": None},
+    )
+
+
+@app.get("/b2b/orders/import/template")
+def download_b2b_orders_import_template() -> Response:
+    return _csv_attachment_response(
+        filename="b2b_historical_sales_import_template.csv",
+        headers=B2B_HISTORICAL_IMPORT_HEADERS,
+        example_row=(
+            "B2B-HIST-001",
+            "2025-01-15",
+            "Cliente Ejemplo",
+            "Wholesale",
+            "SKU001",
+            "Producto ejemplo",
+            "10",
+            "2500",
+            "25000",
+            "1200",
+            "12000",
+            "13000",
+            "0.52",
+            "Historical order example",
+        ),
+    )
+
+
+@app.post("/b2b/orders/import", response_class=HTMLResponse)
+async def import_b2b_orders(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    result: B2BHistoricalSalesImportResult | None = None
+    error = None
+    try:
+        result = import_b2b_historical_sales_csv(
+            db,
+            file_name=file.filename or "historical_b2b_sales.csv",
+            file_bytes=await file.read(),
+        )
+    except B2BHistoricalSalesImportValidationError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_order_import_form.html",
+        context={"title": "Import Historical B2B Sales Orders", "error": error, "result": result},
+    )
+
+
 @app.get("/b2b/orders/new", response_class=HTMLResponse)
 def new_b2b_order(
     request: Request,
@@ -3741,6 +3820,66 @@ def b2c_orders(
             "filters": filters,
             "result_count": len(orders),
         },
+    )
+
+
+@app.get("/b2c/orders/import", response_class=HTMLResponse)
+def b2c_orders_import_form(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_order_import_form.html",
+        context={"title": "Import Historical B2C Sales Orders", "error": None, "result": None},
+    )
+
+
+@app.get("/b2c/orders/import/template")
+def download_b2c_orders_import_template() -> Response:
+    return _csv_attachment_response(
+        filename="b2c_historical_sales_import_template.csv",
+        headers=B2C_HISTORICAL_IMPORT_HEADERS,
+        example_row=(
+            "B2C-HIST-001",
+            "2025-01-15",
+            "Cliente Ejemplo",
+            "88888888",
+            "cliente@example.com",
+            "Website",
+            "SKU001",
+            "Producto ejemplo",
+            "2",
+            "5000",
+            "10000",
+            "1000",
+            "9000",
+            "10000",
+            "1000",
+            "9000",
+            "2500",
+            "5000",
+            "4000",
+            "0.4444",
+            "Historical order example",
+        ),
+    )
+
+
+@app.post("/b2c/orders/import", response_class=HTMLResponse)
+async def import_b2c_orders(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    result: B2CHistoricalSalesImportResult | None = None
+    error = None
+    try:
+        result = import_b2c_historical_sales_csv(
+            db,
+            file_name=file.filename or "historical_b2c_sales.csv",
+            file_bytes=await file.read(),
+        )
+    except B2CHistoricalSalesImportValidationError as exc:
+        db.rollback()
+        error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_order_import_form.html",
+        context={"title": "Import Historical B2C Sales Orders", "error": error, "result": result},
     )
 
 
