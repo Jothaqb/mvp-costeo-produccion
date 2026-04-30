@@ -12,6 +12,17 @@
     <p class="error">Opening balances have not been initialized yet. Balances may be empty until the one-time initialization is completed.</p>
   {% endif %}
 
+  <section>
+    <form method="get" action="/inventory/balances" class="inline-filter-form">
+      <label for="q">Search by SKU or description</label>
+      <input id="q" name="q" type="search" value="{{ q or '' }}" placeholder="Search by SKU or description">
+      <button type="submit">Apply</button>
+      {% if q %}
+        <a href="/inventory/balances">Clear</a>
+      {% endif %}
+    </form>
+  </section>
+
   <section class="table-wrap">
     <table>
       <thead>

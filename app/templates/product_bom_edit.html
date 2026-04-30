@@ -28,7 +28,22 @@
             <tr>
               <td>
                 <input type="hidden" name="line_id" value="{{ line.id }}">
-                <select name="component_sku_{{ line.id }}" required>
+                <input
+                  id="component_lookup_{{ line.id }}"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="Search by SKU, name, or description"
+                  value="{% if line.component_sku_snapshot %}{{ line.component_sku_snapshot }} - {{ line.component_name_snapshot or '' }}{% endif %}"
+                  data-product-lookup="true"
+                  data-product-search-url="/master-data/products/search"
+                  data-target-select-id="component_sku_{{ line.id }}"
+                  data-results-id="component_lookup_results_{{ line.id }}"
+                  data-preview-id="component_lookup_preview_{{ line.id }}"
+                  data-exclude-product-id="{{ product.id }}"
+                >
+                <div id="component_lookup_results_{{ line.id }}" class="lookup-results" hidden></div>
+                <div id="component_lookup_preview_{{ line.id }}" class="muted-inline"></div>
+                <select id="component_sku_{{ line.id }}" name="component_sku_{{ line.id }}" required>
                   {% if line.component_sku_snapshot and line.component_sku_snapshot not in existing_component_option_skus %}
                     <option value="{{ line.component_sku_snapshot }}" selected>
                       {{ line.component_sku_snapshot }} - {{ line.component_name_snapshot or "SKU not found" }} (not found)
@@ -58,7 +73,21 @@
             <tr>
               <td>
                 <input type="hidden" name="new_line_index" value="{{ row.index }}">
-                <select name="new_component_sku_{{ row.index }}">
+                <input
+                  id="new_component_lookup_{{ row.index }}"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="Search by SKU, name, or description"
+                  data-product-lookup="true"
+                  data-product-search-url="/master-data/products/search"
+                  data-target-select-id="new_component_sku_{{ row.index }}"
+                  data-results-id="new_component_lookup_results_{{ row.index }}"
+                  data-preview-id="new_component_lookup_preview_{{ row.index }}"
+                  data-exclude-product-id="{{ product.id }}"
+                >
+                <div id="new_component_lookup_results_{{ row.index }}" class="lookup-results" hidden></div>
+                <div id="new_component_lookup_preview_{{ row.index }}" class="muted-inline"></div>
+                <select id="new_component_sku_{{ row.index }}" name="new_component_sku_{{ row.index }}">
                   <option value="">Add component...</option>
                   {% for component in new_component_options %}
                     <option value="{{ component.sku }}" {% if component.sku == row.component_sku %}selected{% endif %}>
@@ -81,4 +110,134 @@
       <a href="/master-data/products/{{ product.id }}">Cancel</a>
     </form>
   </section>
+
+  <script>
+    (function () {
+      const lookupInputs = document.querySelectorAll("[data-product-lookup='true']");
+      if (!lookupInputs.length) {
+        return;
+      }
+
+      function buildLabel(product) {
+        const primaryText = (product.name || product.description || "").trim();
+        return [product.sku || "", primaryText].filter(Boolean).join(" - ");
+      }
+
+      function buildSecondaryText(product) {
+        const description = (product.description || "").trim();
+        const name = (product.name || "").trim();
+        if (description && description !== name) {
+          return description;
+        }
+        return "";
+      }
+
+      function hideResults(resultsEl) {
+        if (!resultsEl) {
+          return;
+        }
+        resultsEl.hidden = true;
+        resultsEl.replaceChildren();
+      }
+
+      function syncSelectPreview(selectEl, previewEl, inputEl) {
+        if (!selectEl) {
+          return;
+        }
+        const option = selectEl.options[selectEl.selectedIndex];
+        const label = option && option.value ? option.textContent.trim() : "";
+        if (inputEl && !inputEl.value && label) {
+          inputEl.value = label;
+        }
+        if (previewEl) {
+          previewEl.textContent = label ? `Selected: ${label}` : "";
+        }
+      }
+
+      lookupInputs.forEach((inputEl) => {
+        const resultsEl = document.getElementById(inputEl.dataset.resultsId || "");
+        const previewEl = document.getElementById(inputEl.dataset.previewId || "");
+        const selectEl = document.getElementById(inputEl.dataset.targetSelectId || "");
+        const excludeProductId = Number(inputEl.dataset.excludeProductId || "0");
+        let requestId = 0;
+
+        syncSelectPreview(selectEl, previewEl, inputEl);
+
+        inputEl.addEventListener("input", async () => {
+          const q = inputEl.value.trim();
+          if (!resultsEl) {
+            return;
+          }
+          if (q.length < 2) {
+            hideResults(resultsEl);
+            return;
+          }
+
+          const currentRequest = ++requestId;
+          const response = await fetch(`${inputEl.dataset.productSearchUrl}?q=${encodeURIComponent(q)}`);
+          if (!response.ok || currentRequest !== requestId) {
+            return;
+          }
+
+          let products = await response.json();
+          if (currentRequest !== requestId) {
+            return;
+          }
+
+          products = products.filter((product) => Number(product.id) !== excludeProductId && buildLabel(product));
+          resultsEl.replaceChildren();
+          if (!products.length) {
+            hideResults(resultsEl);
+            return;
+          }
+
+          products.forEach((product) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "lookup-result-button";
+
+            const label = buildLabel(product);
+            const secondaryText = buildSecondaryText(product);
+            const strong = document.createElement("strong");
+            strong.textContent = label;
+            button.appendChild(strong);
+
+            if (secondaryText) {
+              const span = document.createElement("span");
+              span.textContent = secondaryText;
+              button.appendChild(span);
+            }
+
+            button.title = label;
+            button.addEventListener("click", () => {
+              if (selectEl) {
+                let matchingOption = Array.from(selectEl.options).find((option) => option.value === product.sku);
+                if (!matchingOption) {
+                  matchingOption = document.createElement("option");
+                  matchingOption.value = product.sku;
+                  matchingOption.textContent = label;
+                  selectEl.appendChild(matchingOption);
+                }
+                selectEl.value = product.sku;
+              }
+              inputEl.value = label;
+              if (previewEl) {
+                previewEl.textContent = `Selected: ${label}`;
+              }
+              hideResults(resultsEl);
+            });
+            resultsEl.appendChild(button);
+          });
+
+          resultsEl.hidden = false;
+        });
+
+        inputEl.addEventListener("blur", () => {
+          setTimeout(() => hideResults(resultsEl), 150);
+        });
+
+        selectEl?.addEventListener("change", () => syncSelectPreview(selectEl, previewEl, inputEl));
+      });
+    })();
+  </script>
 {% endblock %}

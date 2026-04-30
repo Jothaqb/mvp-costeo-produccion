@@ -12,6 +12,21 @@
     <p class="error">Opening balances have not been initialized yet. Transactions may be empty until the one-time initialization is completed.</p>
   {% endif %}
 
+  <section>
+    <form method="get" action="/inventory/transactions" class="inline-filter-form">
+      <label for="date_from">Date from</label>
+      <input id="date_from" name="date_from" type="date" value="{{ date_from or '' }}">
+
+      <label for="date_to">Date to</label>
+      <input id="date_to" name="date_to" type="date" value="{{ date_to or '' }}">
+
+      <button type="submit">Apply</button>
+      {% if date_from or date_to %}
+        <a href="/inventory/transactions">Clear</a>
+      {% endif %}
+    </form>
+  </section>
+
   <section class="table-wrap">
     <table>
       <thead>

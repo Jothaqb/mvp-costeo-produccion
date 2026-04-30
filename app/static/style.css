@@ -719,6 +719,65 @@ button:focus,
   cursor: help;
 }
 
+.inline-filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.lookup-reference-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px 16px;
+  margin: 8px 0 12px;
+}
+
+.lookup-reference-grid p {
+  margin: 0;
+}
+
+.lookup-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 12px;
+}
+
+.lookup-result-button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.lookup-result-button:hover,
+.lookup-result-button:focus {
+  background: rgba(15, 118, 110, 0.08);
+  border-color: rgba(15, 118, 110, 0.35);
+  box-shadow: 0 0 0 1px rgba(15, 118, 110, 0.18);
+  outline: none;
+}
+
+.lookup-result-button strong {
+  color: var(--text);
+}
+
+.lookup-result-button span {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
 @media (max-width: 1040px) {
   .inventory-nav-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

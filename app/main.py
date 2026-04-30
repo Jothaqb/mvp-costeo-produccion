@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
@@ -438,6 +438,27 @@ def _b2c_line_inputs_from_form(form, prefix: str, count: int | None = None) -> l
         }
         for index in indexes
     ]
+
+
+def _parse_optional_date_query(value: str | None) -> date | None:
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _product_lookup_payload(product: Product) -> dict[str, object]:
+    return {
+        "id": product.id,
+        "sku": product.sku,
+        "name": product.name,
+        "description": product.description,
+        "b2c_price": str(product.b2c_price) if product.b2c_price is not None else None,
+        "standard_cost": str(product.standard_cost) if product.standard_cost is not None else None,
+    }
 
 
 def _purchase_order_line_inputs_from_form(form) -> list[dict[str, str]]:
@@ -1301,6 +1322,33 @@ def products_master(
     )
 
 
+@app.get("/master-data/products/search")
+def search_master_data_products(
+    q: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    search_text = q.strip()
+    if len(search_text) < 2:
+        return JSONResponse([])
+
+    pattern = f"%{search_text}%"
+    products = (
+        db.query(Product)
+        .filter(
+            Product.active.is_(True),
+            or_(
+                Product.sku.ilike(pattern),
+                Product.name.ilike(pattern),
+                Product.description.ilike(pattern),
+            ),
+        )
+        .order_by(Product.sku, Product.name)
+        .limit(20)
+        .all()
+    )
+    return JSONResponse([_product_lookup_payload(product) for product in products])
+
+
 @app.get("/master-data/products/new", response_class=HTMLResponse)
 def new_product_master(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -2101,10 +2149,24 @@ def planning_home(request: Request) -> HTMLResponse:
 
 
 @app.get("/inventory/balances", response_class=HTMLResponse)
-def inventory_balances_report(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_balances_report(
+    request: Request,
+    q: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    search_text = q.strip()
+    balances_query = db.query(InventoryBalance).options(joinedload(InventoryBalance.product))
+    if search_text:
+        pattern = f"%{search_text}%"
+        balances_query = balances_query.join(InventoryBalance.product).filter(
+            or_(
+                Product.sku.ilike(pattern),
+                Product.name.ilike(pattern),
+                Product.description.ilike(pattern),
+            )
+        )
     balances = (
-        db.query(InventoryBalance)
-        .options(joinedload(InventoryBalance.product))
+        balances_query
         .order_by(InventoryBalance.last_transaction_at.desc(), InventoryBalance.id.desc())
         .all()
     )
@@ -2114,16 +2176,34 @@ def inventory_balances_report(request: Request, db: Session = Depends(get_db)) -
         context={
             "title": "Inventory Balances",
             "balances": balances,
+            "q": search_text,
             "opening_balances_initialized": _inventory_opening_balance_exists(db),
         },
     )
 
 
 @app.get("/inventory/transactions", response_class=HTMLResponse)
-def inventory_transactions_report(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_transactions_report(
+    request: Request,
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    parsed_date_from = _parse_optional_date_query(date_from)
+    parsed_date_to = _parse_optional_date_query(date_to)
+
+    transactions_query = db.query(InventoryTransaction).options(joinedload(InventoryTransaction.product))
+    if parsed_date_from is not None:
+        transactions_query = transactions_query.filter(
+            InventoryTransaction.transaction_date >= datetime.combine(parsed_date_from, datetime.min.time())
+        )
+    if parsed_date_to is not None:
+        transactions_query = transactions_query.filter(
+            InventoryTransaction.transaction_date < datetime.combine(parsed_date_to + timedelta(days=1), datetime.min.time())
+        )
+
     transactions = (
-        db.query(InventoryTransaction)
-        .options(joinedload(InventoryTransaction.product))
+        transactions_query
         .order_by(InventoryTransaction.transaction_date.desc(), InventoryTransaction.id.desc())
         .all()
     )
@@ -2133,19 +2213,49 @@ def inventory_transactions_report(request: Request, db: Session = Depends(get_db
         context={
             "title": "Inventory Transactions",
             "transactions": transactions,
+            "date_from": date_from.strip(),
+            "date_to": date_to.strip(),
             "opening_balances_initialized": _inventory_opening_balance_exists(db),
         },
     )
 
 
 @app.get("/inventory/adjustments", response_class=HTMLResponse)
-def inventory_adjustments_report(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def inventory_adjustments_report(
+    request: Request,
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+    adjustment_type: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    parsed_date_from = _parse_optional_date_query(date_from)
+    parsed_date_to = _parse_optional_date_query(date_to)
+    selected_adjustment_type = adjustment_type.strip()
+    adjustment_type_options = [
+        value
+        for (value,) in db.query(InventoryAdjustment.adjustment_type)
+        .distinct()
+        .order_by(InventoryAdjustment.adjustment_type)
+        .all()
+        if value
+    ]
+    if selected_adjustment_type and selected_adjustment_type not in adjustment_type_options:
+        adjustment_type_options.append(selected_adjustment_type)
+        adjustment_type_options.sort()
+
+    adjustments_query = db.query(InventoryAdjustment).options(
+        joinedload(InventoryAdjustment.product),
+        joinedload(InventoryAdjustment.inventory_transaction),
+    )
+    if parsed_date_from is not None:
+        adjustments_query = adjustments_query.filter(InventoryAdjustment.adjustment_date >= parsed_date_from)
+    if parsed_date_to is not None:
+        adjustments_query = adjustments_query.filter(InventoryAdjustment.adjustment_date <= parsed_date_to)
+    if selected_adjustment_type:
+        adjustments_query = adjustments_query.filter(InventoryAdjustment.adjustment_type == selected_adjustment_type)
+
     adjustments = (
-        db.query(InventoryAdjustment)
-        .options(
-            joinedload(InventoryAdjustment.product),
-            joinedload(InventoryAdjustment.inventory_transaction),
-        )
+        adjustments_query
         .order_by(InventoryAdjustment.adjustment_date.desc(), InventoryAdjustment.id.desc())
         .all()
     )
@@ -2155,6 +2265,10 @@ def inventory_adjustments_report(request: Request, db: Session = Depends(get_db)
         context={
             "title": "Inventory Adjustments",
             "adjustments": adjustments,
+            "date_from": date_from.strip(),
+            "date_to": date_to.strip(),
+            "adjustment_type": selected_adjustment_type,
+            "adjustment_type_options": adjustment_type_options,
             "opening_balances_initialized": _inventory_opening_balance_exists(db),
         },
     )

@@ -12,6 +12,29 @@
     <p class="error">Opening balances have not been initialized yet. Adjustment results may be incomplete until the one-time initialization is completed.</p>
   {% endif %}
 
+  <section>
+    <form method="get" action="/inventory/adjustments" class="inline-filter-form">
+      <label for="date_from">Date from</label>
+      <input id="date_from" name="date_from" type="date" value="{{ date_from or '' }}">
+
+      <label for="date_to">Date to</label>
+      <input id="date_to" name="date_to" type="date" value="{{ date_to or '' }}">
+
+      <label for="adjustment_type">Adjustment type</label>
+      <select id="adjustment_type" name="adjustment_type">
+        <option value="">All</option>
+        {% for option in adjustment_type_options %}
+          <option value="{{ option }}" {% if adjustment_type == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+
+      <button type="submit">Apply</button>
+      {% if date_from or date_to or adjustment_type %}
+        <a href="/inventory/adjustments">Clear</a>
+      {% endif %}
+    </form>
+  </section>
+
   <section class="table-wrap">
     <table>
       <thead>

@@ -9,11 +9,27 @@
 
     <h2>Add product</h2>
     <form method="post" action="/b2b/customers/{{ customer.id }}/products">
+      <label for="product_lookup">Product lookup</label>
+      <input
+        id="product_lookup"
+        type="search"
+        autocomplete="off"
+        placeholder="Search by SKU, name, or description"
+        data-product-search-url="/master-data/products/search"
+      >
+      <div id="product_lookup_results" class="lookup-results" hidden></div>
+
       <label for="sku">SKU</label>
       <input id="sku" name="sku" required>
 
       <label for="description">Description</label>
       <input id="description" name="description" required>
+
+      <div class="lookup-reference-grid">
+        <p><strong>B2C Price:</strong> <span id="selected_b2c_price">—</span></p>
+        <p><strong>Product Cost:</strong> <span id="selected_standard_cost">—</span></p>
+        <p><strong>Gross Margin %:</strong> <span id="selected_gross_margin">—</span></p>
+      </div>
 
       <label for="distributor_price">Distributor price</label>
       <input id="distributor_price" name="distributor_price" required>
@@ -47,4 +63,153 @@
       </form>
     {% endfor %}
   </section>
+
+  <script>
+    (function () {
+      const lookupInput = document.getElementById("product_lookup");
+      const resultsEl = document.getElementById("product_lookup_results");
+      const skuInput = document.getElementById("sku");
+      const descriptionInput = document.getElementById("description");
+      const distributorPriceInput = document.getElementById("distributor_price");
+      const b2cPriceEl = document.getElementById("selected_b2c_price");
+      const standardCostEl = document.getElementById("selected_standard_cost");
+      const grossMarginEl = document.getElementById("selected_gross_margin");
+      if (!lookupInput || !resultsEl || !skuInput || !descriptionInput || !distributorPriceInput) {
+        return;
+      }
+
+      let lookupRequest = 0;
+      let selectedProduct = null;
+
+      function parseDecimal(value) {
+        const parsed = Number(String(value || "").replace(",", "."));
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+
+      function formatMoney(value) {
+        if (value === null || value === undefined || value === "") {
+          return "—";
+        }
+        return "\u20a1" + Math.round(Number(value)).toLocaleString("en-US");
+      }
+
+      function formatPercent(value) {
+        if (value === null || value === undefined) {
+          return "—";
+        }
+        return (value * 100).toFixed(2) + "%";
+      }
+
+      function buildLabel(product) {
+        const primaryText = (product.name || product.description || "").trim();
+        return [product.sku || "", primaryText].filter(Boolean).join(" - ");
+      }
+
+      function buildSecondaryText(product) {
+        const description = (product.description || "").trim();
+        const name = (product.name || "").trim();
+        if (description && description !== name) {
+          return description;
+        }
+        return "";
+      }
+
+      function hideResults() {
+        resultsEl.hidden = true;
+        resultsEl.replaceChildren();
+      }
+
+      function refreshMargin() {
+        const distributorPrice = parseDecimal(distributorPriceInput.value);
+        const productCost = selectedProduct ? parseDecimal(selectedProduct.standard_cost) : null;
+        if (productCost === null) {
+          if (grossMarginEl) {
+            grossMarginEl.textContent = "—";
+          }
+          return;
+        }
+        if (distributorPrice === null || distributorPrice === 0) {
+          if (grossMarginEl) {
+            grossMarginEl.textContent = "";
+          }
+          return;
+        }
+        if (grossMarginEl) {
+          grossMarginEl.textContent = formatPercent((distributorPrice - productCost) / distributorPrice);
+        }
+      }
+
+      function applyProduct(product) {
+        selectedProduct = product;
+        skuInput.value = product.sku || "";
+        descriptionInput.value = product.description || product.name || "";
+        if (b2cPriceEl) {
+          b2cPriceEl.textContent = product.b2c_price ? formatMoney(product.b2c_price) : "—";
+        }
+        if (standardCostEl) {
+          standardCostEl.textContent = product.standard_cost ? formatMoney(product.standard_cost) : "—";
+        }
+        lookupInput.value = buildLabel(product);
+        hideResults();
+        refreshMargin();
+      }
+
+      function renderResults(products) {
+        resultsEl.replaceChildren();
+        const visibleProducts = products.filter((product) => buildLabel(product));
+        if (!visibleProducts.length) {
+          hideResults();
+          return;
+        }
+
+        visibleProducts.forEach((product) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "lookup-result-button";
+
+          const label = buildLabel(product);
+          const secondaryText = buildSecondaryText(product);
+          const strong = document.createElement("strong");
+          strong.textContent = label;
+          button.appendChild(strong);
+
+          if (secondaryText) {
+            const span = document.createElement("span");
+            span.textContent = secondaryText;
+            button.appendChild(span);
+          }
+
+          button.title = label;
+          button.addEventListener("click", () => applyProduct(product));
+          resultsEl.appendChild(button);
+        });
+
+        resultsEl.hidden = false;
+      }
+
+      lookupInput.addEventListener("input", async () => {
+        const q = lookupInput.value.trim();
+        if (q.length < 2) {
+          hideResults();
+          return;
+        }
+        const currentRequest = ++lookupRequest;
+        const response = await fetch(`${lookupInput.dataset.productSearchUrl}?q=${encodeURIComponent(q)}`);
+        if (!response.ok || currentRequest !== lookupRequest) {
+          return;
+        }
+        const products = await response.json();
+        if (currentRequest !== lookupRequest) {
+          return;
+        }
+        renderResults(products);
+      });
+
+      lookupInput.addEventListener("blur", () => {
+        setTimeout(hideResults, 150);
+      });
+
+      distributorPriceInput.addEventListener("input", refreshMargin);
+    })();
+  </script>
 {% endblock %}
