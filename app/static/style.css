@@ -621,6 +621,99 @@ button:focus,
   font-size: 0.92rem;
 }
 
+.kpi-grid-compact {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.kpi-grid-vertical {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  max-width: 360px;
+}
+
+.kpi-grid-horizontal {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.kpi-card-compact {
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(20, 35, 45, 0.04);
+}
+
+.kpi-card-value {
+  margin: 0;
+  font-size: 1.45rem;
+}
+
+.kpi-card-note {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.pareto-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.pareto-a {
+  color: #fff;
+  background: #0f766e;
+}
+
+.pareto-b {
+  color: #17212b;
+  background: #f4c430;
+}
+
+.pareto-c {
+  color: #fff;
+  background: #b42318;
+}
+
+.pareto-metric-a {
+  color: #0f766e;
+}
+
+.pareto-metric-b {
+  color: #8a6b00;
+}
+
+.pareto-metric-c {
+  color: #b42318;
+}
+
+.pareto-card {
+  color: inherit;
+}
+
+.pareto-card-a {
+  background: rgba(15, 118, 110, 0.08);
+  border-color: rgba(15, 118, 110, 0.35);
+}
+
+.pareto-card-b {
+  background: rgba(244, 196, 48, 0.16);
+  border-color: rgba(244, 196, 48, 0.45);
+}
+
+.pareto-card-c {
+  background: rgba(180, 35, 24, 0.08);
+  border-color: rgba(180, 35, 24, 0.35);
+}
+
 .help-abbr {
   border-bottom: 1px dotted rgba(23, 33, 43, 0.45);
   cursor: help;

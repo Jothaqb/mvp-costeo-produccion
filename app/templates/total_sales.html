@@ -44,9 +44,11 @@
           <th>Category</th>
           <th>Quantity</th>
           <th>Unit price</th>
+          <th>Gross Sales</th>
           <th>Discount</th>
-          <th>Line total</th>
-          <th>Status</th>
+          <th>Net Sales</th>
+          <th>COGS</th>
+          <th>Gross Profit</th>
           <th>Detail</th>
         </tr>
       </thead>
@@ -63,9 +65,11 @@
             <td>{{ row.category_name or "" }}</td>
             <td>{{ row.quantity }}</td>
             <td>{{ fmt.money_crc(row.unit_price) }}</td>
-            <td>{{ fmt.money_crc(row.discount_amount) if row.discount_amount is not none else "" }}</td>
+            <td>{{ fmt.money_crc(row.gross_sales) }}</td>
+            <td>{{ fmt.money_crc(row.discount_amount or 0) }}</td>
             <td>{{ fmt.money_crc(row.line_total) }}</td>
-            <td>{{ row.order_status }}</td>
+            <td>{{ fmt.money_crc(row.cogs) if row.cogs is not none else "—" }}</td>
+            <td>{{ fmt.money_crc(row.gross_profit) if row.gross_profit is not none else "—" }}</td>
             <td>
               {% if row.sales_source == "B2B" %}
                 <a href="/b2b/orders/{{ row.order_id }}">View</a>
@@ -77,7 +81,7 @@
         {% endfor %}
         {% if not rows %}
           <tr>
-            <td colspan="14">No invoiced sales match the current filters.</td>
+            <td colspan="16">No invoiced sales match the current filters.</td>
           </tr>
         {% endif %}
       </tbody>

@@ -29,30 +29,24 @@
   </section>
 
   {% if pareto %}
-    <section class="module-grid" aria-label="Sales by items Pareto KPIs">
-      <div class="module-card">
-        <p class="eyebrow">Net sales</p>
-        <h2>{{ fmt.money_crc(pareto.summary.total_net_sales) }}</h2>
+    <section class="kpi-grid-vertical" aria-label="Sales by items Pareto KPIs">
+      <div class="kpi-card-compact pareto-card pareto-card-a">
+        <p class="eyebrow">A Items</p>
+        <h2 class="kpi-card-value pareto-metric-a">{{ pareto.summary.a_items_count }} items</h2>
+        <p class="kpi-card-note">{{ "{:,.1f}".format(pareto.summary.a_items_percent) }}%</p>
+        <p class="kpi-card-note">El {{ "{:,.1f}".format(pareto.summary.a_items_percent) }}% de los Items representan el {{ "{:,.1f}".format(pareto.summary.a_sales_percent) }}% de las ventas</p>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Items</p>
-        <h2>{{ pareto.summary.total_items }}</h2>
+      <div class="kpi-card-compact pareto-card pareto-card-b">
+        <p class="eyebrow">B Items</p>
+        <h2 class="kpi-card-value pareto-metric-b">{{ pareto.summary.b_items_count }} items</h2>
+        <p class="kpi-card-note">{{ "{:,.1f}".format(pareto.summary.b_items_percent) }}%</p>
+        <p class="kpi-card-note">El {{ "{:,.1f}".format(pareto.summary.b_items_percent) }}% de los Items representan el {{ "{:,.1f}".format(pareto.summary.b_sales_percent) }}% de las ventas</p>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Quantity</p>
-        <h2>{{ pareto.summary.total_quantity }}</h2>
-      </div>
-      <div class="module-card">
-        <p class="eyebrow">A items</p>
-        <h2>{{ pareto.summary.a_items_count }}</h2>
-      </div>
-      <div class="module-card">
-        <p class="eyebrow">B items</p>
-        <h2>{{ pareto.summary.b_items_count }}</h2>
-      </div>
-      <div class="module-card">
-        <p class="eyebrow">C items</p>
-        <h2>{{ pareto.summary.c_items_count }}</h2>
+      <div class="kpi-card-compact pareto-card pareto-card-c">
+        <p class="eyebrow">C Items</p>
+        <h2 class="kpi-card-value pareto-metric-c">{{ pareto.summary.c_items_count }} items</h2>
+        <p class="kpi-card-note">{{ "{:,.1f}".format(pareto.summary.c_items_percent) }}%</p>
+        <p class="kpi-card-note">El {{ "{:,.1f}".format(pareto.summary.c_items_percent) }}% de los Items representan el {{ "{:,.1f}".format(pareto.summary.c_sales_percent) }}% de las ventas</p>
       </div>
     </section>
 
@@ -86,7 +80,7 @@
               <td>{{ fmt.money_crc(row.discount) }}</td>
               <td>{{ "{:,.1f}".format(row.percent_of_total_sales) }}%</td>
               <td>{{ "{:,.1f}".format(row.cumulative_percent) }}%</td>
-              <td>{{ row.pareto_class }}</td>
+              <td><span class="pareto-badge pareto-{{ row.pareto_class|lower }}">{{ row.pareto_class }}</span></td>
             </tr>
           {% endfor %}
           {% if not pareto.rows %}

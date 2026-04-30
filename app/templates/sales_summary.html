@@ -4,8 +4,8 @@
 {% block content %}
   <section class="page-hero">
     <p class="eyebrow">Sales</p>
-    <h1>Sales Summary</h1>
-    <p class="lead">Review a simple summary of invoiced B2B and B2C sales from the ERP foundation created in Total Sales.</p>
+    <h1>Sales by Business Activity</h1>
+    <p class="lead">Review business activity across invoiced B2B and B2C sales using the same unified ERP sales foundation.</p>
   </section>
 
   <section>
@@ -29,38 +29,30 @@
   </section>
 
   {% if summary %}
-    <section class="module-grid" aria-label="Sales summary KPIs">
-      <div class="module-card">
-        <p class="eyebrow">Net sales</p>
-        <h2>{{ fmt.money_crc(summary.total.total_net_sales) }}</h2>
+    <section class="kpi-grid-vertical" aria-label="Sales summary KPIs">
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Gross Sales</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(summary.total.total_gross_sales) }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Orders</p>
-        <h2>{{ summary.total.total_orders }}</h2>
-      </div>
-      <div class="module-card">
-        <p class="eyebrow">Lines</p>
-        <h2>{{ summary.total.total_lines }}</h2>
-      </div>
-      <div class="module-card">
-        <p class="eyebrow">Quantity</p>
-        <h2>{{ summary.total.total_quantity }}</h2>
-      </div>
-      <div class="module-card">
+      <div class="kpi-card-compact">
         <p class="eyebrow">Discount</p>
-        <h2>{{ fmt.money_crc(summary.total.total_discount) }}</h2>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(summary.total.total_discount) }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Average order value</p>
-        <h2>{{ fmt.money_crc(summary.total.average_order_value) }}</h2>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Net Sales</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(summary.total.total_net_sales) }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Average line value</p>
-        <h2>{{ fmt.money_crc(summary.total.average_line_value) }}</h2>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">COGS</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(summary.total.cogs) if summary.total.has_complete_cogs else "—" }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Mix</p>
-        <h2>B2B {{ "{:,.1f}".format(summary.b2b.sales_percent) }}% / B2C {{ "{:,.1f}".format(summary.b2c.sales_percent) }}%</h2>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Gross Profit</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(summary.total.gross_profit) if summary.total.gross_profit is not none else "—" }}</h2>
+      </div>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Average Ticket</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(summary.total.average_order_value) }}</h2>
       </div>
     </section>
 
@@ -69,28 +61,30 @@
         <thead>
           <tr>
             <th>Source</th>
+            <th>Gross Sales</th>
+            <th>Discount</th>
             <th>Net sales</th>
+            <th>COGS</th>
+            <th>Gross Profit</th>
             <th>Orders</th>
             <th>Lines</th>
-            <th>Quantity</th>
-            <th>Discount</th>
-            <th>Average order value</th>
+            <th>Average Ticket</th>
             <th>Average line value</th>
-            <th>Sales mix %</th>
           </tr>
         </thead>
         <tbody>
           {% for bucket in [summary.b2b, summary.b2c, summary.total] %}
             <tr>
               <td>{{ bucket.label }}</td>
+              <td>{{ fmt.money_crc(bucket.total_gross_sales) }}</td>
+              <td>{{ fmt.money_crc(bucket.total_discount) }}</td>
               <td>{{ fmt.money_crc(bucket.total_net_sales) }}</td>
+              <td>{{ fmt.money_crc(bucket.cogs) if bucket.has_complete_cogs else "—" }}</td>
+              <td>{{ fmt.money_crc(bucket.gross_profit) if bucket.gross_profit is not none else "—" }}</td>
               <td>{{ bucket.total_orders }}</td>
               <td>{{ bucket.total_lines }}</td>
-              <td>{{ bucket.total_quantity }}</td>
-              <td>{{ fmt.money_crc(bucket.total_discount) }}</td>
               <td>{{ fmt.money_crc(bucket.average_order_value) }}</td>
               <td>{{ fmt.money_crc(bucket.average_line_value) }}</td>
-              <td>{{ "{:,.1f}".format(bucket.sales_percent) }}%</td>
             </tr>
           {% endfor %}
         </tbody>

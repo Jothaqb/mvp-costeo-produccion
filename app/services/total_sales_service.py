@@ -30,6 +30,10 @@ class TotalSalesRow:
     unit_price: Decimal
     discount_amount: Decimal | None
     line_total: Decimal
+    gross_sales: Decimal
+    cogs: Decimal | None
+    gross_profit: Decimal | None
+    has_complete_cogs: bool
     order_status: str
     order_created_at: datetime
     line_number: int
@@ -38,6 +42,9 @@ class TotalSalesRow:
 @dataclass(frozen=True)
 class SalesSummaryBucket:
     label: str
+    total_gross_sales: Decimal
+    cogs: Decimal | None
+    gross_profit: Decimal | None
     total_net_sales: Decimal
     total_orders: int
     total_lines: int
@@ -46,6 +53,10 @@ class SalesSummaryBucket:
     average_order_value: Decimal
     average_line_value: Decimal
     sales_percent: Decimal
+    has_complete_cogs: bool
+    cogs_lines_with_value: int
+    cogs_total_lines: int
+    cogs_coverage_label: str
 
 
 @dataclass(frozen=True)
@@ -72,12 +83,16 @@ class SalesItemParetoRow:
 
 @dataclass(frozen=True)
 class SalesItemsParetoSummary:
-    total_net_sales: Decimal
     total_items: int
-    total_quantity: Decimal
     a_items_count: int
     b_items_count: int
     c_items_count: int
+    a_items_percent: Decimal
+    b_items_percent: Decimal
+    c_items_percent: Decimal
+    a_sales_percent: Decimal
+    b_sales_percent: Decimal
+    c_sales_percent: Decimal
 
 
 @dataclass(frozen=True)
@@ -103,12 +118,16 @@ class SalesCategoryParetoRow:
 
 @dataclass(frozen=True)
 class SalesCategoriesParetoSummary:
-    total_net_sales: Decimal
     total_categories: int
-    total_quantity: Decimal
     a_categories_count: int
     b_categories_count: int
     c_categories_count: int
+    a_categories_percent: Decimal
+    b_categories_percent: Decimal
+    c_categories_percent: Decimal
+    a_sales_percent: Decimal
+    b_sales_percent: Decimal
+    c_sales_percent: Decimal
 
 
 @dataclass(frozen=True)
@@ -126,24 +145,39 @@ class SalesByOrderRow:
     customer_name: str | None
     channel_name: str | None
     order_status: str
+    gross_sales: Decimal
     net_sales: Decimal
+    cogs: Decimal | None
+    gross_profit: Decimal | None
     total_quantity: Decimal
     total_discount: Decimal
     lines_count: int
     items_count: int
     categories_count: int
     average_line_value: Decimal
+    has_complete_cogs: bool
+    cogs_lines_with_value: int
+    cogs_total_lines: int
+    cogs_coverage_label: str
     detail_url: str
 
 
 @dataclass(frozen=True)
 class SalesByOrderSummary:
+    total_gross_sales: Decimal
+    total_discount: Decimal
     total_net_sales: Decimal
+    cogs: Decimal | None
+    gross_profit: Decimal | None
     total_orders: int
     total_quantity: Decimal
     average_order_value: Decimal
     b2b_orders: int
     b2c_orders: int
+    has_complete_cogs: bool
+    cogs_lines_with_value: int
+    cogs_total_lines: int
+    cogs_coverage_label: str
 
 
 @dataclass(frozen=True)
@@ -189,6 +223,10 @@ def get_total_sales_rows(
             unit_price=row.unit_price,
             discount_amount=row.discount_amount,
             line_total=row.line_total,
+            gross_sales=_gross_sales_for_row(row.line_total, row.discount_amount),
+            cogs=row.cogs,
+            gross_profit=_gross_profit_for_row(row.line_total, row.cogs),
+            has_complete_cogs=row.cogs is not None,
             order_status=row.order_status,
             order_created_at=row.order_created_at,
             line_number=row.line_number,
@@ -227,6 +265,9 @@ def get_sales_summary(
     total_percent = HUNDRED if total_bucket.total_net_sales > ZERO else ZERO
     total_bucket = SalesSummaryBucket(
         label=total_bucket.label,
+        total_gross_sales=total_bucket.total_gross_sales,
+        cogs=total_bucket.cogs,
+        gross_profit=total_bucket.gross_profit,
         total_net_sales=total_bucket.total_net_sales,
         total_orders=total_bucket.total_orders,
         total_lines=total_bucket.total_lines,
@@ -235,6 +276,10 @@ def get_sales_summary(
         average_order_value=total_bucket.average_order_value,
         average_line_value=total_bucket.average_line_value,
         sales_percent=total_percent,
+        has_complete_cogs=total_bucket.has_complete_cogs,
+        cogs_lines_with_value=total_bucket.cogs_lines_with_value,
+        cogs_total_lines=total_bucket.cogs_total_lines,
+        cogs_coverage_label=total_bucket.cogs_coverage_label,
     )
     return SalesSummary(total=total_bucket, b2b=b2b_bucket, b2c=b2c_bucket)
 
@@ -327,6 +372,10 @@ def _get_b2b_sales_rows(
                 unit_price=line.unit_price_snapshot,
                 discount_amount=None,
                 line_total=line.line_total,
+                gross_sales=line.line_total,
+                cogs=line.cost_total_snapshot,
+                gross_profit=_gross_profit_for_row(line.line_total, line.cost_total_snapshot),
+                has_complete_cogs=line.cost_total_snapshot is not None,
                 order_status=order.status,
                 order_created_at=order.created_at,
                 line_number=line.line_number,
@@ -372,6 +421,16 @@ def _get_b2c_sales_rows(
                 unit_price=line.unit_price_snapshot,
                 discount_amount=line.discount_amount_snapshot,
                 line_total=line.net_line_total_snapshot if line.net_line_total_snapshot is not None else line.line_total,
+                gross_sales=_gross_sales_for_row(
+                    line.net_line_total_snapshot if line.net_line_total_snapshot is not None else line.line_total,
+                    line.discount_amount_snapshot,
+                ),
+                cogs=line.cost_total_snapshot,
+                gross_profit=_gross_profit_for_row(
+                    line.net_line_total_snapshot if line.net_line_total_snapshot is not None else line.line_total,
+                    line.cost_total_snapshot,
+                ),
+                has_complete_cogs=line.cost_total_snapshot is not None,
                 order_status=order.status,
                 order_created_at=order.created_at,
                 line_number=line.line_number,
@@ -398,19 +457,27 @@ def _build_sales_summary_bucket(
     *,
     total_net_sales_base: Decimal | None,
 ) -> SalesSummaryBucket:
+    total_gross_sales = sum((row.gross_sales for row in rows), ZERO)
     total_net_sales = sum((row.line_total for row in rows), ZERO)
     total_lines = len(rows)
     total_quantity = sum((row.quantity for row in rows), ZERO)
-    total_discount = sum((((row.discount_amount or ZERO) for row in rows)), ZERO)
+    total_discount = sum(((row.discount_amount or ZERO) for row in rows), ZERO)
     total_orders = len({(row.sales_source, row.order_id) for row in rows})
     average_order_value = _safe_divide(total_net_sales, Decimal(total_orders))
     average_line_value = _safe_divide(total_net_sales, Decimal(total_lines))
+    cogs, has_complete_cogs, cogs_lines_with_value, cogs_total_lines, cogs_coverage_label = _aggregate_cogs(
+        [row.cogs for row in rows]
+    )
+    gross_profit = _gross_profit_for_row(total_net_sales, cogs) if has_complete_cogs else None
     if total_net_sales_base is None:
         sales_percent = ZERO
     else:
         sales_percent = _safe_percent(total_net_sales, total_net_sales_base)
     return SalesSummaryBucket(
         label=label,
+        total_gross_sales=total_gross_sales,
+        cogs=cogs,
+        gross_profit=gross_profit,
         total_net_sales=total_net_sales,
         total_orders=total_orders,
         total_lines=total_lines,
@@ -419,6 +486,10 @@ def _build_sales_summary_bucket(
         average_order_value=average_order_value,
         average_line_value=average_line_value,
         sales_percent=sales_percent,
+        has_complete_cogs=has_complete_cogs,
+        cogs_lines_with_value=cogs_lines_with_value,
+        cogs_total_lines=cogs_total_lines,
+        cogs_coverage_label=cogs_coverage_label,
     )
 
 
@@ -429,7 +500,6 @@ def _build_sales_items_pareto(rows: list[TotalSalesRow]) -> SalesItemsPareto:
         grouped_rows.setdefault(sku, []).append(row)
 
     total_net_sales = sum((row.line_total for row in rows), ZERO)
-    total_quantity = sum((row.quantity for row in rows), ZERO)
 
     ranked_base: list[tuple[str, str, Decimal, Decimal, int, int, Decimal]] = []
     for sku, sku_rows in grouped_rows.items():
@@ -457,6 +527,9 @@ def _build_sales_items_pareto(rows: list[TotalSalesRow]) -> SalesItemsPareto:
     a_items_count = 0
     b_items_count = 0
     c_items_count = 0
+    a_sales_total = ZERO
+    b_sales_total = ZERO
+    c_sales_total = ZERO
     for index, item in enumerate(ranked_base, start=1):
         sku, description, net_sales, quantity, lines, orders, discount = item
         percent_of_total_sales = _safe_percent(net_sales, total_net_sales)
@@ -465,10 +538,13 @@ def _build_sales_items_pareto(rows: list[TotalSalesRow]) -> SalesItemsPareto:
         pareto_class = _classify_pareto(cumulative_percent)
         if pareto_class == "A":
             a_items_count += 1
+            a_sales_total += net_sales
         elif pareto_class == "B":
             b_items_count += 1
+            b_sales_total += net_sales
         else:
             c_items_count += 1
+            c_sales_total += net_sales
         pareto_rows.append(
             SalesItemParetoRow(
                 rank=index,
@@ -486,12 +562,16 @@ def _build_sales_items_pareto(rows: list[TotalSalesRow]) -> SalesItemsPareto:
         )
 
     summary = SalesItemsParetoSummary(
-        total_net_sales=total_net_sales,
         total_items=len(pareto_rows),
-        total_quantity=total_quantity,
         a_items_count=a_items_count,
         b_items_count=b_items_count,
         c_items_count=c_items_count,
+        a_items_percent=_safe_percent(Decimal(a_items_count), Decimal(len(pareto_rows))),
+        b_items_percent=_safe_percent(Decimal(b_items_count), Decimal(len(pareto_rows))),
+        c_items_percent=_safe_percent(Decimal(c_items_count), Decimal(len(pareto_rows))),
+        a_sales_percent=_safe_percent(a_sales_total, total_net_sales),
+        b_sales_percent=_safe_percent(b_sales_total, total_net_sales),
+        c_sales_percent=_safe_percent(c_sales_total, total_net_sales),
     )
     return SalesItemsPareto(summary=summary, rows=pareto_rows)
 
@@ -503,7 +583,6 @@ def _build_sales_categories_pareto(rows: list[TotalSalesRow]) -> SalesCategories
         grouped_rows.setdefault(category_name, []).append(row)
 
     total_net_sales = sum((row.line_total for row in rows), ZERO)
-    total_quantity = sum((row.quantity for row in rows), ZERO)
 
     ranked_base: list[tuple[str, Decimal, Decimal, int, int, int, Decimal]] = []
     for category_name, category_rows in grouped_rows.items():
@@ -532,6 +611,9 @@ def _build_sales_categories_pareto(rows: list[TotalSalesRow]) -> SalesCategories
     a_categories_count = 0
     b_categories_count = 0
     c_categories_count = 0
+    a_sales_total = ZERO
+    b_sales_total = ZERO
+    c_sales_total = ZERO
     for index, item in enumerate(ranked_base, start=1):
         category_name, net_sales, quantity, lines, orders, items_count, discount = item
         percent_of_total_sales = _safe_percent(net_sales, total_net_sales)
@@ -540,10 +622,13 @@ def _build_sales_categories_pareto(rows: list[TotalSalesRow]) -> SalesCategories
         pareto_class = _classify_pareto(cumulative_percent)
         if pareto_class == "A":
             a_categories_count += 1
+            a_sales_total += net_sales
         elif pareto_class == "B":
             b_categories_count += 1
+            b_sales_total += net_sales
         else:
             c_categories_count += 1
+            c_sales_total += net_sales
         pareto_rows.append(
             SalesCategoryParetoRow(
                 rank=index,
@@ -561,12 +646,16 @@ def _build_sales_categories_pareto(rows: list[TotalSalesRow]) -> SalesCategories
         )
 
     summary = SalesCategoriesParetoSummary(
-        total_net_sales=total_net_sales,
         total_categories=len(pareto_rows),
-        total_quantity=total_quantity,
         a_categories_count=a_categories_count,
         b_categories_count=b_categories_count,
         c_categories_count=c_categories_count,
+        a_categories_percent=_safe_percent(Decimal(a_categories_count), Decimal(len(pareto_rows))),
+        b_categories_percent=_safe_percent(Decimal(b_categories_count), Decimal(len(pareto_rows))),
+        c_categories_percent=_safe_percent(Decimal(c_categories_count), Decimal(len(pareto_rows))),
+        a_sales_percent=_safe_percent(a_sales_total, total_net_sales),
+        b_sales_percent=_safe_percent(b_sales_total, total_net_sales),
+        c_sales_percent=_safe_percent(c_sales_total, total_net_sales),
     )
     return SalesCategoriesPareto(summary=summary, rows=pareto_rows)
 
@@ -579,6 +668,7 @@ def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
     order_rows: list[SalesByOrderRow] = []
     for (sales_source, order_id), order_group_rows in grouped_rows.items():
         first_row = order_group_rows[0]
+        gross_sales = sum((row.gross_sales for row in order_group_rows), ZERO)
         net_sales = sum((row.line_total for row in order_group_rows), ZERO)
         total_quantity = sum((row.quantity for row in order_group_rows), ZERO)
         total_discount = sum(((row.discount_amount or ZERO) for row in order_group_rows), ZERO)
@@ -586,6 +676,10 @@ def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
         items_count = len({((row.sku or "").strip() or "(sin SKU)") for row in order_group_rows})
         categories_count = len({((row.category_name or "").strip() or "(sin categoría)") for row in order_group_rows})
         average_line_value = _safe_divide(net_sales, Decimal(lines_count))
+        cogs, has_complete_cogs, cogs_lines_with_value, cogs_total_lines, cogs_coverage_label = _aggregate_cogs(
+            [row.cogs for row in order_group_rows]
+        )
+        gross_profit = _gross_profit_for_row(net_sales, cogs) if has_complete_cogs else None
         detail_url = f"/b2b/orders/{order_id}" if sales_source == "B2B" else f"/b2c/orders/{order_id}"
         order_rows.append(
             SalesByOrderRow(
@@ -596,13 +690,20 @@ def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
                 customer_name=first_row.customer_name,
                 channel_name=first_row.channel_name,
                 order_status=first_row.order_status,
+                gross_sales=gross_sales,
                 net_sales=net_sales,
+                cogs=cogs,
+                gross_profit=gross_profit,
                 total_quantity=total_quantity,
                 total_discount=total_discount,
                 lines_count=lines_count,
                 items_count=items_count,
                 categories_count=categories_count,
                 average_line_value=average_line_value,
+                has_complete_cogs=has_complete_cogs,
+                cogs_lines_with_value=cogs_lines_with_value,
+                cogs_total_lines=cogs_total_lines,
+                cogs_coverage_label=cogs_coverage_label,
                 detail_url=detail_url,
             )
         )
@@ -616,19 +717,33 @@ def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
         reverse=True,
     )
 
+    total_gross_sales = sum((row.gross_sales for row in order_rows), ZERO)
+    total_discount = sum((row.total_discount for row in order_rows), ZERO)
     total_net_sales = sum((row.net_sales for row in order_rows), ZERO)
     total_orders = len(order_rows)
     total_quantity = sum((row.total_quantity for row in order_rows), ZERO)
     average_order_value = _safe_divide(total_net_sales, Decimal(total_orders))
     b2b_orders = sum((1 for row in order_rows if row.sales_source == "B2B"))
     b2c_orders = sum((1 for row in order_rows if row.sales_source == "B2C"))
+    cogs, has_complete_cogs, cogs_lines_with_value, cogs_total_lines, cogs_coverage_label = _aggregate_cogs(
+        [row.cogs for row in rows]
+    )
+    gross_profit = _gross_profit_for_row(total_net_sales, cogs) if has_complete_cogs else None
     summary = SalesByOrderSummary(
+        total_gross_sales=total_gross_sales,
+        total_discount=total_discount,
         total_net_sales=total_net_sales,
+        cogs=cogs,
+        gross_profit=gross_profit,
         total_orders=total_orders,
         total_quantity=total_quantity,
         average_order_value=average_order_value,
         b2b_orders=b2b_orders,
         b2c_orders=b2c_orders,
+        has_complete_cogs=has_complete_cogs,
+        cogs_lines_with_value=cogs_lines_with_value,
+        cogs_total_lines=cogs_total_lines,
+        cogs_coverage_label=cogs_coverage_label,
     )
     return SalesByOrderResult(summary=summary, rows=order_rows)
 
@@ -655,6 +770,27 @@ def _classify_pareto(cumulative_percent: Decimal) -> str:
     if cumulative_percent <= Decimal("95"):
         return "B"
     return "C"
+
+
+def _gross_sales_for_row(net_sales: Decimal, discount_amount: Decimal | None) -> Decimal:
+    return net_sales + (discount_amount or ZERO)
+
+
+def _gross_profit_for_row(net_sales: Decimal, cogs: Decimal | None) -> Decimal | None:
+    if cogs is None:
+        return None
+    return net_sales - cogs
+
+
+def _aggregate_cogs(cogs_values: list[Decimal | None]) -> tuple[Decimal | None, bool, int, int, str]:
+    total_lines = len(cogs_values)
+    lines_with_value = sum((1 for cogs in cogs_values if cogs is not None))
+    coverage_label = f"{lines_with_value}/{total_lines} lines"
+    if total_lines == 0:
+        return ZERO, True, 0, 0, coverage_label
+    if lines_with_value != total_lines:
+        return None, False, lines_with_value, total_lines, coverage_label
+    return sum((cogs for cogs in cogs_values if cogs is not None), ZERO), True, lines_with_value, total_lines, coverage_label
 
 
 def _safe_divide(numerator: Decimal, denominator: Decimal) -> Decimal:

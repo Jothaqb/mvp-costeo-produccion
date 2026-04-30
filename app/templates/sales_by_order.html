@@ -6,7 +6,6 @@
     <p class="eyebrow">Sales</p>
     <h1>Sales by Order</h1>
     <p class="lead">Review invoiced B2B and B2C sales grouped by order using the same unified ERP sales foundation.</p>
-    <p class="muted-inline">Category count uses current Product Master category resolution and is not a historical snapshot.</p>
   </section>
 
   <section>
@@ -30,30 +29,30 @@
   </section>
 
   {% if result %}
-    <section class="module-grid" aria-label="Sales by order KPIs">
-      <div class="module-card">
-        <p class="eyebrow">Net sales</p>
-        <h2>{{ fmt.money_crc(result.summary.total_net_sales) }}</h2>
+    <section class="kpi-grid-compact kpi-grid-horizontal" aria-label="Sales by order KPIs">
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Gross Sales</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.total_gross_sales) }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Orders</p>
-        <h2>{{ result.summary.total_orders }}</h2>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Discount</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.total_discount) }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Quantity</p>
-        <h2>{{ result.summary.total_quantity }}</h2>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Net Sales</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.total_net_sales) }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">Average order value</p>
-        <h2>{{ fmt.money_crc(result.summary.average_order_value) }}</h2>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">COGS</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.cogs) if result.summary.has_complete_cogs else "—" }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">B2B orders</p>
-        <h2>{{ result.summary.b2b_orders }}</h2>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Gross Profit</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.gross_profit) if result.summary.gross_profit is not none else "—" }}</h2>
       </div>
-      <div class="module-card">
-        <p class="eyebrow">B2C orders</p>
-        <h2>{{ result.summary.b2c_orders }}</h2>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Average Ticket</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.average_order_value) }}</h2>
       </div>
     </section>
 
@@ -66,14 +65,14 @@
             <th>Order</th>
             <th>Customer</th>
             <th>Channel</th>
-            <th>Net sales</th>
-            <th>Quantity</th>
+            <th>Gross Sales</th>
             <th>Discount</th>
+            <th>Net sales</th>
+            <th>COGS</th>
+            <th>Gross Profit</th>
+            <th>Quantity</th>
             <th>Lines</th>
-            <th>Items</th>
-            <th>Categories</th>
             <th>Average line value</th>
-            <th>Status</th>
             <th>Detail</th>
           </tr>
         </thead>
@@ -85,20 +84,26 @@
               <td>{{ row.order_number }}</td>
               <td>{{ row.customer_name or "" }}</td>
               <td>{{ row.channel_name or "" }}</td>
-              <td>{{ fmt.money_crc(row.net_sales) }}</td>
-              <td>{{ row.total_quantity }}</td>
+              <td>{{ fmt.money_crc(row.gross_sales) }}</td>
               <td>{{ fmt.money_crc(row.total_discount) }}</td>
+              <td>{{ fmt.money_crc(row.net_sales) }}</td>
+              <td>
+                {% if row.has_complete_cogs %}
+                  {{ fmt.money_crc(row.cogs) }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>{{ fmt.money_crc(row.gross_profit) if row.gross_profit is not none else "—" }}</td>
+              <td>{{ row.total_quantity }}</td>
               <td>{{ row.lines_count }}</td>
-              <td>{{ row.items_count }}</td>
-              <td>{{ row.categories_count }}</td>
               <td>{{ fmt.money_crc(row.average_line_value) }}</td>
-              <td>{{ row.order_status }}</td>
               <td><a href="{{ row.detail_url }}">View</a></td>
             </tr>
           {% endfor %}
           {% if not result.rows %}
             <tr>
-              <td colspan="14">No invoiced sales match the current filters.</td>
+              <td colspan="12">No invoiced sales match the current filters.</td>
             </tr>
           {% endif %}
         </tbody>
