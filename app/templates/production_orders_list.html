@@ -4,7 +4,10 @@
 {% block content %}
   <section>
     <h1>Production Orders</h1>
-    <p><a class="button" href="/production-orders/new">New Production Order</a></p>
+    <p>
+      <a class="button" href="/production-orders/new">New Production Order</a>
+      <a class="button" href="/production-orders/import">Import Historical CSV</a>
+    </p>
     <form method="get" action="/production-orders" class="filters">
       <label for="order_number">Order number</label>
       <input id="order_number" name="order_number" value="{{ filters.order_number }}">

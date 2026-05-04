@@ -203,6 +203,12 @@ from app.services.planning_service import (
     update_product_inventory_parameters,
     update_product_planner_quantities,
 )
+from app.services.production_order_historical_import_service import (
+    EXPECTED_HEADERS as PRODUCTION_ORDER_HISTORICAL_IMPORT_HEADERS,
+    ProductionOrderHistoricalImportResult,
+    ProductionOrderHistoricalImportValidationError,
+    import_historical_production_orders_csv,
+)
 from app.services.purchase_order_historical_import_service import (
     EXPECTED_HEADERS as PURCHASE_ORDER_HISTORICAL_IMPORT_HEADERS,
     PurchaseOrderHistoricalImportResult,
@@ -4856,6 +4862,66 @@ def list_production_orders(
             "filters": filters,
             "process_types": _process_types(),
             "statuses": _production_order_statuses(),
+        },
+    )
+
+
+@app.get("/production-orders/import", response_class=HTMLResponse)
+def production_orders_import_form(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_import_form.html",
+        context={"title": "Import Historical Production Orders", "error": None, "result": None},
+    )
+
+
+@app.get("/production-orders/import/template")
+def download_production_orders_import_template() -> Response:
+    return _csv_attachment_response(
+        filename="production_orders_historical_import_template.csv",
+        headers=PRODUCTION_ORDER_HISTORICAL_IMPORT_HEADERS,
+        example_row=(
+            "PROD-HIST-001",
+            "2025-01-15",
+            "SKU001",
+            "Mezclado",
+            "100",
+            "105",
+            "98",
+            "unit",
+            "93.33",
+            "25000",
+            "5000",
+            "2000",
+            "3000",
+            "35000",
+            "Historical production order example",
+            "2025-01-15",
+        ),
+    )
+
+
+@app.post("/production-orders/import", response_class=HTMLResponse)
+async def import_production_orders(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    result: ProductionOrderHistoricalImportResult | None = None
+    error = None
+    try:
+        result = import_historical_production_orders_csv(
+            db,
+            file_name=file.filename or "historical_production_orders.csv",
+            file_bytes=await file.read(),
+        )
+    except ProductionOrderHistoricalImportValidationError as exc:
+        db.rollback()
+        error = str(exc)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_import_form.html",
+        context={
+            "title": "Import Historical Production Orders",
+            "error": error,
+            "result": result,
         },
     )
 
