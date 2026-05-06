@@ -1333,7 +1333,11 @@ def products_master(
     filters = {"q": q.strip(), "active": (active.strip().lower() or "all")}
     product_query = (
         db.query(Product)
-        .options(joinedload(Product.category), joinedload(Product.supplier_record))
+        .options(
+            joinedload(Product.category),
+            joinedload(Product.supplier_record),
+            joinedload(Product.default_route),
+        )
     )
     if filters["q"]:
         term = f"%{filters['q']}%"
@@ -1357,6 +1361,81 @@ def products_master(
             "filters": filters,
             "result_count": len(products),
         },
+    )
+
+
+@app.get("/master-data/products/export")
+def export_products_master_csv(db: Session = Depends(get_db)) -> Response:
+    products = (
+        db.query(Product)
+        .options(
+            joinedload(Product.category),
+            joinedload(Product.supplier_record),
+            joinedload(Product.default_route),
+        )
+        .order_by(Product.sku, Product.id)
+        .all()
+    )
+
+    def _yes_no(value: bool) -> str:
+        return "yes" if value else "no"
+
+    def _decimal_text(value: object) -> str:
+        return "" if value is None else str(value)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        (
+            "SKU",
+            "Name",
+            "Category",
+            "Supplier",
+            "Active",
+            "Available for sale",
+            "Manufactured",
+            "Purchased",
+            "B2C price",
+            "B2B price",
+            "Standard cost (reference)",
+            "Has route assigned",
+            "Route code",
+            "Route name",
+            "Route version",
+            "Route process type",
+            "Route active",
+            "Detail URL",
+        )
+    )
+    for product in products:
+        route = product.default_route
+        writer.writerow(
+            (
+                product.sku,
+                product.name,
+                product.category.name if product.category else "",
+                product.supplier_record.name if product.supplier_record else (product.supplier or ""),
+                _yes_no(product.active),
+                _yes_no(product.available_for_sale_gc),
+                _yes_no(product.is_manufactured),
+                _yes_no(product.is_purchased_product),
+                _decimal_text(product.b2c_price),
+                _decimal_text(product.b2b_price),
+                _decimal_text(product.standard_cost),
+                _yes_no(route is not None),
+                route.code if route else "",
+                route.name if route else "",
+                route.version if route else "",
+                route.process_type if route else "",
+                _yes_no(route.active) if route else "",
+                f"/master-data/products/{product.id}",
+            )
+        )
+
+    return Response(
+        content=buffer.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="product_master_with_routes.csv"'},
     )
 
 

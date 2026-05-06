@@ -5,6 +5,7 @@
   <section>
     <h1>{{ title }}</h1>
     <p><a href="/master-data/products/new">New product / SKU</a></p>
+    <p><a href="/master-data/products/export">Download Products CSV</a></p>
     <form method="get" action="/master-data/products">
       <label for="q">Search SKU or product name</label>
       <input id="q" name="q" value="{{ filters.q }}" placeholder="Search SKU or product name">
