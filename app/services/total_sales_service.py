@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.models import B2BSalesOrder, B2BSalesOrderLine, B2CSalesOrder, B2CSalesOrderLine, Product, ProductCategory
@@ -344,25 +345,43 @@ def _get_b2b_sales_rows(
         .filter(B2BSalesOrder.status == "invoiced")
     )
     if date_from is not None:
-        query = query.filter(B2BSalesOrder.created_at >= datetime.combine(date_from, time.min))
+        query = query.filter(
+            or_(
+                B2BSalesOrder.delivery_date >= date_from,
+                and_(
+                    B2BSalesOrder.delivery_date.is_(None),
+                    B2BSalesOrder.created_at >= datetime.combine(date_from, time.min),
+                ),
+            )
+        )
     if date_to is not None:
         next_day = date_to + timedelta(days=1)
-        # Keep the user-facing date_to inclusive by filtering before the next day at 00:00.
-        query = query.filter(B2BSalesOrder.created_at < datetime.combine(next_day, time.min))
+        # Keep the user-facing date_to inclusive by filtering before the next day at 00:00
+        # for created_at fallback rows, while delivery_date stays inclusive directly.
+        query = query.filter(
+            or_(
+                B2BSalesOrder.delivery_date <= date_to,
+                and_(
+                    B2BSalesOrder.delivery_date.is_(None),
+                    B2BSalesOrder.created_at < datetime.combine(next_day, time.min),
+                ),
+            )
+        )
 
     rows: list[TotalSalesRow] = []
     for order, line in query.order_by(
+        B2BSalesOrder.delivery_date.desc(),
         B2BSalesOrder.created_at.desc(),
         B2BSalesOrder.id.desc(),
         B2BSalesOrderLine.line_number.asc(),
     ).all():
-        # For B2B, report date uses created_at because B2B orders do not have explicit order_date.
+        report_date = order.delivery_date or order.created_at.date()
         rows.append(
             TotalSalesRow(
                 sales_source="B2B",
                 order_id=order.id,
                 order_number=order.order_number,
-                order_date=order.created_at.date(),
+                order_date=report_date,
                 customer_name=order.customer_name_snapshot,
                 channel_name=order.b2b_channel_name_snapshot,
                 sku=line.sku_snapshot,

@@ -26,6 +26,9 @@
 
       <button type="submit">Apply filters</button>
     </form>
+    {% if using_default_date_window %}
+      <p class="muted-inline">Showing last 30 days by default. Use date filters to search the full historical period.</p>
+    {% endif %}
   </section>
 
   {% if result %}

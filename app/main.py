@@ -1832,10 +1832,20 @@ def total_sales(
     }
     error = None
     rows = []
+    using_default_date_window = False
 
     try:
-        parsed_date_from = _parse_optional_date(filters["date_from"])
-        parsed_date_to = _parse_optional_date(filters["date_to"])
+        if filters["date_from"] == "" and filters["date_to"] == "":
+            default_date_to = date.today()
+            default_date_from = default_date_to - timedelta(days=30)
+            parsed_date_from = default_date_from
+            parsed_date_to = default_date_to
+            filters["date_from"] = default_date_from.isoformat()
+            filters["date_to"] = default_date_to.isoformat()
+            using_default_date_window = True
+        else:
+            parsed_date_from = _parse_optional_date(filters["date_from"])
+            parsed_date_to = _parse_optional_date(filters["date_to"])
         if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
             raise ValueError("Date from cannot be later than date to.")
         if filters["sales_type"] not in {"all", "b2b", "b2c"}:
@@ -1866,6 +1876,7 @@ def total_sales(
             "filters": filters,
             "error": error,
             "result_count": len(rows),
+            "using_default_date_window": using_default_date_window,
         },
     )
 
@@ -2041,10 +2052,20 @@ def sales_by_order(
     }
     error = None
     result = None
+    using_default_date_window = False
 
     try:
-        parsed_date_from = _parse_optional_date(filters["date_from"])
-        parsed_date_to = _parse_optional_date(filters["date_to"])
+        if filters["date_from"] == "" and filters["date_to"] == "":
+            default_date_to = date.today()
+            default_date_from = default_date_to - timedelta(days=30)
+            parsed_date_from = default_date_from
+            parsed_date_to = default_date_to
+            filters["date_from"] = default_date_from.isoformat()
+            filters["date_to"] = default_date_to.isoformat()
+            using_default_date_window = True
+        else:
+            parsed_date_from = _parse_optional_date(filters["date_from"])
+            parsed_date_to = _parse_optional_date(filters["date_to"])
         if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
             raise ValueError("Date from cannot be later than date to.")
         if filters["sales_type"] not in {"all", "b2b", "b2c"}:
@@ -2074,6 +2095,7 @@ def sales_by_order(
             "result": result,
             "filters": filters,
             "error": error,
+            "using_default_date_window": using_default_date_window,
         },
     )
 

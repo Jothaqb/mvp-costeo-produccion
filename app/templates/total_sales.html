@@ -6,7 +6,7 @@
     <p class="eyebrow">Sales</p>
     <h1>Total Sales</h1>
     <p class="lead">Review invoiced B2B and B2C sales from the ERP in one simple commercial table.</p>
-    <p class="muted-inline">B2B report date uses the order created timestamp because B2B orders do not currently store an explicit order date. Category is resolved from the current Product Master when available and is not a historical category snapshot.</p>
+    <p class="muted-inline">B2B report date uses delivery date when available and falls back to the order created timestamp only when delivery date is empty. Category is resolved from the current Product Master when available and is not a historical category snapshot.</p>
   </section>
 
   <section>
@@ -27,6 +27,9 @@
 
       <button type="submit">Apply filters</button>
     </form>
+    {% if using_default_date_window %}
+      <p class="muted-inline">Showing last 30 days by default. Use date filters to search the full historical period.</p>
+    {% endif %}
     <p class="muted-inline">{{ result_count }} invoiced sales lines found.</p>
   </section>
 
