@@ -529,6 +529,76 @@ async def logout_submit(request: Request, db: Session = Depends(get_db)) -> Resp
     return response
 
 
+@app.get("/auth/change-password", response_class=HTMLResponse)
+def change_password_page(request: Request) -> HTMLResponse:
+    require_authenticated_user(request)
+    return templates.TemplateResponse(
+        request=request,
+        name="change_password.html",
+        context={
+            "title": "Change Password",
+            "error": None,
+            "success": None,
+        },
+    )
+
+
+@app.post("/auth/change-password")
+async def change_password_submit(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    current_user = require_authenticated_user(request)
+    db_user = db.query(User).filter(User.id == current_user.id).one()
+    form = await request.form()
+    current_password = str(form.get("current_password", ""))
+    new_password = str(form.get("new_password", ""))
+    confirm_new_password = str(form.get("confirm_new_password", ""))
+
+    error: str | None = None
+    if not current_password:
+        error = "Current password is required."
+    elif not new_password:
+        error = "New password is required."
+    elif not confirm_new_password:
+        error = "Password confirmation is required."
+    elif not verify_password(current_password, db_user.password_hash):
+        error = "Current password is incorrect."
+    elif new_password != confirm_new_password:
+        error = "New password and confirmation do not match."
+    elif not new_password.strip():
+        error = "New password cannot be empty or only spaces."
+    elif len(new_password) < 10:
+        error = "New password must be at least 10 characters long."
+    elif verify_password(new_password, db_user.password_hash):
+        error = "New password must be different from the current password."
+
+    if error:
+        return templates.TemplateResponse(
+            request=request,
+            name="change_password.html",
+            context={
+                "title": "Change Password",
+                "error": error,
+                "success": None,
+            },
+            status_code=400,
+        )
+
+    db_user.password_hash = hash_password(new_password)
+    db_user.updated_at = datetime.utcnow()
+    db_user.must_change_password = False
+    db.commit()
+    db.refresh(db_user)
+    request.state.current_user = db_user
+    return templates.TemplateResponse(
+        request=request,
+        name="change_password.html",
+        context={
+            "title": "Change Password",
+            "error": None,
+            "success": "Password updated successfully.",
+        },
+    )
+
+
 @app.get("/auth/bootstrap-admin", response_class=HTMLResponse)
 def bootstrap_admin_page(request: Request, db: Session = Depends(get_db)) -> Response:
     if any_active_users(db) or not is_local_request(request):
