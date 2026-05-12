@@ -8,6 +8,7 @@
   </head>
   <body>
     {% set path = request.url.path %}
+    {% set current_user = request.state.current_user if request.state is defined else None %}
     {% set is_sales = path == "/sales" or path.startswith("/sales/") or path == "/b2b" or path.startswith("/b2b/") or path == "/b2c" or path.startswith("/b2c/") %}
     {% set is_master_data = path == "/master-data" or path.startswith("/master-data/") %}
     {% set is_inventory = path == "/inventory" or path.startswith("/inventory/") %}
@@ -62,6 +63,14 @@
             <a class="nav-link" href="/inventory/transactions">Transactions</a>
             <a class="nav-link" href="/inventory/adjustments">Adjustments</a>
             <a class="nav-link" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
+          {% endif %}
+        </div>
+        <div class="nav-user-area">
+          {% if current_user %}
+            <span class="nav-user-label">{{ current_user.full_name or current_user.username }}</span>
+            <form class="nav-inline-form" method="post" action="/logout">
+              <button class="nav-link nav-link-button" type="submit">Logout</button>
+            </form>
           {% endif %}
         </div>
       </nav>

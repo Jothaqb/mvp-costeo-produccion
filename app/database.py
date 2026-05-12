@@ -214,6 +214,115 @@ def ensure_channel_master_tables() -> None:
         )
 
 
+def ensure_auth_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER NOT NULL PRIMARY KEY,
+                username VARCHAR(100) NOT NULL UNIQUE,
+                full_name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) UNIQUE,
+                password_hash VARCHAR(500) NOT NULL,
+                is_active BOOLEAN NOT NULL DEFAULT 1,
+                must_change_password BOOLEAN NOT NULL DEFAULT 0,
+                last_login_at DATETIME,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)")
+        connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users (email)")
+
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS roles (
+                id INTEGER NOT NULL PRIMARY KEY,
+                code VARCHAR(100) NOT NULL UNIQUE,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                is_system BOOLEAN NOT NULL DEFAULT 0,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_roles_code ON roles (code)")
+
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS permissions (
+                id INTEGER NOT NULL PRIMARY KEY,
+                code VARCHAR(100) NOT NULL UNIQUE,
+                module VARCHAR(100) NOT NULL,
+                action VARCHAR(100) NOT NULL,
+                description TEXT,
+                active BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.exec_driver_sql("CREATE UNIQUE INDEX IF NOT EXISTS ix_permissions_code ON permissions (code)")
+
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS user_roles (
+                id INTEGER NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                role_id INTEGER NOT NULL,
+                CONSTRAINT uq_user_roles_user_role UNIQUE (user_id, role_id),
+                FOREIGN KEY(user_id) REFERENCES users (id),
+                FOREIGN KEY(role_id) REFERENCES roles (id)
+            )
+            """
+        )
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_user_roles_user_id ON user_roles (user_id)")
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_user_roles_role_id ON user_roles (role_id)")
+
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS role_permissions (
+                id INTEGER NOT NULL PRIMARY KEY,
+                role_id INTEGER NOT NULL,
+                permission_id INTEGER NOT NULL,
+                CONSTRAINT uq_role_permissions_role_permission UNIQUE (role_id, permission_id),
+                FOREIGN KEY(role_id) REFERENCES roles (id),
+                FOREIGN KEY(permission_id) REFERENCES permissions (id)
+            )
+            """
+        )
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_role_permissions_role_id ON role_permissions (role_id)")
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_role_permissions_permission_id ON role_permissions (permission_id)"
+        )
+
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                session_token_hash VARCHAR(255) NOT NULL UNIQUE,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL,
+                revoked_at DATETIME,
+                ip_address VARCHAR(255),
+                user_agent VARCHAR(500),
+                FOREIGN KEY(user_id) REFERENCES users (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_user_sessions_token_hash ON user_sessions (session_token_hash)"
+        )
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_user_sessions_user_id ON user_sessions (user_id)")
+
+
 def ensure_discount_master_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

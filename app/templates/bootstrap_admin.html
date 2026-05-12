@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="auth-shell">
+    <div class="auth-card">
+      <p class="eyebrow">Bootstrap</p>
+      <h1>{{ title }}</h1>
+      <p class="lead">Create the first ERP administrator. This page disables itself automatically after the first active user exists.</p>
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      <form method="post" action="/auth/bootstrap-admin">
+        <label for="username">Username</label>
+        <input id="username" name="username" value="{{ form_data.username }}" autocomplete="username" required>
+
+        <label for="full_name">Full name</label>
+        <input id="full_name" name="full_name" value="{{ form_data.full_name }}" autocomplete="name" required>
+
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" value="{{ form_data.email }}" autocomplete="email">
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="new-password" required>
+
+        <label for="password_confirm">Confirm password</label>
+        <input id="password_confirm" name="password_confirm" type="password" autocomplete="new-password" required>
+
+        <div class="form-actions">
+          <button type="submit">Create admin</button>
+        </div>
+      </form>
+    </div>
+  </section>
+{% endblock %}

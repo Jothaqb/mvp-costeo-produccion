@@ -151,6 +151,152 @@ class AppSequence(Base):
     next_value: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(500), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    user_role_links: Mapped[list["UserRole"]] = relationship(
+        "UserRole",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    roles: Mapped[list["Role"]] = relationship(
+        "Role",
+        secondary="user_roles",
+        back_populates="users",
+        viewonly=True,
+    )
+    sessions: Mapped[list["UserSession"]] = relationship(
+        "UserSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class Role(Base):
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    code: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    user_role_links: Mapped[list["UserRole"]] = relationship(
+        "UserRole",
+        back_populates="role",
+        cascade="all, delete-orphan",
+    )
+    permission_links: Mapped[list["RolePermission"]] = relationship(
+        "RolePermission",
+        back_populates="role",
+        cascade="all, delete-orphan",
+    )
+    users: Mapped[list["User"]] = relationship(
+        "User",
+        secondary="user_roles",
+        back_populates="roles",
+        viewonly=True,
+    )
+    permissions: Mapped[list["Permission"]] = relationship(
+        "Permission",
+        secondary="role_permissions",
+        back_populates="roles",
+        viewonly=True,
+    )
+
+
+class Permission(Base):
+    __tablename__ = "permissions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    code: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    module: Mapped[str] = mapped_column(String(100), nullable=False)
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    role_permission_links: Mapped[list["RolePermission"]] = relationship(
+        "RolePermission",
+        back_populates="permission",
+        cascade="all, delete-orphan",
+    )
+    roles: Mapped[list["Role"]] = relationship(
+        "Role",
+        secondary="role_permissions",
+        back_populates="permissions",
+        viewonly=True,
+    )
+
+
+class UserRole(Base):
+    __tablename__ = "user_roles"
+    __table_args__ = (
+        UniqueConstraint("user_id", "role_id", name="uq_user_roles_user_role"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False, index=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="user_role_links")
+    role: Mapped["Role"] = relationship("Role", back_populates="user_role_links")
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+    __table_args__ = (
+        UniqueConstraint("role_id", "permission_id", name="uq_role_permissions_role_permission"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), nullable=False, index=True)
+    permission_id: Mapped[int] = mapped_column(ForeignKey("permissions.id"), nullable=False, index=True)
+
+    role: Mapped["Role"] = relationship("Role", back_populates="permission_links")
+    permission: Mapped["Permission"] = relationship("Permission", back_populates="role_permission_links")
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    session_token_hash: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="sessions")
+
+
 class LotSequence(Base):
     __tablename__ = "lot_sequences"
     __table_args__ = (

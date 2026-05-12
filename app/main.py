@@ -6,6 +6,7 @@ from decimal import Decimal
 from urllib.parse import quote, urlencode
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
+from fastapi import HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -15,8 +16,10 @@ from sqlalchemy.orm import Session, joinedload
 from app.database import (
     Base,
     engine,
+    SessionLocal,
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
+    ensure_auth_tables,
     ensure_channel_master_tables,
     ensure_b2c_sales_tables,
     ensure_b2c_customer_tables,
@@ -63,6 +66,7 @@ from app.models import (
     Machine,
     MachineRate,
     OverheadRate,
+    Permission,
     Product,
     ProductCategory,
     ProductionOrder,
@@ -70,9 +74,14 @@ from app.models import (
     ProductionOrderMaterial,
     PurchaseOrder,
     PurchaseOrderLine,
+    Role,
+    RolePermission,
     Route,
     RouteActivity,
     Supplier,
+    User,
+    UserRole,
+    UserSession,
 )
 from app.schemas import ComponentType, ProcessType, ProductionOrderStatus
 from app.services.b2b_sales_service import (
@@ -221,6 +230,23 @@ from app.services.supplier_import_service import (
     SupplierImportValidationError,
     import_suppliers_csv,
 )
+from app.services.auth_service import (
+    SESSION_COOKIE_NAME,
+    SESSION_DURATION,
+    any_active_users,
+    bootstrap_admin_user,
+    can,
+    create_session,
+    get_current_user_from_request,
+    get_login_redirect_target,
+    hash_password,
+    is_local_request,
+    is_public_path,
+    require_authenticated_user,
+    require_permission,
+    revoke_session,
+    verify_password,
+)
 from app.services.total_sales_service import (
     get_sales_by_order,
     get_sales_categories_pareto,
@@ -273,15 +299,39 @@ ensure_b2b_loyverse_mapping_tables()
 ensure_b2c_customer_tables()
 ensure_channel_master_tables()
 ensure_inventory_adjustment_tables()
+ensure_auth_tables()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 ZERO = Decimal("0")
+templates.env.globals["can"] = can
 
 
 def _redirect(url: str) -> RedirectResponse:
     return RedirectResponse(url=url, status_code=303)
+
+
+def _auth_redirect(target: str, request: Request) -> RedirectResponse:
+    current_path = request.url.path
+    if request.url.query:
+        current_path += f"?{request.url.query}"
+    return _redirect(f"{target}?next={quote(current_path)}")
+
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        secure=False,  # Set to True behind HTTPS in production.
+        max_age=int(SESSION_DURATION.total_seconds()),
+    )
+
+
+def _clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie(key=SESSION_COOKIE_NAME, httponly=True, samesite="lax")
 
 
 def _csv_attachment_response(*, filename: str, headers: tuple[str, ...], example_row: tuple[str, ...]) -> Response:
@@ -368,6 +418,198 @@ def _serialize_decimal_for_chart(value: Decimal | None) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+@app.middleware("http")
+async def authentication_middleware(request: Request, call_next):
+    path = request.url.path
+    request.state.current_user = None
+    request.state.current_permissions = set()
+    if is_public_path(path):
+        return await call_next(request)
+
+    db = SessionLocal()
+    try:
+        current_auth = get_current_user_from_request(db, request)
+        if current_auth is None:
+            if not any_active_users(db):
+                return _auth_redirect("/auth/bootstrap-admin", request)
+            return _auth_redirect("/login", request)
+        request.state.current_user = current_auth.user
+        request.state.current_permissions = current_auth.permissions
+        response = await call_next(request)
+        db.commit()
+        return response
+    finally:
+        db.close()
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if exc.status_code == 403:
+        return templates.TemplateResponse(
+            request=request,
+            name="forbidden.html",
+            context={"title": "Forbidden", "detail": exc.detail},
+            status_code=403,
+        )
+    if exc.status_code == 401:
+        return _auth_redirect("/login", request)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, db: Session = Depends(get_db)) -> Response:
+    current_auth = get_current_user_from_request(db, request)
+    if current_auth is not None:
+        return _redirect("/")
+    if not any_active_users(db):
+        return _redirect("/auth/bootstrap-admin")
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={
+            "title": "Login",
+            "error": None,
+            "username": "",
+            "next": get_login_redirect_target(request),
+        },
+    )
+
+
+@app.post("/login")
+async def login_submit(request: Request, db: Session = Depends(get_db)) -> Response:
+    if not any_active_users(db):
+        return _redirect("/auth/bootstrap-admin")
+
+    form = await request.form()
+    username = str(form.get("username", "")).strip()
+    password = str(form.get("password", ""))
+    next_target = str(form.get("next", "/")).strip()
+    if not next_target.startswith("/") or next_target.startswith("//"):
+        next_target = "/"
+
+    user = (
+        db.query(User)
+        .options(
+            joinedload(User.user_role_links)
+            .joinedload(UserRole.role)
+            .joinedload(Role.permission_links)
+            .joinedload(RolePermission.permission)
+        )
+        .filter(User.username == username)
+        .one_or_none()
+    )
+    if user is None or not user.is_active or not verify_password(password, user.password_hash):
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "title": "Login",
+                "error": "Invalid username or password.",
+                "username": username,
+                "next": next_target,
+            },
+            status_code=400,
+        )
+
+    _, raw_token = create_session(db, user, request)
+    db.commit()
+    response = _redirect(next_target or "/")
+    _set_auth_cookie(response, raw_token)
+    return response
+
+
+@app.post("/logout")
+async def logout_submit(request: Request, db: Session = Depends(get_db)) -> Response:
+    revoke_session(db, request.cookies.get(SESSION_COOKIE_NAME))
+    db.commit()
+    response = _redirect("/login")
+    _clear_auth_cookie(response)
+    return response
+
+
+@app.get("/auth/bootstrap-admin", response_class=HTMLResponse)
+def bootstrap_admin_page(request: Request, db: Session = Depends(get_db)) -> Response:
+    if any_active_users(db) or not is_local_request(request):
+        raise HTTPException(status_code=404, detail="Not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="bootstrap_admin.html",
+        context={
+            "title": "Bootstrap Admin",
+            "error": None,
+            "form_data": {
+                "username": "admin",
+                "full_name": "ERP Admin",
+                "email": "",
+            },
+        },
+    )
+
+
+@app.post("/auth/bootstrap-admin")
+async def bootstrap_admin_submit(request: Request, db: Session = Depends(get_db)) -> Response:
+    if any_active_users(db) or not is_local_request(request):
+        raise HTTPException(status_code=404, detail="Not found.")
+
+    form = await request.form()
+    form_data = {
+        "username": str(form.get("username", "")).strip(),
+        "full_name": str(form.get("full_name", "")).strip(),
+        "email": str(form.get("email", "")).strip(),
+    }
+    password = str(form.get("password", ""))
+    password_confirm = str(form.get("password_confirm", ""))
+
+    if not form_data["username"] or not form_data["full_name"] or not password:
+        return templates.TemplateResponse(
+            request=request,
+            name="bootstrap_admin.html",
+            context={
+                "title": "Bootstrap Admin",
+                "error": "Username, full name, and password are required.",
+                "form_data": form_data,
+            },
+            status_code=400,
+        )
+    if password != password_confirm:
+        return templates.TemplateResponse(
+            request=request,
+            name="bootstrap_admin.html",
+            context={
+                "title": "Bootstrap Admin",
+                "error": "Password confirmation does not match.",
+                "form_data": form_data,
+            },
+            status_code=400,
+        )
+
+    try:
+        user = bootstrap_admin_user(
+            db,
+            username=form_data["username"],
+            full_name=form_data["full_name"],
+            email=form_data["email"] or None,
+            password=password,
+        )
+        _, raw_token = create_session(db, user, request)
+        db.commit()
+        response = _redirect("/")
+        _set_auth_cookie(response, raw_token)
+        return response
+    except ValueError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="bootstrap_admin.html",
+            context={
+                "title": "Bootstrap Admin",
+                "error": str(exc),
+                "form_data": form_data,
+            },
+            status_code=400,
+        )
 
 
 def _process_types() -> list[str]:

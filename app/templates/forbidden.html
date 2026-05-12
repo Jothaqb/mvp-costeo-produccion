@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="auth-shell">
+    <div class="auth-card">
+      <p class="eyebrow">Access</p>
+      <h1>Forbidden</h1>
+      <p class="lead">{{ detail or "You do not have permission to access this action." }}</p>
+      <div class="form-actions">
+        <a class="button secondary" href="/">Back to home</a>
+      </div>
+    </div>
+  </section>
+{% endblock %}
