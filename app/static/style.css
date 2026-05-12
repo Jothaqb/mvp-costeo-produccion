@@ -657,6 +657,164 @@ button:focus,
   font-size: 0.84rem;
 }
 
+.report-split,
+.chart-grid,
+.sales-activity-grid {
+  display: grid;
+  gap: 20px;
+}
+
+.report-split,
+.chart-grid {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
+}
+
+.report-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 6px 18px rgba(20, 35, 45, 0.04);
+}
+
+.report-panel form {
+  max-width: none;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+.report-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.chart-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 18px;
+  box-shadow: 0 6px 18px rgba(20, 35, 45, 0.04);
+}
+
+.chart-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.report-chart,
+.pie-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.chart-note,
+.chart-empty {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.chart-empty-visible {
+  display: block;
+}
+
+.line-chart-legend,
+.pie-chart-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.line-chart-legend span,
+.pie-chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chart-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+}
+
+.chart-swatch-net {
+  background: #0f766e;
+}
+
+.chart-swatch-cogs {
+  background: #b45309;
+}
+
+.chart-swatch-profit {
+  background: #1d4ed8;
+}
+
+.summary-comparison-table {
+  table-layout: fixed;
+}
+
+.summary-comparison-table th:first-child,
+.summary-comparison-table td:first-child {
+  width: 28%;
+}
+
+.summary-comparison-table th {
+  text-align: center;
+}
+
+.summary-comparison-table th[scope="row"] {
+  text-align: left;
+  color: var(--text);
+  background: #fff;
+}
+
+.summary-comparison-table td {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.pie-chart-legend-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.pie-chart-legend-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.pie-chart-legend-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.pie-chart-circular {
+  max-width: 260px;
+  margin: 0 auto;
+}
+
 .pareto-badge {
   display: inline-flex;
   align-items: center;
@@ -781,6 +939,10 @@ button:focus,
 @media (max-width: 1040px) {
   .inventory-nav-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .summary-comparison-table {
+    min-width: 640px;
   }
 }
 

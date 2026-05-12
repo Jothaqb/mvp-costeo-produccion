@@ -8,9 +8,9 @@
     <p class="lead">Review invoiced B2B and B2C sales grouped by SKU using the same unified ERP sales foundation.</p>
   </section>
 
-  <section>
+  <section class="report-panel">
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <form method="get" action="/sales/items-pareto">
+    <form method="get" action="/sales/items-pareto" class="filter-form">
       <label for="date_from">Date from</label>
       <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
 
@@ -24,7 +24,10 @@
         <option value="b2c" {% if filters.sales_type == "b2c" %}selected{% endif %}>B2C</option>
       </select>
 
-      <button type="submit">Apply filters</button>
+      <div class="report-actions">
+        <button type="submit">Apply filters</button>
+        <a class="button secondary" href="{{ export_url }}">Download CSV</a>
+      </div>
     </form>
   </section>
 
@@ -50,7 +53,7 @@
       </div>
     </section>
 
-    <section>
+    <section class="table-wrap">
       <table>
         <thead>
           <tr>

@@ -8,9 +8,9 @@
     <p class="lead">Review invoiced B2B and B2C sales grouped by order using the same unified ERP sales foundation.</p>
   </section>
 
-  <section>
+  <section class="report-panel">
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <form method="get" action="/sales/orders">
+    <form method="get" action="/sales/orders" class="filter-form">
       <label for="date_from">Date from</label>
       <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
 
@@ -24,7 +24,10 @@
         <option value="b2c" {% if filters.sales_type == "b2c" %}selected{% endif %}>B2C</option>
       </select>
 
-      <button type="submit">Apply filters</button>
+      <div class="report-actions">
+        <button type="submit">Apply filters</button>
+        <a class="button secondary" href="{{ export_url }}">Download CSV</a>
+      </div>
     </form>
     {% if using_default_date_window %}
       <p class="muted-inline">Showing last 30 days by default. Use date filters to search the full historical period.</p>
@@ -47,11 +50,11 @@
       </div>
       <div class="kpi-card-compact">
         <p class="eyebrow">COGS</p>
-        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.cogs) if result.summary.has_complete_cogs else "—" }}</h2>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.cogs) if result.summary.has_complete_cogs else "N/A" }}</h2>
       </div>
       <div class="kpi-card-compact">
         <p class="eyebrow">Gross Profit</p>
-        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.gross_profit) if result.summary.gross_profit is not none else "—" }}</h2>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.gross_profit) if result.summary.gross_profit is not none else "N/A" }}</h2>
       </div>
       <div class="kpi-card-compact">
         <p class="eyebrow">Average Ticket</p>
@@ -59,7 +62,7 @@
       </div>
     </section>
 
-    <section>
+    <section class="table-wrap">
       <table>
         <thead>
           <tr>
@@ -90,14 +93,8 @@
               <td>{{ fmt.money_crc(row.gross_sales) }}</td>
               <td>{{ fmt.money_crc(row.total_discount) }}</td>
               <td>{{ fmt.money_crc(row.net_sales) }}</td>
-              <td>
-                {% if row.has_complete_cogs %}
-                  {{ fmt.money_crc(row.cogs) }}
-                {% else %}
-                  —
-                {% endif %}
-              </td>
-              <td>{{ fmt.money_crc(row.gross_profit) if row.gross_profit is not none else "—" }}</td>
+              <td>{{ fmt.money_crc(row.cogs) if row.has_complete_cogs else "N/A" }}</td>
+              <td>{{ fmt.money_crc(row.gross_profit) if row.gross_profit is not none else "N/A" }}</td>
               <td>{{ row.total_quantity }}</td>
               <td>{{ row.lines_count }}</td>
               <td>{{ fmt.money_crc(row.average_line_value) }}</td>
@@ -106,7 +103,7 @@
           {% endfor %}
           {% if not result.rows %}
             <tr>
-              <td colspan="12">No invoiced sales match the current filters.</td>
+              <td colspan="14">No invoiced sales match the current filters.</td>
             </tr>
           {% endif %}
         </tbody>

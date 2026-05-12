@@ -9,31 +9,55 @@
     <p class="muted-inline">B2B report date uses delivery date when available and falls back to the order created timestamp only when delivery date is empty. Category is resolved from the current Product Master when available and is not a historical category snapshot.</p>
   </section>
 
-  <section>
-    {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <form method="get" action="/sales/total">
-      <label for="date_from">Date from</label>
-      <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
+  <section class="report-split">
+    <div class="report-panel">
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      <form method="get" action="/sales/total" class="filter-form">
+        <label for="date_from">Date from</label>
+        <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
 
-      <label for="date_to">Date to</label>
-      <input id="date_to" name="date_to" type="date" value="{{ filters.date_to }}">
+        <label for="date_to">Date to</label>
+        <input id="date_to" name="date_to" type="date" value="{{ filters.date_to }}">
 
-      <label for="sales_type">Sales type</label>
-      <select id="sales_type" name="sales_type">
-        <option value="all" {% if filters.sales_type == "all" %}selected{% endif %}>All</option>
-        <option value="b2b" {% if filters.sales_type == "b2b" %}selected{% endif %}>B2B</option>
-        <option value="b2c" {% if filters.sales_type == "b2c" %}selected{% endif %}>B2C</option>
-      </select>
+        <label for="sales_type">Sales type</label>
+        <select id="sales_type" name="sales_type">
+          <option value="all" {% if filters.sales_type == "all" %}selected{% endif %}>All</option>
+          <option value="b2b" {% if filters.sales_type == "b2b" %}selected{% endif %}>B2B</option>
+          <option value="b2c" {% if filters.sales_type == "b2c" %}selected{% endif %}>B2C</option>
+        </select>
 
-      <button type="submit">Apply filters</button>
-    </form>
-    {% if using_default_date_window %}
-      <p class="muted-inline">Showing last 30 days by default. Use date filters to search the full historical period.</p>
-    {% endif %}
-    <p class="muted-inline">{{ result_count }} invoiced sales lines found.</p>
+        <div class="report-actions">
+          <button type="submit">Apply filters</button>
+          <a class="button secondary" href="{{ export_url }}">Download CSV</a>
+        </div>
+      </form>
+      {% if using_default_date_window %}
+        <p class="muted-inline">Showing last 30 days by default. Use date filters to search the full historical period.</p>
+      {% endif %}
+      <p class="muted-inline">{{ result_count }} invoiced sales lines found.</p>
+    </div>
+
+    <div class="chart-panel">
+      <div class="chart-panel-header">
+        <div>
+          <p class="eyebrow">Monthly trend</p>
+          <h2>Net Sales, COGS and Gross Profit</h2>
+        </div>
+      </div>
+      <svg id="total-sales-monthly-chart" class="report-chart" viewBox="0 0 760 320" aria-label="Monthly sales trend"></svg>
+      <p id="total-sales-monthly-empty" class="chart-empty" hidden>No monthly data is available for the current filters.</p>
+      <div class="line-chart-legend" aria-hidden="true">
+        <span><i class="chart-swatch chart-swatch-net"></i>Net Sales</span>
+        <span><i class="chart-swatch chart-swatch-cogs"></i>COGS</span>
+        <span><i class="chart-swatch chart-swatch-profit"></i>Gross Profit</span>
+      </div>
+      {% if monthly_cogs_hidden %}
+        <p class="chart-note">COGS and Gross Profit are hidden for months with incomplete COGS coverage.</p>
+      {% endif %}
+    </div>
   </section>
 
-  <section>
+  <section class="table-wrap">
     <table>
       <thead>
         <tr>
@@ -71,8 +95,8 @@
             <td>{{ fmt.money_crc(row.gross_sales) }}</td>
             <td>{{ fmt.money_crc(row.discount_amount or 0) }}</td>
             <td>{{ fmt.money_crc(row.line_total) }}</td>
-            <td>{{ fmt.money_crc(row.cogs) if row.cogs is not none else "—" }}</td>
-            <td>{{ fmt.money_crc(row.gross_profit) if row.gross_profit is not none else "—" }}</td>
+            <td>{{ fmt.money_crc(row.cogs) if row.cogs is not none else "N/A" }}</td>
+            <td>{{ fmt.money_crc(row.gross_profit) if row.gross_profit is not none else "N/A" }}</td>
             <td>
               {% if row.sales_source == "B2B" %}
                 <a href="/b2b/orders/{{ row.order_id }}">View</a>
@@ -90,4 +114,100 @@
       </tbody>
     </table>
   </section>
+
+  <script>
+    (() => {
+      const data = {{ monthly_chart_data|tojson }};
+      const svg = document.getElementById("total-sales-monthly-chart");
+      const empty = document.getElementById("total-sales-monthly-empty");
+      if (!svg || !empty) return;
+
+      if (!Array.isArray(data) || data.length === 0) {
+        svg.setAttribute("hidden", "hidden");
+        empty.hidden = false;
+        return;
+      }
+
+      const series = [
+        { key: "net_sales", color: "#0f766e" },
+        { key: "cogs", color: "#b45309" },
+        { key: "gross_profit", color: "#1d4ed8" },
+      ];
+      const numericValues = data
+        .flatMap((point) => series.map((seriesItem) => point[seriesItem.key]))
+        .filter((value) => typeof value === "number" && Number.isFinite(value));
+      const maxValue = Math.max(...numericValues, 0);
+      const minValue = Math.min(...numericValues, 0);
+      const valueRange = maxValue - minValue;
+      if (valueRange <= 0) {
+        svg.setAttribute("hidden", "hidden");
+        empty.hidden = false;
+        return;
+      }
+
+      const width = 760;
+      const height = 320;
+      const margin = { top: 24, right: 16, bottom: 48, left: 68 };
+      const innerWidth = width - margin.left - margin.right;
+      const innerHeight = height - margin.top - margin.bottom;
+      const xStep = data.length > 1 ? innerWidth / (data.length - 1) : innerWidth / 2;
+      const yForValue = (value) => margin.top + innerHeight - ((value - minValue) / valueRange) * innerHeight;
+      const xForIndex = (index) => margin.left + (data.length === 1 ? innerWidth / 2 : xStep * index);
+      const labelStep = Math.max(1, Math.ceil(data.length / 6));
+
+      const linePath = (key) => {
+        let path = "";
+        let isSegmentOpen = false;
+        data.forEach((point, index) => {
+          const value = point[key];
+          if (typeof value !== "number" || !Number.isFinite(value)) {
+            isSegmentOpen = false;
+            return;
+          }
+          const x = xForIndex(index);
+          const y = yForValue(value);
+          path += `${isSegmentOpen ? "L" : "M"} ${x} ${y} `;
+          isSegmentOpen = true;
+        });
+        return path.trim();
+      };
+
+      const svgParts = [
+        `<rect x="0" y="0" width="${width}" height="${height}" rx="8" fill="#ffffff"></rect>`,
+        `<line x1="${margin.left}" y1="${margin.top + innerHeight}" x2="${width - margin.right}" y2="${margin.top + innerHeight}" stroke="#cfd8dd"></line>`,
+        `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${margin.top + innerHeight}" stroke="#cfd8dd"></line>`,
+      ];
+
+      [0, 0.25, 0.5, 0.75, 1].forEach((ratio) => {
+        const value = minValue + valueRange * ratio;
+        const y = yForValue(value);
+        svgParts.push(`<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="#eef3f2"></line>`);
+        svgParts.push(`<text x="${margin.left - 10}" y="${y + 4}" text-anchor="end" fill="#66737f" font-size="12">${value.toLocaleString("en-US", { maximumFractionDigits: 0 })}</text>`);
+      });
+
+      if (minValue < 0 && maxValue > 0) {
+        const zeroY = yForValue(0);
+        svgParts.push(`<line x1="${margin.left}" y1="${zeroY}" x2="${width - margin.right}" y2="${zeroY}" stroke="#9fb2bd" stroke-dasharray="4 4"></line>`);
+      }
+
+      data.forEach((point, index) => {
+        if (index % labelStep !== 0 && index !== data.length - 1) return;
+        const x = xForIndex(index);
+        svgParts.push(`<text x="${x}" y="${height - 14}" text-anchor="middle" fill="#66737f" font-size="12">${point.label}</text>`);
+      });
+
+      series.forEach((seriesItem) => {
+        const path = linePath(seriesItem.key);
+        if (!path) return;
+        svgParts.push(`<path d="${path}" fill="none" stroke="${seriesItem.color}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"></path>`);
+        data.forEach((point, index) => {
+          const value = point[seriesItem.key];
+          if (typeof value !== "number" || !Number.isFinite(value)) return;
+          svgParts.push(`<circle cx="${xForIndex(index)}" cy="${yForValue(value)}" r="3.5" fill="${seriesItem.color}"></circle>`);
+        });
+      });
+
+      svg.innerHTML = svgParts.join("");
+    })();
+  </script>
 {% endblock %}

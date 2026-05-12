@@ -68,6 +68,19 @@ class SalesSummary:
 
 
 @dataclass(frozen=True)
+class MonthlySalesPoint:
+    month_start: date
+    month_label: str
+    net_sales: Decimal
+    cogs: Decimal | None
+    gross_profit: Decimal | None
+    has_complete_cogs: bool
+    cogs_lines_with_value: int
+    cogs_total_lines: int
+    cogs_coverage_label: str
+
+
+@dataclass(frozen=True)
 class SalesItemParetoRow:
     rank: int
     sku: str
@@ -299,6 +312,22 @@ def get_sales_items_pareto(
         sales_type=sales_type,
     )
     return _build_sales_items_pareto(rows)
+
+
+def get_total_sales_monthly_summary(
+    db: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sales_type: str = "all",
+) -> list[MonthlySalesPoint]:
+    rows = get_total_sales_rows(
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        sales_type=sales_type,
+    )
+    return _build_total_sales_monthly_summary(rows)
 
 
 def get_sales_categories_pareto(
@@ -593,6 +622,36 @@ def _build_sales_items_pareto(rows: list[TotalSalesRow]) -> SalesItemsPareto:
         c_sales_percent=_safe_percent(c_sales_total, total_net_sales),
     )
     return SalesItemsPareto(summary=summary, rows=pareto_rows)
+
+
+def _build_total_sales_monthly_summary(rows: list[TotalSalesRow]) -> list[MonthlySalesPoint]:
+    grouped_rows: dict[date, list[TotalSalesRow]] = {}
+    for row in rows:
+        month_start = row.order_date.replace(day=1)
+        grouped_rows.setdefault(month_start, []).append(row)
+
+    monthly_points: list[MonthlySalesPoint] = []
+    for month_start in sorted(grouped_rows):
+        month_rows = grouped_rows[month_start]
+        net_sales = sum((row.line_total for row in month_rows), ZERO)
+        cogs, has_complete_cogs, cogs_lines_with_value, cogs_total_lines, cogs_coverage_label = _aggregate_cogs(
+            [row.cogs for row in month_rows]
+        )
+        gross_profit = _gross_profit_for_row(net_sales, cogs) if has_complete_cogs else None
+        monthly_points.append(
+            MonthlySalesPoint(
+                month_start=month_start,
+                month_label=month_start.strftime("%Y-%m"),
+                net_sales=net_sales,
+                cogs=cogs if has_complete_cogs else None,
+                gross_profit=gross_profit,
+                has_complete_cogs=has_complete_cogs,
+                cogs_lines_with_value=cogs_lines_with_value,
+                cogs_total_lines=cogs_total_lines,
+                cogs_coverage_label=cogs_coverage_label,
+            )
+        )
+    return monthly_points
 
 
 def _build_sales_categories_pareto(rows: list[TotalSalesRow]) -> SalesCategoriesPareto:

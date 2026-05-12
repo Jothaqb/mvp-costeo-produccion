@@ -2,7 +2,8 @@ import csv
 import io
 from collections import Counter
 from datetime import date, datetime, timedelta
-from urllib.parse import quote
+from decimal import Decimal
+from urllib.parse import quote, urlencode
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, JSONResponse
@@ -225,6 +226,7 @@ from app.services.total_sales_service import (
     get_sales_categories_pareto,
     get_sales_items_pareto,
     get_sales_summary,
+    get_total_sales_monthly_summary,
     get_total_sales_rows,
 )
 from app.services.production_loyverse_inventory_preview_service import (
@@ -275,6 +277,7 @@ ensure_inventory_adjustment_tables()
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+ZERO = Decimal("0")
 
 
 def _redirect(url: str) -> RedirectResponse:
@@ -293,10 +296,78 @@ def _csv_attachment_response(*, filename: str, headers: tuple[str, ...], example
     )
 
 
+def _csv_report_response(*, filename: str, headers: tuple[str, ...], rows: list[tuple[object, ...]]) -> Response:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return Response(
+        content=buffer.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 def _parse_optional_date(value: str) -> date | None:
     if not value:
         return None
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _normalize_sales_reporting_filters(
+    *,
+    date_from: str,
+    date_to: str,
+    sales_type: str,
+    apply_default_date_window: bool,
+) -> tuple[dict[str, str], date | None, date | None, bool]:
+    filters = {
+        "date_from": date_from.strip(),
+        "date_to": date_to.strip(),
+        "sales_type": (sales_type.strip().lower() or "all"),
+    }
+    using_default_date_window = False
+
+    if apply_default_date_window and filters["date_from"] == "" and filters["date_to"] == "":
+        default_date_to = date.today()
+        default_date_from = default_date_to - timedelta(days=30)
+        parsed_date_from = default_date_from
+        parsed_date_to = default_date_to
+        filters["date_from"] = default_date_from.isoformat()
+        filters["date_to"] = default_date_to.isoformat()
+        using_default_date_window = True
+    else:
+        parsed_date_from = _parse_optional_date(filters["date_from"])
+        parsed_date_to = _parse_optional_date(filters["date_to"])
+
+    if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
+        raise ValueError("Date from cannot be later than date to.")
+    if filters["sales_type"] not in {"all", "b2b", "b2c"}:
+        filters["sales_type"] = "all"
+    return filters, parsed_date_from, parsed_date_to, using_default_date_window
+
+
+def _build_sales_export_url(path: str, filters: dict[str, str]) -> str:
+    query_params: dict[str, str] = {"sales_type": filters.get("sales_type", "all") or "all"}
+    if filters.get("date_from"):
+        query_params["date_from"] = filters["date_from"]
+    if filters.get("date_to"):
+        query_params["date_to"] = filters["date_to"]
+    return f"{path}?{urlencode(query_params)}"
+
+
+def _csv_blank_if_none(value: object) -> object:
+    return "" if value is None else value
+
+
+def _sales_row_detail_url(sales_source: str, order_id: int) -> str:
+    return f"/b2b/orders/{order_id}" if sales_source == "B2B" else f"/b2c/orders/{order_id}"
+
+
+def _serialize_decimal_for_chart(value: Decimal | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def _process_types() -> list[str]:
@@ -1825,47 +1896,58 @@ def total_sales(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    filters = {
-        "date_from": date_from.strip(),
-        "date_to": date_to.strip(),
-        "sales_type": (sales_type.strip().lower() or "all"),
-    }
     error = None
     rows = []
+    monthly_chart_data: list[dict[str, object]] = []
+    monthly_cogs_hidden = False
+    export_url = _build_sales_export_url("/sales/total/export", {"sales_type": "all"})
+    filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     using_default_date_window = False
 
     try:
-        if filters["date_from"] == "" and filters["date_to"] == "":
-            default_date_to = date.today()
-            default_date_from = default_date_to - timedelta(days=30)
-            parsed_date_from = default_date_from
-            parsed_date_to = default_date_to
-            filters["date_from"] = default_date_from.isoformat()
-            filters["date_to"] = default_date_to.isoformat()
-            using_default_date_window = True
-        else:
-            parsed_date_from = _parse_optional_date(filters["date_from"])
-            parsed_date_to = _parse_optional_date(filters["date_to"])
-        if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
-            raise ValueError("Date from cannot be later than date to.")
-        if filters["sales_type"] not in {"all", "b2b", "b2c"}:
-            filters["sales_type"] = "all"
+        filters, parsed_date_from, parsed_date_to, using_default_date_window = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=True,
+        )
         rows = get_total_sales_rows(
             db,
             date_from=parsed_date_from,
             date_to=parsed_date_to,
             sales_type=filters["sales_type"],
         )
+        monthly_chart_points = get_total_sales_monthly_summary(
+            db,
+            date_from=parsed_date_from,
+            date_to=parsed_date_to,
+            sales_type=filters["sales_type"],
+        )
+        monthly_chart_data = [
+            {
+                "label": point.month_label,
+                "net_sales": _serialize_decimal_for_chart(point.net_sales),
+                "cogs": _serialize_decimal_for_chart(point.cogs),
+                "gross_profit": _serialize_decimal_for_chart(point.gross_profit),
+            }
+            for point in monthly_chart_points
+        ]
+        monthly_cogs_hidden = any(not point.has_complete_cogs for point in monthly_chart_points)
+        export_url = _build_sales_export_url("/sales/total/export", filters)
     except ValueError:
         error = "Dates must use YYYY-MM-DD."
-        if filters["date_from"] and filters["date_to"]:
-            try:
-                parsed_date_from = _parse_optional_date(filters["date_from"])
-                parsed_date_to = _parse_optional_date(filters["date_to"])
+        try:
+            raw_filters = {
+                "date_from": date_from.strip(),
+                "date_to": date_to.strip(),
+            }
+            if raw_filters["date_from"] and raw_filters["date_to"]:
+                parsed_date_from = _parse_optional_date(raw_filters["date_from"])
+                parsed_date_to = _parse_optional_date(raw_filters["date_to"])
                 if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
                     error = "Date from cannot be later than date to."
-            except ValueError:
-                pass
+        except ValueError:
+            pass
 
     return templates.TemplateResponse(
         request=request,
@@ -1877,7 +1959,80 @@ def total_sales(
             "error": error,
             "result_count": len(rows),
             "using_default_date_window": using_default_date_window,
+            "export_url": export_url,
+            "monthly_chart_data": monthly_chart_data,
+            "monthly_cogs_hidden": monthly_cogs_hidden,
         },
+    )
+
+
+@app.get("/sales/total/export")
+def export_total_sales(
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sales_type: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=True,
+        )
+    except ValueError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain; charset=utf-8")
+
+    rows = get_total_sales_rows(
+        db,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+        sales_type=filters["sales_type"],
+    )
+    csv_rows = [
+        (
+            row.sales_source,
+            row.order_number,
+            row.order_date,
+            row.customer_name or "",
+            row.channel_name or "",
+            row.sku,
+            row.description,
+            row.category_name or "",
+            row.quantity,
+            row.unit_price,
+            row.gross_sales,
+            row.discount_amount or ZERO,
+            row.line_total,
+            _csv_blank_if_none(row.cogs),
+            _csv_blank_if_none(row.gross_profit),
+            row.order_status,
+            _sales_row_detail_url(row.sales_source, row.order_id),
+        )
+        for row in rows
+    ]
+    return _csv_report_response(
+        filename="total_sales_report.csv",
+        headers=(
+            "Sales Source",
+            "Order Number",
+            "Report Date",
+            "Customer",
+            "Channel",
+            "SKU",
+            "Description",
+            "Category",
+            "Quantity",
+            "Unit Price",
+            "Gross Sales",
+            "Discount",
+            "Net Sales",
+            "COGS",
+            "Gross Profit",
+            "Order Status",
+            "Detail URL",
+        ),
+        rows=csv_rows,
     )
 
 
@@ -1889,37 +2044,69 @@ def sales_summary(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    filters = {
-        "date_from": date_from.strip(),
-        "date_to": date_to.strip(),
-        "sales_type": (sales_type.strip().lower() or "all"),
-    }
+    filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     error = None
     summary = None
+    export_url = _build_sales_export_url("/sales/summary/export", {"sales_type": "all"})
+    net_sales_mix_chart = None
+    gross_profit_mix_chart = None
+    gross_profit_chart_message = None
 
     try:
-        parsed_date_from = _parse_optional_date(filters["date_from"])
-        parsed_date_to = _parse_optional_date(filters["date_to"])
-        if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
-            raise ValueError("Date from cannot be later than date to.")
-        if filters["sales_type"] not in {"all", "b2b", "b2c"}:
-            filters["sales_type"] = "all"
+        filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=False,
+        )
         summary = get_sales_summary(
             db,
             date_from=parsed_date_from,
             date_to=parsed_date_to,
             sales_type=filters["sales_type"],
         )
+        export_url = _build_sales_export_url("/sales/summary/export", filters)
+        total_net_sales_mix = summary.b2b.total_net_sales + summary.b2c.total_net_sales
+        if total_net_sales_mix > ZERO:
+            net_sales_mix_chart = {
+                "title": "Net Sales mix",
+                "series": [
+                    {"label": "B2B", "value": _serialize_decimal_for_chart(summary.b2b.total_net_sales)},
+                    {"label": "B2C", "value": _serialize_decimal_for_chart(summary.b2c.total_net_sales)},
+                ],
+            }
+        if summary.b2b.gross_profit is not None and summary.b2c.gross_profit is not None:
+            total_gross_profit_mix = summary.b2b.gross_profit + summary.b2c.gross_profit
+            if (
+                total_gross_profit_mix > ZERO
+                and summary.b2b.gross_profit >= ZERO
+                and summary.b2c.gross_profit >= ZERO
+            ):
+                gross_profit_mix_chart = {
+                    "title": "Gross Profit mix",
+                    "series": [
+                        {"label": "B2B", "value": _serialize_decimal_for_chart(summary.b2b.gross_profit)},
+                        {"label": "B2C", "value": _serialize_decimal_for_chart(summary.b2c.gross_profit)},
+                    ],
+                }
+            else:
+                gross_profit_chart_message = "Gross Profit chart unavailable for the current mix."
+        else:
+            gross_profit_chart_message = "Gross Profit chart unavailable because COGS coverage is incomplete."
     except ValueError:
         error = "Dates must use YYYY-MM-DD."
-        if filters["date_from"] and filters["date_to"]:
-            try:
-                parsed_date_from = _parse_optional_date(filters["date_from"])
-                parsed_date_to = _parse_optional_date(filters["date_to"])
+        try:
+            raw_filters = {
+                "date_from": date_from.strip(),
+                "date_to": date_to.strip(),
+            }
+            if raw_filters["date_from"] and raw_filters["date_to"]:
+                parsed_date_from = _parse_optional_date(raw_filters["date_from"])
+                parsed_date_to = _parse_optional_date(raw_filters["date_to"])
                 if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
                     error = "Date from cannot be later than date to."
-            except ValueError:
-                pass
+        except ValueError:
+            pass
 
     return templates.TemplateResponse(
         request=request,
@@ -1929,7 +2116,75 @@ def sales_summary(
             "summary": summary,
             "filters": filters,
             "error": error,
+            "export_url": export_url,
+            "net_sales_mix_chart": net_sales_mix_chart,
+            "gross_profit_mix_chart": gross_profit_mix_chart,
+            "gross_profit_chart_message": gross_profit_chart_message,
         },
+    )
+
+
+@app.get("/sales/summary/export")
+def export_sales_summary(
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sales_type: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=False,
+        )
+    except ValueError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain; charset=utf-8")
+
+    summary = get_sales_summary(
+        db,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+        sales_type=filters["sales_type"],
+    )
+    csv_rows = [
+        (
+            bucket.label,
+            bucket.total_gross_sales,
+            bucket.total_discount,
+            bucket.total_net_sales,
+            _csv_blank_if_none(bucket.cogs),
+            _csv_blank_if_none(bucket.gross_profit),
+            bucket.total_orders,
+            bucket.total_lines,
+            bucket.total_quantity,
+            bucket.average_order_value,
+            bucket.average_line_value,
+            bucket.cogs_coverage_label,
+            bucket.cogs_lines_with_value,
+            bucket.cogs_total_lines,
+        )
+        for bucket in [summary.b2b, summary.b2c, summary.total]
+    ]
+    return _csv_report_response(
+        filename="sales_by_business_activity_report.csv",
+        headers=(
+            "Source",
+            "Gross Sales",
+            "Discount",
+            "Net Sales",
+            "COGS",
+            "Gross Profit",
+            "Orders",
+            "Lines",
+            "Quantity",
+            "Average Ticket",
+            "Average Line Value",
+            "COGS Coverage",
+            "COGS Lines With Value",
+            "COGS Total Lines",
+        ),
+        rows=csv_rows,
     )
 
 
@@ -1941,37 +2196,39 @@ def sales_items_pareto(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    filters = {
-        "date_from": date_from.strip(),
-        "date_to": date_to.strip(),
-        "sales_type": (sales_type.strip().lower() or "all"),
-    }
+    filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     error = None
     pareto = None
+    export_url = _build_sales_export_url("/sales/items-pareto/export", {"sales_type": "all"})
 
     try:
-        parsed_date_from = _parse_optional_date(filters["date_from"])
-        parsed_date_to = _parse_optional_date(filters["date_to"])
-        if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
-            raise ValueError("Date from cannot be later than date to.")
-        if filters["sales_type"] not in {"all", "b2b", "b2c"}:
-            filters["sales_type"] = "all"
+        filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=False,
+        )
         pareto = get_sales_items_pareto(
             db,
             date_from=parsed_date_from,
             date_to=parsed_date_to,
             sales_type=filters["sales_type"],
         )
+        export_url = _build_sales_export_url("/sales/items-pareto/export", filters)
     except ValueError:
         error = "Dates must use YYYY-MM-DD."
-        if filters["date_from"] and filters["date_to"]:
-            try:
-                parsed_date_from = _parse_optional_date(filters["date_from"])
-                parsed_date_to = _parse_optional_date(filters["date_to"])
+        try:
+            raw_filters = {
+                "date_from": date_from.strip(),
+                "date_to": date_to.strip(),
+            }
+            if raw_filters["date_from"] and raw_filters["date_to"]:
+                parsed_date_from = _parse_optional_date(raw_filters["date_from"])
+                parsed_date_to = _parse_optional_date(raw_filters["date_to"])
                 if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
                     error = "Date from cannot be later than date to."
-            except ValueError:
-                pass
+        except ValueError:
+            pass
 
     return templates.TemplateResponse(
         request=request,
@@ -1981,7 +2238,64 @@ def sales_items_pareto(
             "pareto": pareto,
             "filters": filters,
             "error": error,
+            "export_url": export_url,
         },
+    )
+
+
+@app.get("/sales/items-pareto/export")
+def export_sales_items_pareto(
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sales_type: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=False,
+        )
+    except ValueError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain; charset=utf-8")
+
+    pareto = get_sales_items_pareto(
+        db,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+        sales_type=filters["sales_type"],
+    )
+    csv_rows = [
+        (
+            row.sku,
+            row.description,
+            row.net_sales,
+            row.quantity,
+            row.lines,
+            row.orders,
+            row.discount,
+            row.percent_of_total_sales,
+            row.cumulative_percent,
+            row.pareto_class,
+        )
+        for row in pareto.rows
+    ]
+    return _csv_report_response(
+        filename="sales_by_items_pareto_report.csv",
+        headers=(
+            "SKU",
+            "Description",
+            "Net Sales",
+            "Quantity",
+            "Lines",
+            "Orders",
+            "Discount",
+            "% Sales",
+            "Cumulative %",
+            "Class",
+        ),
+        rows=csv_rows,
     )
 
 
@@ -1993,37 +2307,39 @@ def sales_categories_pareto(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    filters = {
-        "date_from": date_from.strip(),
-        "date_to": date_to.strip(),
-        "sales_type": (sales_type.strip().lower() or "all"),
-    }
+    filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     error = None
     pareto = None
+    export_url = _build_sales_export_url("/sales/categories-pareto/export", {"sales_type": "all"})
 
     try:
-        parsed_date_from = _parse_optional_date(filters["date_from"])
-        parsed_date_to = _parse_optional_date(filters["date_to"])
-        if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
-            raise ValueError("Date from cannot be later than date to.")
-        if filters["sales_type"] not in {"all", "b2b", "b2c"}:
-            filters["sales_type"] = "all"
+        filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=False,
+        )
         pareto = get_sales_categories_pareto(
             db,
             date_from=parsed_date_from,
             date_to=parsed_date_to,
             sales_type=filters["sales_type"],
         )
+        export_url = _build_sales_export_url("/sales/categories-pareto/export", filters)
     except ValueError:
         error = "Dates must use YYYY-MM-DD."
-        if filters["date_from"] and filters["date_to"]:
-            try:
-                parsed_date_from = _parse_optional_date(filters["date_from"])
-                parsed_date_to = _parse_optional_date(filters["date_to"])
+        try:
+            raw_filters = {
+                "date_from": date_from.strip(),
+                "date_to": date_to.strip(),
+            }
+            if raw_filters["date_from"] and raw_filters["date_to"]:
+                parsed_date_from = _parse_optional_date(raw_filters["date_from"])
+                parsed_date_to = _parse_optional_date(raw_filters["date_to"])
                 if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
                     error = "Date from cannot be later than date to."
-            except ValueError:
-                pass
+        except ValueError:
+            pass
 
     return templates.TemplateResponse(
         request=request,
@@ -2033,7 +2349,64 @@ def sales_categories_pareto(
             "pareto": pareto,
             "filters": filters,
             "error": error,
+            "export_url": export_url,
         },
+    )
+
+
+@app.get("/sales/categories-pareto/export")
+def export_sales_categories_pareto(
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sales_type: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=False,
+        )
+    except ValueError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain; charset=utf-8")
+
+    pareto = get_sales_categories_pareto(
+        db,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+        sales_type=filters["sales_type"],
+    )
+    csv_rows = [
+        (
+            row.category_name,
+            row.net_sales,
+            row.quantity,
+            row.lines,
+            row.orders,
+            row.items_count,
+            row.discount,
+            row.percent_of_total_sales,
+            row.cumulative_percent,
+            row.pareto_class,
+        )
+        for row in pareto.rows
+    ]
+    return _csv_report_response(
+        filename="sales_by_category_pareto_report.csv",
+        headers=(
+            "Category",
+            "Net Sales",
+            "Quantity",
+            "Lines",
+            "Orders",
+            "Items",
+            "Discount",
+            "% Sales",
+            "Cumulative %",
+            "Class",
+        ),
+        rows=csv_rows,
     )
 
 
@@ -2045,47 +2418,40 @@ def sales_by_order(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
-    filters = {
-        "date_from": date_from.strip(),
-        "date_to": date_to.strip(),
-        "sales_type": (sales_type.strip().lower() or "all"),
-    }
+    filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     error = None
     result = None
+    export_url = _build_sales_export_url("/sales/orders/export", {"sales_type": "all"})
     using_default_date_window = False
 
     try:
-        if filters["date_from"] == "" and filters["date_to"] == "":
-            default_date_to = date.today()
-            default_date_from = default_date_to - timedelta(days=30)
-            parsed_date_from = default_date_from
-            parsed_date_to = default_date_to
-            filters["date_from"] = default_date_from.isoformat()
-            filters["date_to"] = default_date_to.isoformat()
-            using_default_date_window = True
-        else:
-            parsed_date_from = _parse_optional_date(filters["date_from"])
-            parsed_date_to = _parse_optional_date(filters["date_to"])
-        if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
-            raise ValueError("Date from cannot be later than date to.")
-        if filters["sales_type"] not in {"all", "b2b", "b2c"}:
-            filters["sales_type"] = "all"
+        filters, parsed_date_from, parsed_date_to, using_default_date_window = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=True,
+        )
         result = get_sales_by_order(
             db,
             date_from=parsed_date_from,
             date_to=parsed_date_to,
             sales_type=filters["sales_type"],
         )
+        export_url = _build_sales_export_url("/sales/orders/export", filters)
     except ValueError:
         error = "Dates must use YYYY-MM-DD."
-        if filters["date_from"] and filters["date_to"]:
-            try:
-                parsed_date_from = _parse_optional_date(filters["date_from"])
-                parsed_date_to = _parse_optional_date(filters["date_to"])
+        try:
+            raw_filters = {
+                "date_from": date_from.strip(),
+                "date_to": date_to.strip(),
+            }
+            if raw_filters["date_from"] and raw_filters["date_to"]:
+                parsed_date_from = _parse_optional_date(raw_filters["date_from"])
+                parsed_date_to = _parse_optional_date(raw_filters["date_to"])
                 if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
                     error = "Date from cannot be later than date to."
-            except ValueError:
-                pass
+        except ValueError:
+            pass
 
     return templates.TemplateResponse(
         request=request,
@@ -2096,7 +2462,78 @@ def sales_by_order(
             "filters": filters,
             "error": error,
             "using_default_date_window": using_default_date_window,
+            "export_url": export_url,
         },
+    )
+
+
+@app.get("/sales/orders/export")
+def export_sales_by_order(
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    sales_type: str = Query("all"),
+    db: Session = Depends(get_db),
+) -> Response:
+    try:
+        filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
+            date_from=date_from,
+            date_to=date_to,
+            sales_type=sales_type,
+            apply_default_date_window=True,
+        )
+    except ValueError as exc:
+        return Response(str(exc), status_code=400, media_type="text/plain; charset=utf-8")
+
+    result = get_sales_by_order(
+        db,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+        sales_type=filters["sales_type"],
+    )
+    csv_rows = [
+        (
+            row.sales_source,
+            row.order_number,
+            row.order_date,
+            row.customer_name or "",
+            row.channel_name or "",
+            row.gross_sales,
+            row.total_discount,
+            row.net_sales,
+            _csv_blank_if_none(row.cogs),
+            _csv_blank_if_none(row.gross_profit),
+            row.lines_count,
+            row.average_line_value,
+            row.detail_url,
+            row.order_status,
+            row.total_quantity,
+            row.items_count,
+            row.categories_count,
+        )
+        for row in result.rows
+    ]
+    return _csv_report_response(
+        filename="sales_by_order_report.csv",
+        headers=(
+            "Sales Source",
+            "Order Number",
+            "Order Date / Reporting Date",
+            "Customer",
+            "Channel",
+            "Gross Sales",
+            "Discount",
+            "Net Sales",
+            "COGS",
+            "Gross Profit",
+            "Lines",
+            "Average Line Value",
+            "Detail URL",
+            "Order Status",
+            "Quantity",
+            "Items",
+            "Categories",
+        ),
+        rows=csv_rows,
     )
 
 
