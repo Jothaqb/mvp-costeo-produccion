@@ -25,10 +25,10 @@
   <section class="actions">
     <a class="button secondary" href="/planning/purchase-orders">Back to Purchase Orders</a>
     <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/print" target="_blank" rel="noopener">Print Purchase Order</a>
-    {% if can_edit %}
+    {% if can_edit and can(request, "purchase_order.edit") %}
       <a class="button" href="/planning/purchase-orders/{{ order.id }}/edit">Edit Draft</a>
     {% endif %}
-    {% if can_receive %}
+    {% if can_receive and can(request, "purchase_order.receive") %}
       <a class="button" href="/planning/purchase-orders/{{ order.id }}/receive">Receive</a>
     {% endif %}
   </section>

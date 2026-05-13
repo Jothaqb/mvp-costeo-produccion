@@ -132,6 +132,8 @@
             <li>{{ blocker }}</li>
           {% endfor %}
         </ul>
+      {% elif not can(request, "production_order.close") %}
+        <p><strong>Read-only preview.</strong> You do not have permission to run the Loyverse inventory sync.</p>
       {% else %}
         <p><strong>Final warning:</strong> this will write absolute stock_after values to Loyverse for the included rows only. Local Production remains the source of truth and will not be rolled back if Loyverse later needs manual review.</p>
         {% if preview.excluded_rows %}

@@ -5,8 +5,12 @@
   <section>
     <h1>Production Orders</h1>
     <p>
-      <a class="button" href="/production-orders/new">New Production Order</a>
-      <a class="button" href="/production-orders/import">Import Historical CSV</a>
+      {% if can(request, "production_order.create") %}
+        <a class="button" href="/production-orders/new">New Production Order</a>
+      {% endif %}
+      {% if can(request, "production_order.import") %}
+        <a class="button" href="/production-orders/import">Import Historical CSV</a>
+      {% endif %}
     </p>
     <form method="get" action="/production-orders" class="filters">
       <label for="order_number">Order number</label>

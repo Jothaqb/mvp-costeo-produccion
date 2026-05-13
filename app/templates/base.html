@@ -62,7 +62,9 @@
             <a class="nav-link" href="/inventory/balances">Balances</a>
             <a class="nav-link" href="/inventory/transactions">Transactions</a>
             <a class="nav-link" href="/inventory/adjustments">Adjustments</a>
-            <a class="nav-link" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
+            {% if can(request, "inventory.adjust") %}
+              <a class="nav-link" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
+            {% endif %}
           {% endif %}
         </div>
         <div class="nav-user-area">

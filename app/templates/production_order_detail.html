@@ -83,13 +83,15 @@
     {% if not is_closed %}
       <div class="actions">
         <a role="button" href="/production-orders/{{ order.id }}/print" target="_blank" aria-label="Print worksheet" title="Print worksheet">&#128424;</a>
-        <a role="button" href="/production-orders/{{ order.id }}/bom/edit">Edit BOM</a>
-        {% if order.status == "draft" %}
+        {% if can(request, "production_order.edit") %}
+          <a role="button" href="/production-orders/{{ order.id }}/bom/edit">Edit BOM</a>
+        {% endif %}
+        {% if order.status == "draft" and can(request, "production_order.edit") %}
           <form method="post" action="/production-orders/{{ order.id }}/start">
             <button type="submit">Start order</button>
           </form>
         {% endif %}
-        {% if order.status == "in_progress" %}
+        {% if order.status == "in_progress" and can(request, "production_order.close") %}
           <form method="post" action="/production-orders/{{ order.id }}/close">
             <button type="submit">Close order</button>
           </form>
@@ -166,7 +168,7 @@
   {% endif %}
   <section>
     <h2>Yield Capture</h2>
-    {% if not is_closed %}
+    {% if not is_closed and can(request, "production_order.edit") %}
       <form method="post" action="/production-orders/{{ order.id }}/yield">
         <label for="input_qty">Input quantity</label>
         <input id="input_qty" name="input_qty" value="{{ order.input_qty if order.input_qty is not none else '' }}">
@@ -176,12 +178,14 @@
 
         <button type="submit">Save yield</button>
       </form>
+    {% elif not is_closed %}
+      <p>You can review current yield values above.</p>
     {% endif %}
   </section>
 
   <section>
     <h2>Activity Time Capture</h2>
-    {% if not is_closed %}
+    {% if not is_closed and can(request, "production_order.edit") %}
       <form method="post" action="/production-orders/{{ order.id }}/activities">
         <table>
           <thead>

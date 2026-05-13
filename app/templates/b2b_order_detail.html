@@ -24,17 +24,21 @@
 
     {% if order.status != "invoiced" %}
       <div class="actions">
-        <a role="button" href="/b2b/orders/{{ order.id }}/edit">Edit order</a>
-        {% if order.status == "draft" %}
+        {% if can(request, "sales.edit") %}
+          <a role="button" href="/b2b/orders/{{ order.id }}/edit">Edit order</a>
+        {% endif %}
+        {% if order.status == "draft" and can(request, "sales.edit") %}
           <form method="post" action="/b2b/orders/{{ order.id }}/status">
             <input type="hidden" name="status" value="in_process">
             <button type="submit">Mark in process</button>
           </form>
+        {% endif %}
+        {% if order.status == "draft" and can(request, "sales.invoice") %}
           <form method="post" action="/b2b/orders/{{ order.id }}/status">
             <input type="hidden" name="status" value="invoiced">
             <button type="submit">Mark invoiced</button>
           </form>
-        {% elif order.status == "in_process" %}
+        {% elif order.status == "in_process" and can(request, "sales.invoice") %}
           <form method="post" action="/b2b/orders/{{ order.id }}/status">
             <input type="hidden" name="status" value="invoiced">
             <button type="submit">Mark invoiced</button>

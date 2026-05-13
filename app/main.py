@@ -1174,6 +1174,7 @@ def dashboard(request: Request) -> HTMLResponse:
 
 @app.get("/inventory", response_class=HTMLResponse)
 def inventory_home(request: Request) -> HTMLResponse:
+    require_permission(request, "inventory.view")
     return templates.TemplateResponse(
         request=request,
         name="inventory_home.html",
@@ -3100,6 +3101,7 @@ def inventory_balances_report(
     q: str = Query(default=""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "inventory.view")
     search_text = q.strip()
     balances_query = db.query(InventoryBalance).options(joinedload(InventoryBalance.product))
     if search_text:
@@ -3135,6 +3137,7 @@ def inventory_transactions_report(
     date_to: str = Query(default=""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "inventory.view")
     parsed_date_from = _parse_optional_date_query(date_from)
     parsed_date_to = _parse_optional_date_query(date_to)
 
@@ -3174,6 +3177,7 @@ def inventory_adjustments_report(
     adjustment_type: str = Query(default=""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "inventory.view")
     parsed_date_from = _parse_optional_date_query(date_from)
     parsed_date_to = _parse_optional_date_query(date_to)
     selected_adjustment_type = adjustment_type.strip()
@@ -3222,6 +3226,7 @@ def inventory_adjustments_report(
 
 @app.get("/inventory/adjustments/new", response_class=HTMLResponse)
 def new_inventory_adjustment(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "inventory.adjust")
     product_options = _inventory_adjustment_product_options(db)
     post_token = create_inventory_adjustment_post_token(db)
     return templates.TemplateResponse(
@@ -3241,6 +3246,7 @@ async def create_inventory_adjustment_route(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "inventory.adjust")
     form = await request.form()
     form_data = {
         "adjustment_date": str(form.get("adjustment_date", "")),
@@ -3297,6 +3303,7 @@ def inventory_adjustment_detail(
     request: Request,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "inventory.view")
     adjustment = (
         db.query(InventoryAdjustment)
         .options(
@@ -3322,6 +3329,7 @@ def inventory_initialize_opening_balances_page(
     request: Request,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "inventory.adjust")
     already_initialized = _inventory_opening_balance_exists(db)
     return templates.TemplateResponse(
         request=request,
@@ -3338,6 +3346,7 @@ async def inventory_initialize_opening_balances_route(
     request: Request,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "inventory.adjust")
     form = await request.form()
     already_initialized = _inventory_opening_balance_exists(db)
     if already_initialized:
@@ -3661,6 +3670,7 @@ def purchase_orders(
     message: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "purchase_order.view")
     query = db.query(PurchaseOrder).options(joinedload(PurchaseOrder.lines)).order_by(PurchaseOrder.po_date.desc(), PurchaseOrder.id.desc())
     if supplier.strip():
         query = query.filter(PurchaseOrder.supplier_name_snapshot == supplier.strip())
@@ -3690,6 +3700,7 @@ def purchase_orders(
 
 @app.get("/planning/purchase-orders/import", response_class=HTMLResponse)
 def purchase_orders_import_form(request: Request) -> HTMLResponse:
+    require_permission(request, "purchase_order.import")
     return templates.TemplateResponse(
         request=request,
         name="purchase_order_import_form.html",
@@ -3698,7 +3709,8 @@ def purchase_orders_import_form(request: Request) -> HTMLResponse:
 
 
 @app.get("/planning/purchase-orders/import/template")
-def download_purchase_orders_import_template() -> Response:
+def download_purchase_orders_import_template(request: Request) -> Response:
+    require_permission(request, "purchase_order.import")
     return _csv_attachment_response(
         filename="purchase_orders_historical_import_template.csv",
         headers=PURCHASE_ORDER_HISTORICAL_IMPORT_HEADERS,
@@ -3719,6 +3731,7 @@ def download_purchase_orders_import_template() -> Response:
 
 @app.post("/planning/purchase-orders/import", response_class=HTMLResponse)
 async def import_purchase_orders(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "purchase_order.import")
     result: PurchaseOrderHistoricalImportResult | None = None
     error = None
     try:
@@ -3744,6 +3757,7 @@ def new_purchase_order(
     quantity: str = Query(""),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "purchase_order.create")
     supplier_options = list_all_product_suppliers(db)
     product_options = _po_product_options(db)
     order_data = {
@@ -3784,6 +3798,7 @@ def new_purchase_order(
 
 @app.post("/planning/purchase-orders")
 async def create_purchase_order_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "purchase_order.create")
     form = await request.form()
     supplier_options = list_all_product_suppliers(db)
     product_options = _po_product_options(db)
@@ -3830,6 +3845,7 @@ async def create_purchase_order_route(request: Request, db: Session = Depends(ge
 
 @app.get("/planning/purchase-orders/{po_id}", response_class=HTMLResponse)
 def purchase_order_detail(request: Request, po_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "purchase_order.view")
     order = (
         db.query(PurchaseOrder)
         .options(joinedload(PurchaseOrder.lines))
@@ -3853,6 +3869,7 @@ def purchase_order_detail(request: Request, po_id: int, db: Session = Depends(ge
 
 @app.get("/planning/purchase-orders/{po_id}/edit", response_class=HTMLResponse)
 def edit_purchase_order(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "purchase_order.edit")
     supplier_options = list_all_product_suppliers(db)
     product_options = _po_product_options(db)
     order = (
@@ -3895,6 +3912,7 @@ def edit_purchase_order(request: Request, po_id: int, db: Session = Depends(get_
 
 @app.post("/planning/purchase-orders/{po_id}")
 async def update_purchase_order_route(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "purchase_order.edit")
     form = await request.form()
     supplier_options = list_all_product_suppliers(db)
     product_options = _po_product_options(db)
@@ -3948,6 +3966,7 @@ async def update_purchase_order_route(request: Request, po_id: int, db: Session 
 
 @app.get("/planning/purchase-orders/{po_id}/print", response_class=HTMLResponse)
 def print_purchase_order(request: Request, po_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "purchase_order.view")
     order = (
         db.query(PurchaseOrder)
         .options(joinedload(PurchaseOrder.lines))
@@ -3970,6 +3989,7 @@ def print_purchase_order(request: Request, po_id: int, db: Session = Depends(get
 
 @app.get("/planning/purchase-orders/{po_id}/receive", response_class=HTMLResponse)
 def receive_purchase_order_form(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "purchase_order.receive")
     order = (
         db.query(PurchaseOrder)
         .options(joinedload(PurchaseOrder.lines))
@@ -3996,6 +4016,7 @@ def receive_purchase_order_form(request: Request, po_id: int, db: Session = Depe
 
 @app.post("/planning/purchase-orders/{po_id}/receive")
 async def receive_purchase_order_route(request: Request, po_id: int, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "purchase_order.receive")
     form = await request.form()
     receive_inputs = _purchase_order_receive_inputs_from_form(form)
     receive_token = str(form.get("receive_token", ""))
@@ -4450,6 +4471,7 @@ def b2b_orders(
     status: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "sales.view")
     filters = {"customer_id": customer_id.strip(), "status": status.strip()}
     order_query = db.query(B2BSalesOrder)
     if filters["customer_id"]:
@@ -4473,6 +4495,7 @@ def b2b_orders(
 
 @app.get("/b2b/orders/import", response_class=HTMLResponse)
 def b2b_orders_import_form(request: Request) -> HTMLResponse:
+    require_permission(request, "sales.import")
     return templates.TemplateResponse(
         request=request,
         name="b2b_order_import_form.html",
@@ -4481,7 +4504,8 @@ def b2b_orders_import_form(request: Request) -> HTMLResponse:
 
 
 @app.get("/b2b/orders/import/template")
-def download_b2b_orders_import_template() -> Response:
+def download_b2b_orders_import_template(request: Request) -> Response:
+    require_permission(request, "sales.import")
     return _csv_attachment_response(
         filename="b2b_historical_sales_import_template.csv",
         headers=B2B_HISTORICAL_IMPORT_HEADERS,
@@ -4506,6 +4530,7 @@ def download_b2b_orders_import_template() -> Response:
 
 @app.post("/b2b/orders/import", response_class=HTMLResponse)
 async def import_b2b_orders(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.import")
     result: B2BHistoricalSalesImportResult | None = None
     error = None
     try:
@@ -4530,6 +4555,7 @@ def new_b2b_order(
     customer_id: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "sales.create")
     customers = db.query(B2BCustomer).filter(B2BCustomer.active.is_(True)).order_by(B2BCustomer.customer_name).all()
     selected_customer = None
     catalog = []
@@ -4563,6 +4589,7 @@ def new_b2b_order(
 
 @app.post("/b2b/orders")
 async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "sales.create")
     form = await request.form()
     customer_id = int(str(form.get("customer_id", "0") or "0"))
     delivery_date = datetime.strptime(str(form.get("delivery_date")), "%Y-%m-%d").date()
@@ -4605,6 +4632,7 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
 
 @app.get("/b2b/orders/{order_id}", response_class=HTMLResponse)
 def b2b_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.view")
     order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
     lines = (
         db.query(B2BSalesOrderLine)
@@ -4621,6 +4649,7 @@ def b2b_order_detail(order_id: int, request: Request, db: Session = Depends(get_
 
 @app.get("/b2b/orders/{order_id}/document", response_class=HTMLResponse)
 def b2b_order_document(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.view")
     order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
     lines = (
         db.query(B2BSalesOrderLine)
@@ -4638,6 +4667,7 @@ def b2b_order_document(order_id: int, request: Request, db: Session = Depends(ge
 
 @app.get("/b2b/orders/{order_id}/edit", response_class=HTMLResponse)
 def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.edit")
     order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
     if order.status == "invoiced":
         return b2b_order_detail(order_id, request, db)
@@ -4677,6 +4707,7 @@ def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db
 
 @app.post("/b2b/orders/{order_id}/edit")
 async def update_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "sales.edit")
     form = await request.form()
     line_ids = form.getlist("line_id")
     line_updates = [
@@ -4740,6 +4771,7 @@ def update_b2b_order_status(
     status: str = Form(...),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "sales.invoice" if status == "invoiced" else "sales.edit")
     try:
         if status == "invoiced":
             invoice_b2b_order_in_erp(db, order_id)
@@ -4769,6 +4801,7 @@ def b2c_orders(
     status: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "sales.view")
     filters = {"q": q.strip(), "status": status.strip()}
     order_query = db.query(B2CSalesOrder)
     if filters["q"]:
@@ -4797,6 +4830,7 @@ def b2c_orders(
 
 @app.get("/b2c/orders/import", response_class=HTMLResponse)
 def b2c_orders_import_form(request: Request) -> HTMLResponse:
+    require_permission(request, "sales.import")
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_import_form.html",
@@ -4805,7 +4839,8 @@ def b2c_orders_import_form(request: Request) -> HTMLResponse:
 
 
 @app.get("/b2c/orders/import/template")
-def download_b2c_orders_import_template() -> Response:
+def download_b2c_orders_import_template(request: Request) -> Response:
+    require_permission(request, "sales.import")
     return _csv_attachment_response(
         filename="b2c_historical_sales_import_template.csv",
         headers=B2C_HISTORICAL_IMPORT_HEADERS,
@@ -4837,6 +4872,7 @@ def download_b2c_orders_import_template() -> Response:
 
 @app.post("/b2c/orders/import", response_class=HTMLResponse)
 async def import_b2c_orders(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.import")
     result: B2CHistoricalSalesImportResult | None = None
     error = None
     try:
@@ -4857,6 +4893,7 @@ async def import_b2c_orders(request: Request, file: UploadFile = File(...), db: 
 
 @app.get("/b2c/orders/new", response_class=HTMLResponse)
 def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.create")
     products = _list_b2c_sellable_products(db)
     discount_rules = list_discount_rule_options(db)
     b2c_customers = list_b2c_customer_options(db)
@@ -4880,6 +4917,7 @@ def new_b2c_order(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
 
 @app.post("/b2c/orders")
 async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "sales.create")
     form = await request.form()
     order_date_text = str(form.get("order_date", "")).strip()
     line_inputs = _b2c_line_inputs_from_form(form, "line")
@@ -4955,6 +4993,7 @@ async def create_b2c_order(request: Request, db: Session = Depends(get_db)) -> R
 
 @app.get("/b2c/orders/{order_id}", response_class=HTMLResponse)
 def b2c_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.view")
     order = db.query(B2CSalesOrder).options(joinedload(B2CSalesOrder.customer)).filter(B2CSalesOrder.id == order_id).one()
     lines = (
         db.query(B2CSalesOrderLine)
@@ -4971,6 +5010,7 @@ def b2c_order_detail(order_id: int, request: Request, db: Session = Depends(get_
 
 @app.get("/b2c/orders/{order_id}/edit", response_class=HTMLResponse)
 def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.edit")
     order = db.query(B2CSalesOrder).options(joinedload(B2CSalesOrder.customer)).filter(B2CSalesOrder.id == order_id).one()
     if order.status != "draft":
         return b2c_order_detail(order_id, request, db)
@@ -5009,6 +5049,7 @@ def edit_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db
 
 @app.post("/b2c/orders/{order_id}/edit")
 async def update_b2c_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "sales.edit")
     form = await request.form()
     order_date_text = str(form.get("order_date", "")).strip()
     b2c_customer_id = str(form.get("b2c_customer_id", ""))
@@ -5119,6 +5160,7 @@ def update_b2c_order_status(
     status: str = Form(...),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "sales.invoice" if status == "invoiced" else "sales.edit")
     try:
         if status == "invoiced":
             invoice_b2c_order_in_erp(db, order_id)
@@ -5730,6 +5772,7 @@ def list_production_orders(
     date_to: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "production_order.view")
     date_from_value = _parse_optional_date(date_from.strip())
     date_to_value = _parse_optional_date(date_to.strip())
     filters = {
@@ -5779,6 +5822,7 @@ def list_production_orders(
 
 @app.get("/production-orders/import", response_class=HTMLResponse)
 def production_orders_import_form(request: Request) -> HTMLResponse:
+    require_permission(request, "production_order.import")
     return templates.TemplateResponse(
         request=request,
         name="production_order_import_form.html",
@@ -5787,7 +5831,8 @@ def production_orders_import_form(request: Request) -> HTMLResponse:
 
 
 @app.get("/production-orders/import/template")
-def download_production_orders_import_template() -> Response:
+def download_production_orders_import_template(request: Request) -> Response:
+    require_permission(request, "production_order.import")
     return _csv_attachment_response(
         filename="production_orders_historical_import_template.csv",
         headers=PRODUCTION_ORDER_HISTORICAL_IMPORT_HEADERS,
@@ -5814,6 +5859,7 @@ def download_production_orders_import_template() -> Response:
 
 @app.post("/production-orders/import", response_class=HTMLResponse)
 async def import_production_orders(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "production_order.import")
     result: ProductionOrderHistoricalImportResult | None = None
     error = None
     try:
@@ -5845,6 +5891,7 @@ def new_production_order(
     planned_qty: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "production_order.create")
     selected_product_id = product_id
     selected_product = None
     if selected_product_id is not None:
@@ -5877,6 +5924,7 @@ def create_production_order_route(
     notes: str = Form(""),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "production_order.create")
     product_options = _manufactured_product_options(db)
     selected_product = (
         db.query(Product)
@@ -5910,6 +5958,7 @@ def create_production_order_route(
 
 @app.get("/production-orders/{order_id}", response_class=HTMLResponse)
 def production_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "production_order.view")
     return _production_order_detail_response(order_id, request, db)
 
 
@@ -5919,6 +5968,7 @@ def production_order_inventory_preview(
     request: Request,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "production_order.view")
     order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
     readiness = build_production_inventory_readiness(db, order_id)
     preview = None
@@ -5951,6 +6001,7 @@ def sync_production_order_inventory(
     preview_fingerprint: str = Form(""),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "production_order.close")
     try:
         sync_production_inventory_to_loyverse(db, order_id, preview_token, preview_fingerprint)
         return _redirect(f"/production-orders/{order_id}")
@@ -5959,6 +6010,7 @@ def sync_production_order_inventory(
 
 @app.get("/production-orders/{order_id}/print", response_class=HTMLResponse)
 def production_order_print(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "production_order.view")
     order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
     if order.status not in {"draft", "in_progress"}:
         return _production_order_detail_response(order_id, request, db, "Only draft or in-progress orders can be printed.")
@@ -5996,6 +6048,7 @@ async def update_production_order_activities(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "production_order.edit")
     form = await request.form()
     activity_ids = form.getlist("activity_id")
     updates = [
@@ -6022,6 +6075,7 @@ def update_production_order_yield(
     output_qty: str = Form(""),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "production_order.edit")
     try:
         input_qty_value = parse_optional_decimal(input_qty, "Input quantity")
         output_qty_value = parse_optional_decimal(output_qty, "Output quantity")
@@ -6037,6 +6091,7 @@ def edit_production_order_bom(
     request: Request,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "production_order.edit")
     order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
     if order.status == "closed":
         return _production_order_detail_response(order_id, request, db, "Closed orders are read-only.")
@@ -6069,6 +6124,7 @@ async def update_production_order_bom(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "production_order.edit")
     form = await request.form()
     material_ids = form.getlist("material_id")
     updates = [
@@ -6113,6 +6169,7 @@ async def update_production_order_bom(
 
 @app.post("/production-orders/{order_id}/start")
 def start_production_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "production_order.edit")
     try:
         start_order(db, order_id)
         return _redirect(f"/production-orders/{order_id}")
@@ -6122,6 +6179,7 @@ def start_production_order(order_id: int, request: Request, db: Session = Depend
 
 @app.post("/production-orders/{order_id}/close")
 def close_production_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "production_order.close")
     try:
         close_order_with_inventory_posting(db, order_id)
         # Loyverse cost sync is intentionally disabled here.

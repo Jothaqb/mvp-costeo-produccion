@@ -33,15 +33,21 @@
 
     {% if order.status == "draft" %}
       <div class="actions">
-        <a role="button" href="/b2c/orders/{{ order.id }}/edit">Edit order</a>
-        <form method="post" action="/b2c/orders/{{ order.id }}/status">
-          <input type="hidden" name="status" value="invoiced">
-          <button type="submit">Mark invoiced</button>
-        </form>
-        <form method="post" action="/b2c/orders/{{ order.id }}/status">
-          <input type="hidden" name="status" value="cancelled">
-          <button type="submit">Cancel order</button>
-        </form>
+        {% if can(request, "sales.edit") %}
+          <a role="button" href="/b2c/orders/{{ order.id }}/edit">Edit order</a>
+        {% endif %}
+        {% if can(request, "sales.invoice") %}
+          <form method="post" action="/b2c/orders/{{ order.id }}/status">
+            <input type="hidden" name="status" value="invoiced">
+            <button type="submit">Mark invoiced</button>
+          </form>
+        {% endif %}
+        {% if can(request, "sales.edit") %}
+          <form method="post" action="/b2c/orders/{{ order.id }}/status">
+            <input type="hidden" name="status" value="cancelled">
+            <button type="submit">Cancel order</button>
+          </form>
+        {% endif %}
       </div>
     {% else %}
       <p>{{ "Invoiced orders are read-only." if order.status == "invoiced" else "Cancelled orders are read-only." }}</p>
