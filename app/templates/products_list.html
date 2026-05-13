@@ -4,8 +4,12 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
-    <p><a href="/master-data/products/new">New product / SKU</a></p>
-    <p><a href="/master-data/products/export">Download Products CSV</a></p>
+    {% if can(request, "product.create") %}
+      <p><a href="/master-data/products/new">New product / SKU</a></p>
+    {% endif %}
+    {% if can(request, "product.export") %}
+      <p><a href="/master-data/products/export">Download Products CSV</a></p>
+    {% endif %}
     <form method="get" action="/master-data/products">
       <label for="q">Search SKU or product name</label>
       <input id="q" name="q" value="{{ filters.q }}" placeholder="Search SKU or product name">

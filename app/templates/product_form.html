@@ -4,6 +4,8 @@
   <section>
     <h1>{{ title }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% set can_edit_prices = can(request, "product.edit_prices") %}
+    {% set can_edit_cost = can(request, "product.edit_cost") %}
     <form method="post" action="{{ form_action }}">
       <label for="sku">SKU</label>
       <input id="sku" name="sku" value="{{ product_data.sku }}" required>
@@ -36,14 +38,34 @@
       <label for="observations">Observations</label>
       <textarea id="observations" name="observations">{{ product_data.observations }}</textarea>
 
-      <label for="b2c_price">B2C price</label>
-      <input id="b2c_price" name="b2c_price" inputmode="decimal" value="{{ product_data.b2c_price if product_data.b2c_price is not none else '' }}">
+      {% set b2c_price_value = product_data.b2c_price if product_data.b2c_price is not none else '' %}
+      {% set b2b_price_value = product_data.b2b_price if product_data.b2b_price is not none else '' %}
+      {% set standard_cost_value = product_data.standard_cost if product_data.standard_cost is not none else '' %}
 
-      <label for="b2b_price">B2B price</label>
-      <input id="b2b_price" name="b2b_price" inputmode="decimal" value="{{ product_data.b2b_price if product_data.b2b_price is not none else '' }}">
+      {% if can_edit_prices %}
+        <label for="b2c_price">B2C price</label>
+        <input id="b2c_price" name="b2c_price" inputmode="decimal" value="{{ b2c_price_value }}">
 
-      <label for="standard_cost">Standard cost (reference/fallback)</label>
-      <input id="standard_cost" name="standard_cost" inputmode="decimal" value="{{ product_data.standard_cost if product_data.standard_cost is not none else '' }}">
+        <label for="b2b_price">B2B price</label>
+        <input id="b2b_price" name="b2b_price" inputmode="decimal" value="{{ b2b_price_value }}">
+      {% else %}
+        <label>B2C price</label>
+        <p class="muted-inline">{{ b2c_price_value if b2c_price_value != '' else 'No access to edit price.' }}</p>
+        <input type="hidden" name="b2c_price" value="{{ b2c_price_value }}">
+
+        <label>B2B price</label>
+        <p class="muted-inline">{{ b2b_price_value if b2b_price_value != '' else 'No access to edit price.' }}</p>
+        <input type="hidden" name="b2b_price" value="{{ b2b_price_value }}">
+      {% endif %}
+
+      {% if can_edit_cost %}
+        <label for="standard_cost">Standard cost (reference/fallback)</label>
+        <input id="standard_cost" name="standard_cost" inputmode="decimal" value="{{ standard_cost_value }}">
+      {% else %}
+        <label>Standard cost (reference/fallback)</label>
+        <p class="muted-inline">{{ standard_cost_value if standard_cost_value != '' else 'No access to edit cost.' }}</p>
+        <input type="hidden" name="standard_cost" value="{{ standard_cost_value }}">
+      {% endif %}
 
       <label><input type="checkbox" name="active" value="true" {% if product_data.active %}checked{% endif %}> Active</label>
       <label><input type="checkbox" name="available_for_sale_gc" value="true" {% if product_data.available_for_sale_gc %}checked{% endif %}> Available for sale</label>

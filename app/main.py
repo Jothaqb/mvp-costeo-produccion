@@ -2,7 +2,7 @@ import csv
 import io
 from collections import Counter
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from urllib.parse import quote, urlencode
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
@@ -237,6 +237,7 @@ from app.services.auth_service import (
     bootstrap_admin_user,
     can,
     create_session,
+    ensure_auth_seed_state,
     get_current_user_from_request,
     get_login_redirect_target,
     hash_password,
@@ -300,6 +301,12 @@ ensure_b2c_customer_tables()
 ensure_channel_master_tables()
 ensure_inventory_adjustment_tables()
 ensure_auth_tables()
+_auth_seed_db = SessionLocal()
+try:
+    ensure_auth_seed_state(_auth_seed_db)
+    _auth_seed_db.commit()
+finally:
+    _auth_seed_db.close()
 
 app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -418,6 +425,31 @@ def _serialize_decimal_for_chart(value: Decimal | None) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _normalize_optional_nonnegative_decimal_input(value: str | Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    text = str(value).strip().replace(" ", "").replace(",", ".")
+    if text == "":
+        return None
+    try:
+        parsed = Decimal(text)
+    except InvalidOperation:
+        raise ValueError("invalid")
+    if parsed < 0:
+        raise ValueError("negative")
+    return parsed
+
+
+def _decimal_form_value_changed(current_value: Decimal | None, submitted_value: str | Decimal | None) -> bool:
+    try:
+        normalized_submitted = _normalize_optional_nonnegative_decimal_input(submitted_value)
+    except ValueError:
+        return True
+    return normalized_submitted != current_value
 
 
 @app.middleware("http")
@@ -1713,6 +1745,7 @@ def products_master(
     active: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "product.view")
     filters = {"q": q.strip(), "active": (active.strip().lower() or "all")}
     product_query = (
         db.query(Product)
@@ -1748,7 +1781,8 @@ def products_master(
 
 
 @app.get("/master-data/products/export")
-def export_products_master_csv(db: Session = Depends(get_db)) -> Response:
+def export_products_master_csv(request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "product.export")
     products = (
         db.query(Product)
         .options(
@@ -1824,9 +1858,11 @@ def export_products_master_csv(db: Session = Depends(get_db)) -> Response:
 
 @app.get("/master-data/products/search")
 def search_master_data_products(
+    request: Request,
     q: str = Query(default=""),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
+    require_permission(request, "product.view")
     search_text = q.strip()
     if len(search_text) < 2:
         return JSONResponse([])
@@ -1851,6 +1887,7 @@ def search_master_data_products(
 
 @app.get("/master-data/products/new", response_class=HTMLResponse)
 def new_product_master(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "product.create")
     return templates.TemplateResponse(
         request=request,
         name="product_form.html",
@@ -1866,6 +1903,7 @@ def new_product_master(request: Request, db: Session = Depends(get_db)) -> HTMLR
 
 @app.post("/master-data/products")
 async def create_product_master_route(request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "product.create")
     form = await request.form()
     product_data = {
         "sku": str(form.get("sku", "")),
@@ -1883,6 +1921,13 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
         "is_manufactured": _form_bool(form, "is_manufactured"),
         "is_purchased_product": _form_bool(form, "is_purchased_product"),
     }
+    if (
+        _decimal_form_value_changed(None, product_data["b2c_price"])
+        or _decimal_form_value_changed(None, product_data["b2b_price"])
+    ):
+        require_permission(request, "product.edit_prices")
+    if _decimal_form_value_changed(None, product_data["standard_cost"]):
+        require_permission(request, "product.edit_cost")
     try:
         product = create_product_master(db, **product_data)
         return _redirect(f"/master-data/products/{product.id}")
@@ -1907,6 +1952,7 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
 
 @app.get("/master-data/products/{product_id}", response_class=HTMLResponse)
 def product_detail(product_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "product.view")
     product = get_product_for_detail(db, product_id)
     balance = get_product_balance(db, product_id)
     bom = get_or_seed_product_bom(db, product) if product.is_manufactured else None
@@ -1929,6 +1975,7 @@ def product_detail(product_id: int, request: Request, db: Session = Depends(get_
 
 @app.get("/master-data/products/{product_id}/edit", response_class=HTMLResponse)
 def edit_product_master(product_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "product.edit")
     product = get_product_for_detail(db, product_id)
     return templates.TemplateResponse(
         request=request,
@@ -1949,6 +1996,8 @@ async def update_product_master_route(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "product.edit")
+    product = db.query(Product).filter(Product.id == product_id).one()
     form = await request.form()
     product_data = {
         "sku": str(form.get("sku", "")),
@@ -1966,6 +2015,13 @@ async def update_product_master_route(
         "is_manufactured": _form_bool(form, "is_manufactured"),
         "is_purchased_product": _form_bool(form, "is_purchased_product"),
     }
+    if (
+        _decimal_form_value_changed(product.b2c_price, product_data["b2c_price"])
+        or _decimal_form_value_changed(product.b2b_price, product_data["b2b_price"])
+    ):
+        require_permission(request, "product.edit_prices")
+    if _decimal_form_value_changed(product.standard_cost, product_data["standard_cost"]):
+        require_permission(request, "product.edit_cost")
     try:
         update_product_master(db, product_id=product_id, **product_data)
         return _redirect(f"/master-data/products/{product_id}")
@@ -1991,6 +2047,7 @@ async def update_product_master_route(
 
 @app.get("/master-data/products/{product_id}/bom/edit", response_class=HTMLResponse)
 def edit_product_bom(product_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "bom.view")
     product = get_product_for_detail(db, product_id)
     if not product.is_manufactured:
         return _redirect(f"/master-data/products/{product_id}")
@@ -2031,6 +2088,7 @@ async def update_product_bom_route(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "bom.edit")
     form = await request.form()
     line_ids = [str(line_id).strip() for line_id in form.getlist("line_id") if str(line_id).strip()]
     deleted_line_ids = {str(line_id).strip() for line_id in form.getlist("delete_line_id") if str(line_id).strip()}
@@ -4226,6 +4284,7 @@ def update_b2b_customer(
 
 @app.get("/b2b/customers/{customer_id}/products", response_class=HTMLResponse)
 def b2b_customer_products(customer_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "sales.view")
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
     products = (
         db.query(B2BCustomerProduct)
@@ -4250,6 +4309,7 @@ def add_b2b_customer_product(
     active: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "b2b_customer_products.edit_prices")
     try:
         add_customer_product(db, customer_id, sku, description, distributor_price, active)
         return _redirect(f"/b2b/customers/{customer_id}/products")
@@ -4279,6 +4339,7 @@ def update_b2b_customer_product(
     active: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "b2b_customer_products.edit_prices")
     try:
         update_customer_product(db, customer_id, product_line_id, description, distributor_price, active)
         return _redirect(f"/b2b/customers/{customer_id}/products")

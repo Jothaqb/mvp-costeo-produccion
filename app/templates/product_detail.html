@@ -5,7 +5,9 @@
   <section>
     <h1>{{ product.sku }} - {{ product.name }}</h1>
     <div class="actions">
-      <a role="button" href="/master-data/products/{{ product.id }}/edit">Edit product</a>
+      {% if can(request, "product.edit") %}
+        <a role="button" href="/master-data/products/{{ product.id }}/edit">Edit product</a>
+      {% endif %}
       <a role="button" class="secondary" href="/master-data/products">Back to products</a>
     </div>
 
@@ -39,11 +41,17 @@
         This Product Master BOM is editable and will be used for future production integration.
         Current Production Order creation remains unchanged in this sprint.
       </p>
-      <div class="actions">
-        <a role="button" href="/master-data/products/{{ product.id }}/bom/edit">
-          {% if bom %}Edit BOM{% else %}Create BOM{% endif %}
-        </a>
-      </div>
+      {% if can(request, "bom.view") %}
+        <div class="actions">
+          <a role="button" href="/master-data/products/{{ product.id }}/bom/edit">
+            {% if can(request, "bom.edit") %}
+              {% if bom %}Edit BOM{% else %}Create BOM{% endif %}
+            {% else %}
+              View BOM
+            {% endif %}
+          </a>
+        </div>
+      {% endif %}
       {% if bom and bom_lines %}
         <table>
           <thead>

@@ -3,6 +3,7 @@
 
 {% block content %}
   <section>
+    {% set can_edit_bom = can(request, "bom.edit") %}
     <h1>Edit BOM</h1>
     <p>{{ product.sku }} - {{ product.name }}</p>
     <p class="muted-inline">
@@ -40,10 +41,11 @@
                   data-results-id="component_lookup_results_{{ line.id }}"
                   data-preview-id="component_lookup_preview_{{ line.id }}"
                   data-exclude-product-id="{{ product.id }}"
+                  {% if not can_edit_bom %}disabled{% endif %}
                 >
                 <div id="component_lookup_results_{{ line.id }}" class="lookup-results" hidden></div>
                 <div id="component_lookup_preview_{{ line.id }}" class="muted-inline"></div>
-                <select id="component_sku_{{ line.id }}" name="component_sku_{{ line.id }}" required>
+                <select id="component_sku_{{ line.id }}" name="component_sku_{{ line.id }}" required {% if not can_edit_bom %}disabled{% endif %}>
                   {% if line.component_sku_snapshot and line.component_sku_snapshot not in existing_component_option_skus %}
                     <option value="{{ line.component_sku_snapshot }}" selected>
                       {{ line.component_sku_snapshot }} - {{ line.component_name_snapshot or "SKU not found" }} (not found)
@@ -63,9 +65,9 @@
                 {% endif %}
               </td>
               <td>{{ line.unit_snapshot or "" }}</td>
-              <td><input name="quantity_standard_{{ line.id }}" inputmode="decimal" value="{{ line.quantity_standard }}"></td>
-              <td><input name="notes_{{ line.id }}" value="{{ line.notes }}"></td>
-              <td><input type="checkbox" name="delete_line_id" value="{{ line.id }}" {% if line.delete %}checked{% endif %}></td>
+              <td><input name="quantity_standard_{{ line.id }}" inputmode="decimal" value="{{ line.quantity_standard }}" {% if not can_edit_bom %}readonly{% endif %}></td>
+              <td><input name="notes_{{ line.id }}" value="{{ line.notes }}" {% if not can_edit_bom %}readonly{% endif %}></td>
+              <td><input type="checkbox" name="delete_line_id" value="{{ line.id }}" {% if line.delete %}checked{% endif %} {% if not can_edit_bom %}disabled{% endif %}></td>
             </tr>
           {% endfor %}
 
@@ -84,10 +86,11 @@
                   data-results-id="new_component_lookup_results_{{ row.index }}"
                   data-preview-id="new_component_lookup_preview_{{ row.index }}"
                   data-exclude-product-id="{{ product.id }}"
+                  {% if not can_edit_bom %}disabled{% endif %}
                 >
                 <div id="new_component_lookup_results_{{ row.index }}" class="lookup-results" hidden></div>
                 <div id="new_component_lookup_preview_{{ row.index }}" class="muted-inline"></div>
-                <select id="new_component_sku_{{ row.index }}" name="new_component_sku_{{ row.index }}">
+                <select id="new_component_sku_{{ row.index }}" name="new_component_sku_{{ row.index }}" {% if not can_edit_bom %}disabled{% endif %}>
                   <option value="">Add component...</option>
                   {% for component in new_component_options %}
                     <option value="{{ component.sku }}" {% if component.sku == row.component_sku %}selected{% endif %}>
@@ -98,15 +101,19 @@
               </td>
               <td></td>
               <td></td>
-              <td><input name="new_quantity_standard_{{ row.index }}" inputmode="decimal" value="{{ row.quantity_standard }}"></td>
-              <td><input name="new_notes_{{ row.index }}" value="{{ row.notes }}"></td>
+              <td><input name="new_quantity_standard_{{ row.index }}" inputmode="decimal" value="{{ row.quantity_standard }}" {% if not can_edit_bom %}readonly{% endif %}></td>
+              <td><input name="new_notes_{{ row.index }}" value="{{ row.notes }}" {% if not can_edit_bom %}readonly{% endif %}></td>
               <td></td>
             </tr>
           {% endfor %}
         </tbody>
       </table>
 
-      <button type="submit">Save BOM</button>
+      {% if can_edit_bom %}
+        <button type="submit">Save BOM</button>
+      {% else %}
+        <p class="muted-inline">You can review this BOM, but you do not have permission to save changes.</p>
+      {% endif %}
       <a href="/master-data/products/{{ product.id }}">Cancel</a>
     </form>
   </section>

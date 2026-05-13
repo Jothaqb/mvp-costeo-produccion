@@ -35,8 +35,12 @@ BASE_PERMISSION_DEFINITIONS = (
     ("product.edit", "product", "edit", "Edit product master data."),
     ("product.edit_prices", "product", "edit_prices", "Edit product prices."),
     ("product.edit_cost", "product", "edit_cost", "Edit product standard cost."),
+    ("product.export", "product", "export", "Export product master data."),
     ("bom.view", "bom", "view", "View product BOMs."),
+    ("bom.create", "bom", "create", "Create product BOMs."),
     ("bom.edit", "bom", "edit", "Edit product BOMs."),
+    ("bom.delete", "bom", "delete", "Delete product BOM components."),
+    ("b2b_customer_products.edit_prices", "b2b_customer_products", "edit_prices", "Edit B2B customer-specific pricing."),
     ("planning.view", "planning", "view", "View planning data."),
     ("planning.edit_parameters", "planning", "edit_parameters", "Edit planning parameters."),
     ("sales.view", "sales", "view", "View sales orders and customers."),
@@ -173,6 +177,13 @@ def sync_admin_role_permissions(db: Session, role: Role) -> None:
     db.flush()
 
 
+def ensure_auth_seed_state(db: Session) -> None:
+    ensure_base_permissions(db)
+    admin_role = ensure_admin_role(db)
+    sync_admin_role_permissions(db, admin_role)
+    db.flush()
+
+
 def assign_role_to_user(db: Session, user: User, role: Role) -> None:
     link = db.query(UserRole).filter(UserRole.user_id == user.id, UserRole.role_id == role.id).one_or_none()
     if link is None:
@@ -191,9 +202,8 @@ def bootstrap_admin_user(
     if any_active_users(db):
         raise ValueError("Bootstrap admin is disabled because active users already exist.")
 
-    ensure_base_permissions(db)
-    admin_role = ensure_admin_role(db)
-    sync_admin_role_permissions(db, admin_role)
+    ensure_auth_seed_state(db)
+    admin_role = db.query(Role).filter(Role.code == "admin").one()
 
     normalized_username = username.strip()
     normalized_email = email.strip() if email else None
