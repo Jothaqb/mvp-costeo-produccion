@@ -179,6 +179,7 @@ from app.services.planning_loyverse_refresh_service import (
 )
 from app.services.product_bom_service import (
     ProductBomValidationError,
+    get_product_bom,
     get_or_seed_product_bom,
     list_bom_component_options,
     save_product_bom,
@@ -249,7 +250,13 @@ from app.services.auth_service import (
     revoke_session,
     verify_password,
 )
-from app.services.audit_service import safe_log_audit_event
+from app.services.audit_service import (
+    diff_audit_snapshots,
+    safe_log_audit_event,
+    snapshot_b2b_customer_product_for_audit,
+    snapshot_product_bom_for_audit,
+    snapshot_product_for_audit,
+)
 from app.services.total_sales_service import (
     get_sales_by_order,
     get_sales_categories_pareto,
@@ -2017,6 +2024,16 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
         require_permission(request, "product.edit_cost")
     try:
         product = create_product_master(db, **product_data)
+        created_product = get_product_for_detail(db, product.id)
+        safe_log_audit_event(
+            module="master_data",
+            action="product_created",
+            entity_type="product",
+            entity_id=created_product.id,
+            entity_label=f"{created_product.sku} - {created_product.name}",
+            new_values=snapshot_product_for_audit(created_product),
+            request=request,
+        )
         return _redirect(f"/master-data/products/{product.id}")
     except MasterDataValidationError as exc:
         db.rollback()
@@ -2084,7 +2101,8 @@ async def update_product_master_route(
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "product.edit")
-    product = db.query(Product).filter(Product.id == product_id).one()
+    product = get_product_for_detail(db, product_id)
+    old_snapshot = snapshot_product_for_audit(product)
     form = await request.form()
     product_data = {
         "sku": str(form.get("sku", "")),
@@ -2111,6 +2129,22 @@ async def update_product_master_route(
         require_permission(request, "product.edit_cost")
     try:
         update_product_master(db, product_id=product_id, **product_data)
+        updated_product = get_product_for_detail(db, product_id)
+        changed_old, changed_new = diff_audit_snapshots(
+            old_snapshot,
+            snapshot_product_for_audit(updated_product),
+        )
+        if changed_old is not None and changed_new is not None:
+            safe_log_audit_event(
+                module="master_data",
+                action="product_updated",
+                entity_type="product",
+                entity_id=updated_product.id,
+                entity_label=f"{updated_product.sku} - {updated_product.name}",
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+            )
         return _redirect(f"/master-data/products/{product_id}")
     except MasterDataValidationError as exc:
         db.rollback()
@@ -2176,6 +2210,8 @@ async def update_product_bom_route(
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "bom.edit")
+    product = get_product_for_detail(db, product_id)
+    old_bom_snapshot = snapshot_product_bom_for_audit(get_product_bom(db, product_id))
     form = await request.form()
     line_ids = [str(line_id).strip() for line_id in form.getlist("line_id") if str(line_id).strip()]
     deleted_line_ids = {str(line_id).strip() for line_id in form.getlist("delete_line_id") if str(line_id).strip()}
@@ -2200,12 +2236,24 @@ async def update_product_bom_route(
     ]
 
     try:
-        save_product_bom(
+        saved_bom = save_product_bom(
             db,
             product_id=product_id,
             line_updates=line_updates,
             new_lines=new_lines,
         )
+        new_bom_snapshot = snapshot_product_bom_for_audit(saved_bom)
+        if old_bom_snapshot != new_bom_snapshot:
+            safe_log_audit_event(
+                module="master_data",
+                action="product_bom_updated",
+                entity_type="product_bom",
+                entity_id=product_id,
+                entity_label=f"{product.sku} - {product.name}",
+                old_values=old_bom_snapshot,
+                new_values=new_bom_snapshot,
+                request=request,
+            )
         return _redirect(f"/master-data/products/{product_id}")
     except ProductBomValidationError as exc:
         db.rollback()
@@ -4451,7 +4499,22 @@ def add_b2b_customer_product(
 ) -> Response:
     require_permission(request, "b2b_customer_products.edit_prices")
     try:
-        add_customer_product(db, customer_id, sku, description, distributor_price, active)
+        customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+        product_line = add_customer_product(db, customer_id, sku, description, distributor_price, active)
+        product_ref = db.query(Product).filter(Product.sku == product_line.sku).one_or_none()
+        safe_log_audit_event(
+            module="commercial",
+            action="b2b_customer_product_added",
+            entity_type="b2b_customer_product",
+            entity_id=product_line.id,
+            entity_label=f"{customer.customer_name} - {product_line.sku}",
+            new_values=snapshot_b2b_customer_product_for_audit(
+                product_line,
+                customer_name=customer.customer_name,
+                product_ref=product_ref,
+            ),
+            request=request,
+        )
         return _redirect(f"/b2b/customers/{customer_id}/products")
     except B2BValidationError as exc:
         db.rollback()
@@ -4481,7 +4544,37 @@ def update_b2b_customer_product(
 ) -> Response:
     require_permission(request, "b2b_customer_products.edit_prices")
     try:
-        update_customer_product(db, customer_id, product_line_id, description, distributor_price, active)
+        customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+        existing_line = (
+            db.query(B2BCustomerProduct)
+            .filter(B2BCustomerProduct.customer_id == customer_id, B2BCustomerProduct.id == product_line_id)
+            .one()
+        )
+        old_snapshot = snapshot_b2b_customer_product_for_audit(
+            existing_line,
+            customer_name=customer.customer_name,
+            product_ref=db.query(Product).filter(Product.sku == existing_line.sku).one_or_none(),
+        )
+        updated_line = update_customer_product(db, customer_id, product_line_id, description, distributor_price, active)
+        changed_old, changed_new = diff_audit_snapshots(
+            old_snapshot,
+            snapshot_b2b_customer_product_for_audit(
+                updated_line,
+                customer_name=customer.customer_name,
+                product_ref=db.query(Product).filter(Product.sku == updated_line.sku).one_or_none(),
+            ),
+        )
+        if changed_old is not None and changed_new is not None:
+            safe_log_audit_event(
+                module="commercial",
+                action="b2b_customer_product_updated",
+                entity_type="b2b_customer_product",
+                entity_id=updated_line.id,
+                entity_label=f"{customer.customer_name} - {updated_line.sku}",
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+            )
         return _redirect(f"/b2b/customers/{customer_id}/products")
     except B2BValidationError as exc:
         db.rollback()
