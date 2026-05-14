@@ -44,11 +44,27 @@ Si Render entrega la URL en formato `postgres://`, la app la normaliza automáti
 
 El flujo web `/auth/bootstrap-admin` se mantiene restringido a localhost.
 
-Para crear el primer admin en Render, usar Render Shell o un comando one-off. La idea segura es:
+Para crear el primer admin en Render, usar Render Shell o una terminal local como comando one-off:
 
-1. abrir una sesión de base de datos
-2. ejecutar `ensure_auth_seed_state(db)`
-3. crear el admin solo si no existen usuarios activos
-4. hacer `commit`
+```bash
+python scripts/bootstrap_admin.py --username admin
+```
 
-Ese procedimiento no debe borrar datos ni sobrescribir usuarios existentes.
+Flujo recomendado:
+
+1. abrir Render Dashboard
+2. abrir el Web Service
+3. ir a Shell
+4. ejecutar `python scripts/bootstrap_admin.py --username admin`
+5. escribir la contraseña cuando el script la pida
+6. confirmar la contraseña
+7. entrar luego a `/login`
+
+Notas de seguridad:
+
+- solo funciona si no existen usuarios activos
+- no sobrescribe usuarios existentes
+- no imprime la contraseña
+- no acepta password por CLI
+- no usar `/auth/bootstrap-admin` públicamente
+- usarlo solo como one-off de producción o smoke test
