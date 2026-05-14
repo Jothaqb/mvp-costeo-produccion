@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+import re
 
 from sqlalchemy.orm import Session, joinedload
 
@@ -23,6 +24,7 @@ from app.services.inventory_ledger_service import (
 
 B2B_SEQUENCE_NAME = "b2b_sales_order"
 B2B_ORDER_PREFIX = "B2B"
+B2B_ORDER_NUMBER_PATTERN = re.compile(r"^B2B(\d+)$")
 EDITABLE_STATUSES = {"draft", "in_process"}
 ORDER_STATUSES = {"draft", "in_process", "invoiced"}
 ALLOWED_STATUS_TRANSITIONS = {
@@ -619,11 +621,14 @@ def _generate_b2b_order_number(db: Session) -> str:
         db.add(sequence)
         db.flush()
 
-    order_number = f"{B2B_ORDER_PREFIX}{sequence.next_value:04d}"
-    existing_order = db.query(B2BSalesOrder).filter(B2BSalesOrder.order_number == order_number).one_or_none()
-    if existing_order is not None:
-        raise B2BValidationError(f"Generated B2B order number {order_number} already exists.")
-    sequence.next_value += 1
+    candidate_value = max(sequence.next_value, _bootstrap_next_b2b_order_sequence(db))
+    while True:
+        order_number = f"{B2B_ORDER_PREFIX}{candidate_value:04d}"
+        existing_order = db.query(B2BSalesOrder).filter(B2BSalesOrder.order_number == order_number).one_or_none()
+        if existing_order is None:
+            break
+        candidate_value += 1
+    sequence.next_value = candidate_value + 1
     return order_number
 
 
@@ -631,9 +636,10 @@ def _bootstrap_next_b2b_order_sequence(db: Session) -> int:
     highest = 0
     order_numbers = db.query(B2BSalesOrder.order_number).all()
     for (order_number,) in order_numbers:
-        if not order_number or not order_number.startswith(B2B_ORDER_PREFIX):
+        if not order_number:
             continue
-        suffix = order_number[len(B2B_ORDER_PREFIX):]
-        if suffix.isdigit():
-            highest = max(highest, int(suffix))
+        match = B2B_ORDER_NUMBER_PATTERN.fullmatch(order_number)
+        if match is None:
+            continue
+        highest = max(highest, int(match.group(1)))
     return highest + 1
