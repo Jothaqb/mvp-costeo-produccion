@@ -297,6 +297,26 @@ class UserSession(Base):
     user: Mapped["User"] = relationship("User", back_populates="sessions")
 
 
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    username: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    module: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    entity_type: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    entity_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    entity_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    old_values: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_values: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class LotSequence(Base):
     __tablename__ = "lot_sequences"
     __table_args__ = (

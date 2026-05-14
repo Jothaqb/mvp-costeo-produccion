@@ -323,6 +323,42 @@ def ensure_auth_tables() -> None:
         connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_user_sessions_user_id ON user_sessions (user_id)")
 
 
+def ensure_audit_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER NOT NULL PRIMARY KEY,
+                timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                user_id INTEGER,
+                username VARCHAR(100) NOT NULL,
+                module VARCHAR(100) NOT NULL,
+                action VARCHAR(100) NOT NULL,
+                entity_type VARCHAR(100),
+                entity_id VARCHAR(100),
+                entity_label VARCHAR(255),
+                old_values TEXT,
+                new_values TEXT,
+                request_path VARCHAR(500),
+                method VARCHAR(20),
+                ip_address VARCHAR(255),
+                notes TEXT,
+                FOREIGN KEY(user_id) REFERENCES users (id)
+            )
+            """
+        )
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_audit_logs_timestamp ON audit_logs (timestamp)")
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_audit_logs_user_id ON audit_logs (user_id)")
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_audit_logs_username ON audit_logs (username)")
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_audit_logs_module ON audit_logs (module)")
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_audit_logs_action ON audit_logs (action)")
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_audit_logs_entity_type ON audit_logs (entity_type)")
+        connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_audit_logs_entity_id ON audit_logs (entity_id)")
+
+
 def ensure_discount_master_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

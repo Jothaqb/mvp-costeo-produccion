@@ -20,6 +20,7 @@ from app.database import (
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
     ensure_auth_tables,
+    ensure_audit_tables,
     ensure_channel_master_tables,
     ensure_b2c_sales_tables,
     ensure_b2c_customer_tables,
@@ -248,6 +249,7 @@ from app.services.auth_service import (
     revoke_session,
     verify_password,
 )
+from app.services.audit_service import safe_log_audit_event
 from app.services.total_sales_service import (
     get_sales_by_order,
     get_sales_categories_pareto,
@@ -301,6 +303,7 @@ ensure_b2c_customer_tables()
 ensure_channel_master_tables()
 ensure_inventory_adjustment_tables()
 ensure_auth_tables()
+ensure_audit_tables()
 _auth_seed_db = SessionLocal()
 try:
     ensure_auth_seed_state(_auth_seed_db)
@@ -567,6 +570,15 @@ async def login_submit(request: Request, db: Session = Depends(get_db)) -> Respo
         .one_or_none()
     )
     if user is None or not user.is_active or not verify_password(password, user.password_hash):
+        safe_log_audit_event(
+            module="auth",
+            action="login_failed",
+            entity_type="user",
+            entity_label=username or "anonymous",
+            notes="Invalid username or password.",
+            request=request,
+            username=username or "anonymous",
+        )
         return templates.TemplateResponse(
             request=request,
             name="login.html",
@@ -581,6 +593,15 @@ async def login_submit(request: Request, db: Session = Depends(get_db)) -> Respo
 
     _, raw_token = create_session(db, user, request)
     db.commit()
+    safe_log_audit_event(
+        module="auth",
+        action="login_success",
+        entity_type="user",
+        entity_id=user.id,
+        entity_label=user.username,
+        request=request,
+        user=user,
+    )
     response = _redirect(next_target or "/")
     _set_auth_cookie(response, raw_token)
     return response
@@ -588,8 +609,19 @@ async def login_submit(request: Request, db: Session = Depends(get_db)) -> Respo
 
 @app.post("/logout")
 async def logout_submit(request: Request, db: Session = Depends(get_db)) -> Response:
+    current_auth = get_current_user_from_request(db, request)
     revoke_session(db, request.cookies.get(SESSION_COOKIE_NAME))
     db.commit()
+    safe_log_audit_event(
+        module="auth",
+        action="logout",
+        entity_type="user",
+        entity_id=current_auth.user.id if current_auth is not None else None,
+        entity_label=current_auth.user.username if current_auth is not None else "anonymous",
+        request=request,
+        user=current_auth.user if current_auth is not None else None,
+        username="anonymous" if current_auth is None else None,
+    )
     response = _redirect("/login")
     _clear_auth_cookie(response)
     return response
@@ -652,6 +684,16 @@ async def change_password_submit(request: Request, db: Session = Depends(get_db)
     db_user.updated_at = datetime.utcnow()
     db_user.must_change_password = False
     db.commit()
+    safe_log_audit_event(
+        module="auth",
+        action="password_change",
+        entity_type="user",
+        entity_id=db_user.id,
+        entity_label=db_user.username,
+        notes="Password changed by user.",
+        request=request,
+        user=db_user,
+    )
     db.refresh(db_user)
     request.state.current_user = db_user
     return templates.TemplateResponse(
@@ -731,6 +773,16 @@ async def bootstrap_admin_submit(request: Request, db: Session = Depends(get_db)
         )
         _, raw_token = create_session(db, user, request)
         db.commit()
+        safe_log_audit_event(
+            module="auth",
+            action="bootstrap_admin_created",
+            entity_type="user",
+            entity_id=user.id,
+            entity_label=user.username,
+            notes="Bootstrap admin user created.",
+            request=request,
+            user=user,
+        )
         response = _redirect("/")
         _set_auth_cookie(response, raw_token)
         return response
