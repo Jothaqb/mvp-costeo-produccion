@@ -3,6 +3,17 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
 .idea/
 .vscode/
 *.db
+*.sqlite
+*.sqlite3
+instance/
+secrets/
+*.pem
+*.key
+*.crt
+*.p12
+logs/
+*.log
