@@ -251,11 +251,22 @@ from app.services.auth_service import (
     verify_password,
 )
 from app.services.audit_service import (
+    diff_audit_snapshot_rows,
     diff_audit_snapshots,
     safe_log_audit_event,
+    snapshot_b2b_sales_order_for_audit,
     snapshot_b2b_customer_product_for_audit,
+    snapshot_b2c_sales_order_for_audit,
+    snapshot_inventory_adjustment_for_audit,
+    snapshot_planner_quantity_for_audit,
+    snapshot_planning_parameter_product_for_audit,
     snapshot_product_bom_for_audit,
     snapshot_product_for_audit,
+    snapshot_production_order_activities_for_audit,
+    snapshot_production_order_bom_for_audit,
+    snapshot_production_order_for_audit,
+    snapshot_purchase_order_for_audit,
+    summarize_historical_import_result,
 )
 from app.services.total_sales_service import (
     get_sales_by_order,
@@ -3429,6 +3440,20 @@ async def create_inventory_adjustment_route(
             reason=form_data["reason"],
             notes=form_data["notes"],
         )
+        safe_log_audit_event(
+            module="inventory",
+            action="inventory_adjustment_created",
+            entity_type="inventory_adjustment",
+            entity_id=adjustment.id,
+            entity_label=adjustment.adjustment_number,
+            old_values={
+                "product_id": adjustment.product_id,
+                "sku_snapshot": adjustment.sku_snapshot,
+                "current_qty_snapshot": adjustment.current_qty_snapshot,
+            },
+            new_values=snapshot_inventory_adjustment_for_audit(adjustment),
+            request=request,
+        )
         return _redirect(f"/inventory/adjustments/{adjustment.id}")
     except (InventoryAdjustmentValidationError, ValueError) as exc:
         db.rollback()
@@ -3525,6 +3550,22 @@ async def inventory_initialize_opening_balances_route(
 
     try:
         result = initialize_inventory_opening_balances(db)
+        safe_log_audit_event(
+            module="inventory",
+            action="inventory_opening_balances_initialized",
+            entity_type="inventory_initialization",
+            entity_label="opening_balances",
+            new_values={
+                "initialized_count": result.initialized_count,
+                "zero_quantity_count": result.zero_quantity_count,
+                "zero_cost_count": result.zero_cost_count,
+                "negative_inventory_zeroed_count": result.negative_inventory_zeroed_count,
+                "skipped_count": result.skipped_count,
+                "warning_count": len(result.warning_messages),
+            },
+            notes=" | ".join(result.warning_messages[:5]) if result.warning_messages else None,
+            request=request,
+        )
         return templates.TemplateResponse(
             request=request,
             name="inventory_initialize.html",
@@ -3625,12 +3666,37 @@ async def update_inventory_parameters(request: Request, db: Session = Depends(ge
         elif key_text.startswith("yellow_zone_"):
             product_id = int(key_text.replace("yellow_zone_", "", 1))
             yellow_zone_inputs[product_id] = str(value)
+    product_ids = sorted(set(moq_inputs) | set(red_zone_inputs) | set(yellow_zone_inputs))
+    products_before = {
+        product.id: snapshot_planning_parameter_product_for_audit(product)
+        for product in db.query(Product).filter(Product.id.in_(product_ids)).all()
+    }
     for permission_code in sorted(
         _required_planning_inventory_permissions(db, moq_inputs, red_zone_inputs, yellow_zone_inputs)
     ):
         require_permission(request, permission_code)
     try:
         update_product_inventory_parameters(db, moq_inputs, red_zone_inputs, yellow_zone_inputs)
+        products_after = {
+            product.id: snapshot_planning_parameter_product_for_audit(product)
+            for product in db.query(Product).filter(Product.id.in_(product_ids)).all()
+        }
+        changed_old, changed_new = diff_audit_snapshot_rows(
+            list(products_before.values()),
+            list(products_after.values()),
+            key_field="product_id",
+            identity_fields=["product_id", "sku", "name"],
+        )
+        if changed_old is not None and changed_new is not None:
+            safe_log_audit_event(
+                module="planning",
+                action="planning_parameters_updated",
+                entity_type="planning_parameters",
+                entity_label="inventory_parameters",
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+            )
         query = f"product_type={quote(product_type)}&message={quote('Planning parameters saved.')}"
         if sku:
             query += f"&sku={quote(sku)}"
@@ -3730,6 +3796,20 @@ def refresh_planning_inventory_and_cost_route(
             status=status,
             needs_action=needs_action,
         )
+        safe_log_audit_event(
+            module="planning",
+            action="planning_inventory_cost_refreshed",
+            entity_type="planning_refresh",
+            entity_label="inventory_cost_refresh",
+            new_values={
+                "inventory_refreshed_count": result.inventory_refreshed_count,
+                "cost_refreshed_count": result.cost_refreshed_count,
+                "warning_count": result.warning_count,
+                "matched_product_count": result.matched_product_count,
+            },
+            notes=" | ".join(result.warning_messages[:5]) if result.warning_messages else None,
+            request=request,
+        )
         message = (
             f"Inventory refreshed: {result.inventory_refreshed_count}. "
             f"Cost refreshed: {result.cost_refreshed_count}. "
@@ -3758,8 +3838,33 @@ async def update_planner_quantities(request: Request, db: Session = Depends(get_
             continue
         product_id = int(key_text.replace("planner_qty_", "", 1))
         quantity_inputs[product_id] = str(value)
+    product_ids = sorted(quantity_inputs)
+    products_before = {
+        product.id: snapshot_planner_quantity_for_audit(product)
+        for product in db.query(Product).filter(Product.id.in_(product_ids)).all()
+    }
     try:
         update_product_planner_quantities(db, quantity_inputs)
+        products_after = {
+            product.id: snapshot_planner_quantity_for_audit(product)
+            for product in db.query(Product).filter(Product.id.in_(product_ids)).all()
+        }
+        changed_old, changed_new = diff_audit_snapshot_rows(
+            list(products_before.values()),
+            list(products_after.values()),
+            key_field="product_id",
+            identity_fields=["product_id", "sku", "name"],
+        )
+        if changed_old is not None and changed_new is not None:
+            safe_log_audit_event(
+                module="planning",
+                action="planning_quantity_updated",
+                entity_type="planning_quantity",
+                entity_label="planner_quantities",
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+            )
         query = _planning_suggestions_query(product_type, sku, route_id, supplier, status, needs_action)
         query += f"&message={quote('Planner quantities saved.')}"
         return _redirect(f"/planning/suggestions?{query}")
@@ -3782,7 +3887,24 @@ def clear_planning_quantities(
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "planning.edit_zones")
+    existing_rows = [
+        snapshot_planner_quantity_for_audit(product)
+        for product in db.query(Product).filter(Product.planning_quantity.is_not(None)).order_by(Product.sku, Product.id).all()
+    ]
     clear_planner_quantities(db)
+    if existing_rows:
+        safe_log_audit_event(
+            module="planning",
+            action="planning_quantities_cleared",
+            entity_type="planning_quantity",
+            entity_label="planner_quantities",
+            old_values={
+                "cleared_count": len(existing_rows),
+                "sample_rows": existing_rows[:10],
+            },
+            new_values={"cleared_count": 0},
+            request=request,
+        )
     query = _planning_suggestions_query(product_type, sku, route_id, supplier, status, needs_action)
     query += f"&message={quote('Planner quantities cleared.')}"
     return _redirect(f"/planning/suggestions?{query}")
@@ -3899,11 +4021,20 @@ async def import_purchase_orders(request: Request, file: UploadFile = File(...),
     require_permission(request, "purchase_order.import")
     result: PurchaseOrderHistoricalImportResult | None = None
     error = None
+    file_name = file.filename or "historical_purchase_orders.csv"
     try:
         result = import_historical_purchase_orders_csv(
             db,
-            file_name=file.filename or "historical_purchase_orders.csv",
+            file_name=file_name,
             file_bytes=await file.read(),
+        )
+        safe_log_audit_event(
+            module="purchase",
+            action="purchase_order_historical_import",
+            entity_type="historical_import",
+            entity_label=file_name,
+            new_values=summarize_historical_import_result(result),
+            request=request,
         )
     except PurchaseOrderHistoricalImportValidationError as exc:
         db.rollback()
@@ -4191,12 +4322,29 @@ async def receive_purchase_order_route(request: Request, po_id: int, db: Session
         .filter(PurchaseOrder.id == po_id)
         .one()
     )
+    old_snapshot = snapshot_purchase_order_for_audit(order)
     try:
         order = receive_purchase_order_with_inventory_posting(
             db=db,
             order_id=po_id,
             receive_now_inputs=receive_inputs,
             receive_token=receive_token,
+        )
+        refreshed_order = (
+            db.query(PurchaseOrder)
+            .options(joinedload(PurchaseOrder.lines))
+            .filter(PurchaseOrder.id == po_id)
+            .one()
+        )
+        safe_log_audit_event(
+            module="purchase",
+            action="purchase_order_received",
+            entity_type="purchase_order",
+            entity_id=refreshed_order.id,
+            entity_label=refreshed_order.po_number,
+            old_values=old_snapshot,
+            new_values=snapshot_purchase_order_for_audit(refreshed_order),
+            request=request,
         )
         return _redirect(f"/planning/purchase-orders/{order.id}?message={quote('Receipt saved successfully.')}")
     except PurchaseOrderValidationError as exc:
@@ -4745,11 +4893,20 @@ async def import_b2b_orders(request: Request, file: UploadFile = File(...), db: 
     require_permission(request, "sales.import")
     result: B2BHistoricalSalesImportResult | None = None
     error = None
+    file_name = file.filename or "historical_b2b_sales.csv"
     try:
         result = import_b2b_historical_sales_csv(
             db,
-            file_name=file.filename or "historical_b2b_sales.csv",
+            file_name=file_name,
             file_bytes=await file.read(),
+        )
+        safe_log_audit_event(
+            module="sales",
+            action="b2b_sales_historical_import",
+            entity_type="historical_import",
+            entity_label=file_name,
+            new_values=summarize_historical_import_result(result),
+            request=request,
         )
     except B2BHistoricalSalesImportValidationError as exc:
         db.rollback()
@@ -4985,8 +5142,23 @@ def update_b2b_order_status(
 ) -> Response:
     require_permission(request, "sales.invoice" if status == "invoiced" else "sales.edit")
     try:
+        old_snapshot = None
         if status == "invoiced":
-            invoice_b2b_order_in_erp(db, order_id)
+            order_before = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
+            old_snapshot = snapshot_b2b_sales_order_for_audit(order_before)
+        if status == "invoiced":
+            order_after = invoice_b2b_order_in_erp(db, order_id)
+            new_snapshot = snapshot_b2b_sales_order_for_audit(order_after)
+            safe_log_audit_event(
+                module="sales",
+                action="b2b_sales_order_invoiced",
+                entity_type="b2b_sales_order",
+                entity_id=order_after.id,
+                entity_label=order_after.order_number,
+                old_values=old_snapshot,
+                new_values=new_snapshot,
+                request=request,
+            )
         else:
             change_sales_order_status(db, order_id, status)
         return _redirect(f"/b2b/orders/{order_id}")
@@ -5087,11 +5259,20 @@ async def import_b2c_orders(request: Request, file: UploadFile = File(...), db: 
     require_permission(request, "sales.import")
     result: B2CHistoricalSalesImportResult | None = None
     error = None
+    file_name = file.filename or "historical_b2c_sales.csv"
     try:
         result = import_b2c_historical_sales_csv(
             db,
-            file_name=file.filename or "historical_b2c_sales.csv",
+            file_name=file_name,
             file_bytes=await file.read(),
+        )
+        safe_log_audit_event(
+            module="sales",
+            action="b2c_sales_historical_import",
+            entity_type="historical_import",
+            entity_label=file_name,
+            new_values=summarize_historical_import_result(result),
+            request=request,
         )
     except B2CHistoricalSalesImportValidationError as exc:
         db.rollback()
@@ -5374,8 +5555,23 @@ def update_b2c_order_status(
 ) -> Response:
     require_permission(request, "sales.invoice" if status == "invoiced" else "sales.edit")
     try:
+        old_snapshot = None
         if status == "invoiced":
-            invoice_b2c_order_in_erp(db, order_id)
+            order_before = db.query(B2CSalesOrder).filter(B2CSalesOrder.id == order_id).one()
+            old_snapshot = snapshot_b2c_sales_order_for_audit(order_before)
+        if status == "invoiced":
+            order_after = invoice_b2c_order_in_erp(db, order_id)
+            new_snapshot = snapshot_b2c_sales_order_for_audit(order_after)
+            safe_log_audit_event(
+                module="sales",
+                action="b2c_sales_order_invoiced",
+                entity_type="b2c_sales_order",
+                entity_id=order_after.id,
+                entity_label=order_after.order_number,
+                old_values=old_snapshot,
+                new_values=new_snapshot,
+                request=request,
+            )
         else:
             change_b2c_sales_order_status(db, order_id, status)
         return _redirect(f"/b2c/orders/{order_id}")
@@ -6074,11 +6270,20 @@ async def import_production_orders(request: Request, file: UploadFile = File(...
     require_permission(request, "production_order.import")
     result: ProductionOrderHistoricalImportResult | None = None
     error = None
+    file_name = file.filename or "historical_production_orders.csv"
     try:
         result = import_historical_production_orders_csv(
             db,
-            file_name=file.filename or "historical_production_orders.csv",
+            file_name=file_name,
             file_bytes=await file.read(),
+        )
+        safe_log_audit_event(
+            module="production",
+            action="production_order_historical_import",
+            entity_type="historical_import",
+            entity_label=file_name,
+            new_values=summarize_historical_import_result(result),
+            request=request,
         )
     except ProductionOrderHistoricalImportValidationError as exc:
         db.rollback()
@@ -6261,6 +6466,13 @@ async def update_production_order_activities(
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "production_order.edit")
+    order_before = (
+        db.query(ProductionOrder)
+        .options(joinedload(ProductionOrder.activities))
+        .filter(ProductionOrder.id == order_id)
+        .one()
+    )
+    old_snapshot = snapshot_production_order_activities_for_audit(order_before)
     form = await request.form()
     activity_ids = form.getlist("activity_id")
     updates = [
@@ -6274,6 +6486,24 @@ async def update_production_order_activities(
     ]
     try:
         update_activity_capture(db, order_id, updates)
+        order_after = (
+            db.query(ProductionOrder)
+            .options(joinedload(ProductionOrder.activities))
+            .filter(ProductionOrder.id == order_id)
+            .one()
+        )
+        new_snapshot = snapshot_production_order_activities_for_audit(order_after)
+        if old_snapshot != new_snapshot:
+            safe_log_audit_event(
+                module="production",
+                action="production_order_activity_updated",
+                entity_type="production_order",
+                entity_id=order_after.id,
+                entity_label=order_after.internal_order_number,
+                old_values=old_snapshot,
+                new_values=new_snapshot,
+                request=request,
+            )
         return _redirect(f"/production-orders/{order_id}")
     except ProductionOrderValidationError as exc:
         return _production_order_detail_response(order_id, request, db, str(exc))
@@ -6289,9 +6519,24 @@ def update_production_order_yield(
 ) -> Response:
     require_permission(request, "production_order.edit")
     try:
+        order_before = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+        old_snapshot = snapshot_production_order_for_audit(order_before)
         input_qty_value = parse_optional_decimal(input_qty, "Input quantity")
         output_qty_value = parse_optional_decimal(output_qty, "Output quantity")
-        update_yield_capture(db, order_id, input_qty_value, output_qty_value)
+        updated_order = update_yield_capture(db, order_id, input_qty_value, output_qty_value)
+        new_snapshot = snapshot_production_order_for_audit(updated_order)
+        changed_old, changed_new = diff_audit_snapshots(old_snapshot, new_snapshot)
+        if changed_old is not None and changed_new is not None:
+            safe_log_audit_event(
+                module="production",
+                action="production_order_yield_updated",
+                entity_type="production_order",
+                entity_id=updated_order.id,
+                entity_label=updated_order.internal_order_number,
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+            )
         return _redirect(f"/production-orders/{order_id}")
     except ProductionOrderValidationError as exc:
         return _production_order_detail_response(order_id, request, db, str(exc))
@@ -6337,6 +6582,13 @@ async def update_production_order_bom(
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "production_order.edit")
+    order_before = (
+        db.query(ProductionOrder)
+        .options(joinedload(ProductionOrder.materials))
+        .filter(ProductionOrder.id == order_id)
+        .one()
+    )
+    old_snapshot = snapshot_production_order_bom_for_audit(order_before)
     form = await request.form()
     material_ids = form.getlist("material_id")
     updates = [
@@ -6354,6 +6606,24 @@ async def update_production_order_bom(
     }
     try:
         update_order_bom(db, order_id, updates, deleted_material_ids, new_material)
+        order_after = (
+            db.query(ProductionOrder)
+            .options(joinedload(ProductionOrder.materials))
+            .filter(ProductionOrder.id == order_id)
+            .one()
+        )
+        new_snapshot = snapshot_production_order_bom_for_audit(order_after)
+        if old_snapshot != new_snapshot:
+            safe_log_audit_event(
+                module="production",
+                action="production_order_bom_updated",
+                entity_type="production_order",
+                entity_id=order_after.id,
+                entity_label=order_after.internal_order_number,
+                old_values=old_snapshot,
+                new_values=new_snapshot,
+                request=request,
+            )
         return _redirect(f"/production-orders/{order_id}")
     except ProductionOrderValidationError as exc:
         order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
@@ -6383,7 +6653,19 @@ async def update_production_order_bom(
 def start_production_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
     require_permission(request, "production_order.edit")
     try:
-        start_order(db, order_id)
+        order_before = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+        old_snapshot = snapshot_production_order_for_audit(order_before)
+        order_after = start_order(db, order_id)
+        safe_log_audit_event(
+            module="production",
+            action="production_order_started",
+            entity_type="production_order",
+            entity_id=order_after.id,
+            entity_label=order_after.internal_order_number,
+            old_values=old_snapshot,
+            new_values=snapshot_production_order_for_audit(order_after),
+            request=request,
+        )
         return _redirect(f"/production-orders/{order_id}")
     except ProductionOrderValidationError as exc:
         return _production_order_detail_response(order_id, request, db, str(exc))
@@ -6393,7 +6675,23 @@ def start_production_order(order_id: int, request: Request, db: Session = Depend
 def close_production_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
     require_permission(request, "production_order.close")
     try:
-        close_order_with_inventory_posting(db, order_id)
+        order_before = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+        old_snapshot = snapshot_production_order_for_audit(order_before)
+        close_result = close_order_with_inventory_posting(db, order_id)
+        notes = None
+        if close_result.warnings:
+            notes = " | ".join(close_result.warnings[:5])
+        safe_log_audit_event(
+            module="production",
+            action="production_order_closed",
+            entity_type="production_order",
+            entity_id=close_result.order.id,
+            entity_label=close_result.order.internal_order_number,
+            old_values=old_snapshot,
+            new_values=snapshot_production_order_for_audit(close_result.order),
+            notes=notes,
+            request=request,
+        )
         # Loyverse cost sync is intentionally disabled here.
         # The ERP is now the source of truth for production cost,
         # so Production Close should not push cost updates to Loyverse.

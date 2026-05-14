@@ -9,7 +9,18 @@ from typing import Any
 from fastapi import Request
 
 from app.database import SessionLocal
-from app.models import AuditLog, B2BCustomerProduct, Product, ProductBomHeader, User
+from app.models import (
+    AuditLog,
+    B2BCustomerProduct,
+    B2BSalesOrder,
+    B2CSalesOrder,
+    InventoryAdjustment,
+    Product,
+    ProductBomHeader,
+    ProductionOrder,
+    PurchaseOrder,
+    User,
+)
 
 
 def _safe_json_default(value: Any) -> Any:
@@ -134,6 +145,258 @@ def diff_audit_snapshots(
     if not changed_old and not changed_new:
         return None, None
     return changed_old, changed_new
+
+
+def diff_audit_snapshot_rows(
+    old_rows: list[dict[str, Any]] | None,
+    new_rows: list[dict[str, Any]] | None,
+    *,
+    key_field: str,
+    identity_fields: list[str] | None = None,
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]] | None]:
+    old_payload = old_rows or []
+    new_payload = new_rows or []
+    old_by_key = {str(row.get(key_field)): row for row in old_payload}
+    new_by_key = {str(row.get(key_field)): row for row in new_payload}
+    changed_old_rows: list[dict[str, Any]] = []
+    changed_new_rows: list[dict[str, Any]] = []
+    identity_keys = identity_fields or [key_field]
+
+    for row_key in sorted(set(old_by_key) | set(new_by_key)):
+        old_row = old_by_key.get(row_key)
+        new_row = new_by_key.get(row_key)
+        changed_old, changed_new = diff_audit_snapshots(old_row, new_row)
+        if changed_old is None and changed_new is None:
+            continue
+
+        old_entry = changed_old or {}
+        new_entry = changed_new or {}
+        source_row = new_row or old_row or {}
+        for identity_key in identity_keys:
+            identity_value = source_row.get(identity_key)
+            old_entry.setdefault(identity_key, identity_value)
+            new_entry.setdefault(identity_key, identity_value)
+        changed_old_rows.append(old_entry)
+        changed_new_rows.append(new_entry)
+
+    if not changed_old_rows and not changed_new_rows:
+        return None, None
+    return changed_old_rows, changed_new_rows
+
+
+def summarize_historical_import_result(result: Any) -> dict[str, Any]:
+    warnings = list(getattr(result, "warnings", []) or [])
+    errors = list(getattr(result, "errors", []) or [])
+    summary: dict[str, Any] = {
+        "file_name": getattr(result, "file_name", None),
+        "total_rows": getattr(result, "total_rows", None),
+        "invalid_rows": getattr(result, "invalid_rows", None),
+        "warnings_count": len(warnings),
+        "errors_count": len(errors),
+    }
+
+    created_count = (
+        getattr(result, "created_orders", None)
+        if hasattr(result, "created_orders")
+        else getattr(result, "created_purchase_orders", None)
+        if hasattr(result, "created_purchase_orders")
+        else getattr(result, "created_production_orders", None)
+        if hasattr(result, "created_production_orders")
+        else None
+    )
+    skipped_count = (
+        getattr(result, "skipped_existing_orders", None)
+        if hasattr(result, "skipped_existing_orders")
+        else getattr(result, "skipped_existing_purchase_orders", None)
+        if hasattr(result, "skipped_existing_purchase_orders")
+        else getattr(result, "skipped_existing_production_orders", None)
+        if hasattr(result, "skipped_existing_production_orders")
+        else None
+    )
+    if created_count is not None:
+        summary["created_count"] = created_count
+    if skipped_count is not None:
+        summary["skipped_count"] = skipped_count
+    if hasattr(result, "created_lines"):
+        summary["created_lines"] = getattr(result, "created_lines")
+
+    warning_examples = [
+        f"row {getattr(item, 'row_number', '?')}: {getattr(item, 'message', str(item))}"
+        for item in warnings[:5]
+    ]
+    error_examples = [
+        f"row {getattr(item, 'row_number', '?')}: {getattr(item, 'message', str(item))}"
+        for item in errors[:5]
+    ]
+    if warning_examples:
+        summary["warning_examples"] = warning_examples
+    if error_examples:
+        summary["error_examples"] = error_examples
+    return summary
+
+
+def snapshot_b2b_sales_order_for_audit(order: B2BSalesOrder) -> dict[str, Any]:
+    return {
+        "order_id": order.id,
+        "order_number": order.order_number,
+        "customer_id": order.customer_id,
+        "customer_name": order.customer_name_snapshot,
+        "status": order.status,
+        "delivery_date": order.delivery_date,
+        "total_amount": order.total_amount,
+        "cost_total_snapshot": order.cost_total_snapshot,
+        "gross_margin_amount": order.gross_margin_amount,
+        "gross_margin_percent": order.gross_margin_percent,
+        "loyverse_receipt_id": order.loyverse_receipt_id,
+        "loyverse_receipt_number": order.loyverse_receipt_number,
+        "loyverse_invoice_sync_status": order.loyverse_invoice_sync_status,
+        "loyverse_invoice_synced_at": order.loyverse_invoice_synced_at,
+    }
+
+
+def snapshot_b2c_sales_order_for_audit(order: B2CSalesOrder) -> dict[str, Any]:
+    return {
+        "order_id": order.id,
+        "order_number": order.order_number,
+        "b2c_customer_id": order.b2c_customer_id,
+        "customer_name": order.customer_name,
+        "status": order.status,
+        "order_date": order.order_date,
+        "subtotal_amount": order.subtotal_amount,
+        "discount_amount": order.discount_amount,
+        "total_amount": order.total_amount,
+        "cost_total_snapshot": order.cost_total_snapshot,
+        "gross_margin_amount": order.gross_margin_amount,
+        "gross_margin_percent": order.gross_margin_percent,
+    }
+
+
+def snapshot_purchase_order_for_audit(order: PurchaseOrder) -> dict[str, Any]:
+    lines = sorted(order.lines, key=lambda line: (line.line_number, line.id))
+    return {
+        "purchase_order_id": order.id,
+        "po_number": order.po_number,
+        "supplier_name": order.supplier_name_snapshot,
+        "po_date": order.po_date,
+        "status": order.status,
+        "estimated_total": order.estimated_total,
+        "lines": [
+            {
+                "line_id": line.id,
+                "sku": line.sku_snapshot,
+                "quantity": line.quantity,
+                "received_quantity": line.received_quantity,
+                "unit_cost": line.unit_cost_snapshot,
+            }
+            for line in lines
+        ],
+    }
+
+
+def snapshot_production_order_for_audit(order: ProductionOrder) -> dict[str, Any]:
+    return {
+        "production_order_id": order.id,
+        "internal_order_number": order.internal_order_number,
+        "status": order.status,
+        "production_date": order.production_date,
+        "product_id": order.product_id,
+        "product_sku": order.product_sku_snapshot,
+        "product_name": order.product_name_snapshot,
+        "route_id": order.route_id,
+        "route_name": order.route_name_snapshot,
+        "planned_qty": order.planned_qty,
+        "input_qty": order.input_qty,
+        "output_qty": order.output_qty,
+        "yield_percent": order.yield_percent,
+        "material_snapshot_cost_total": order.material_snapshot_cost_total,
+        "real_labor_cost_total": order.real_labor_cost_total,
+        "real_machine_cost_total": order.real_machine_cost_total,
+        "real_overhead_cost_total": order.real_overhead_cost_total,
+        "real_total_cost": order.real_total_cost,
+        "real_unit_cost": order.real_unit_cost,
+        "variance_amount": order.variance_amount,
+        "variance_percent": order.variance_percent,
+        "closed_at": order.closed_at,
+    }
+
+
+def snapshot_production_order_activities_for_audit(order: ProductionOrder) -> list[dict[str, Any]]:
+    return [
+        {
+            "activity_id": activity.id,
+            "sequence": activity.sequence,
+            "activity_code": activity.activity_code_snapshot,
+            "activity_name": activity.activity_name_snapshot,
+            "labor_minutes": activity.labor_minutes,
+            "machine_minutes": activity.machine_minutes,
+            "labor_cost": activity.labor_cost,
+            "machine_cost": activity.machine_cost,
+            "overhead_cost": activity.overhead_cost,
+            "total_activity_cost": activity.total_activity_cost,
+            "notes": activity.notes,
+        }
+        for activity in sorted(order.activities, key=lambda item: (item.sequence, item.id))
+    ]
+
+
+def snapshot_production_order_bom_for_audit(order: ProductionOrder) -> list[dict[str, Any]]:
+    return [
+        {
+            "material_id": material.id,
+            "component_sku": material.component_sku,
+            "component_name": material.component_name,
+            "quantity_standard": material.quantity_standard,
+            "required_quantity": material.required_quantity,
+            "unit_cost_snapshot": material.unit_cost_snapshot,
+            "line_cost": material.line_cost,
+            "component_type": material.component_type,
+            "include_in_real_cost": material.include_in_real_cost,
+        }
+        for material in sorted(order.materials, key=lambda item: (str(item.component_sku or ""), item.id))
+    ]
+
+
+def snapshot_inventory_adjustment_for_audit(adjustment: InventoryAdjustment) -> dict[str, Any]:
+    return {
+        "adjustment_id": adjustment.id,
+        "adjustment_number": adjustment.adjustment_number,
+        "adjustment_date": adjustment.adjustment_date,
+        "product_id": adjustment.product_id,
+        "sku_snapshot": adjustment.sku_snapshot,
+        "product_name_snapshot": adjustment.product_name_snapshot,
+        "adjustment_mode": adjustment.adjustment_mode,
+        "adjustment_type": adjustment.adjustment_type,
+        "transaction_type": adjustment.transaction_type,
+        "reason": adjustment.reason,
+        "current_qty_snapshot": adjustment.current_qty_snapshot,
+        "counted_qty": adjustment.counted_qty,
+        "quantity_adjustment": adjustment.quantity_adjustment,
+        "unit_cost": adjustment.unit_cost,
+        "total_cost": adjustment.total_cost,
+        "status": adjustment.status,
+        "warning_notes": adjustment.warning_notes,
+    }
+
+
+def snapshot_planning_parameter_product_for_audit(product: Product) -> dict[str, Any]:
+    return {
+        "product_id": product.id,
+        "sku": product.sku,
+        "name": product.name,
+        "planning_moq": product.planning_moq,
+        "low_stock_qty": product.low_stock_qty,
+        "optimal_stock_qty": product.optimal_stock_qty,
+        "planning_zones_manual_override": product.planning_zones_manual_override,
+    }
+
+
+def snapshot_planner_quantity_for_audit(product: Product) -> dict[str, Any]:
+    return {
+        "product_id": product.id,
+        "sku": product.sku,
+        "name": product.name,
+        "planning_quantity": product.planning_quantity,
+    }
 
 
 def _request_ip_address(request: Request | None) -> str | None:
