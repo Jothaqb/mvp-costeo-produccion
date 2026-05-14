@@ -26,13 +26,15 @@
       <span class="module-entry">Open Customers</span>
     </a>
 
-    <a class="module-card module-link-card" href="/sales/reporting" aria-label="Open Reporting">
-      <div>
-        <p class="eyebrow">Submodule</p>
-        <h2>Reporting</h2>
-        <p>Open Total Sales reporting and choose the commercial analysis view you want to review.</p>
-      </div>
-      <span class="module-entry">Open Reporting</span>
-    </a>
+    {% if can(request, "reporting.view") %}
+      <a class="module-card module-link-card" href="/sales/reporting" aria-label="Open Reporting">
+        <div>
+          <p class="eyebrow">Submodule</p>
+          <h2>Reporting</h2>
+          <p>Open Total Sales reporting and choose the commercial analysis view you want to review.</p>
+        </div>
+        <span class="module-entry">Open Reporting</span>
+      </a>
+    {% endif %}
   </section>
 {% endblock %}

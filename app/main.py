@@ -452,6 +452,40 @@ def _decimal_form_value_changed(current_value: Decimal | None, submitted_value: 
     return normalized_submitted != current_value
 
 
+def _required_planning_inventory_permissions(
+    db: Session,
+    moq_inputs: dict[int, str],
+    red_zone_inputs: dict[int, str],
+    yellow_zone_inputs: dict[int, str],
+) -> set[str]:
+    product_ids = sorted(set(moq_inputs) | set(red_zone_inputs) | set(yellow_zone_inputs))
+    if not product_ids:
+        return set()
+
+    products_by_id = {
+        product.id: product
+        for product in db.query(Product).filter(Product.id.in_(product_ids)).all()
+    }
+    required_permissions: set[str] = set()
+
+    for product_id, raw_value in moq_inputs.items():
+        product = products_by_id.get(product_id)
+        if product is not None and _decimal_form_value_changed(product.planning_moq, raw_value):
+            required_permissions.add("planning.edit_moq")
+
+    for product_id, raw_value in red_zone_inputs.items():
+        product = products_by_id.get(product_id)
+        if product is not None and _decimal_form_value_changed(product.low_stock_qty, raw_value):
+            required_permissions.add("planning.edit_zones")
+
+    for product_id, raw_value in yellow_zone_inputs.items():
+        product = products_by_id.get(product_id)
+        if product is not None and _decimal_form_value_changed(product.optimal_stock_qty, raw_value):
+            required_permissions.add("planning.edit_zones")
+
+    return required_permissions
+
+
 @app.middleware("http")
 async def authentication_middleware(request: Request, call_next):
     path = request.url.path
@@ -2252,6 +2286,7 @@ def sales_customers_menu(request: Request) -> HTMLResponse:
 
 @app.get("/sales/reporting", response_class=HTMLResponse)
 def sales_reporting_menu(request: Request) -> HTMLResponse:
+    require_permission(request, "reporting.view")
     return templates.TemplateResponse(
         request=request,
         name="sales_reporting_menu.html",
@@ -2267,6 +2302,7 @@ def total_sales(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "reporting.view")
     error = None
     rows = []
     monthly_chart_data: list[dict[str, object]] = []
@@ -2339,11 +2375,13 @@ def total_sales(
 
 @app.get("/sales/total/export")
 def export_total_sales(
+    request: Request,
     date_from: str = Query(""),
     date_to: str = Query(""),
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "reporting.export")
     try:
         filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
             date_from=date_from,
@@ -2415,6 +2453,7 @@ def sales_summary(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "reporting.view")
     filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     error = None
     summary = None
@@ -2497,11 +2536,13 @@ def sales_summary(
 
 @app.get("/sales/summary/export")
 def export_sales_summary(
+    request: Request,
     date_from: str = Query(""),
     date_to: str = Query(""),
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "reporting.export")
     try:
         filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
             date_from=date_from,
@@ -2567,6 +2608,7 @@ def sales_items_pareto(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "reporting.view")
     filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     error = None
     pareto = None
@@ -2616,11 +2658,13 @@ def sales_items_pareto(
 
 @app.get("/sales/items-pareto/export")
 def export_sales_items_pareto(
+    request: Request,
     date_from: str = Query(""),
     date_to: str = Query(""),
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "reporting.export")
     try:
         filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
             date_from=date_from,
@@ -2678,6 +2722,7 @@ def sales_categories_pareto(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "reporting.view")
     filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     error = None
     pareto = None
@@ -2727,11 +2772,13 @@ def sales_categories_pareto(
 
 @app.get("/sales/categories-pareto/export")
 def export_sales_categories_pareto(
+    request: Request,
     date_from: str = Query(""),
     date_to: str = Query(""),
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "reporting.export")
     try:
         filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
             date_from=date_from,
@@ -2789,6 +2836,7 @@ def sales_by_order(
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "reporting.view")
     filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     error = None
     result = None
@@ -2840,11 +2888,13 @@ def sales_by_order(
 
 @app.get("/sales/orders/export")
 def export_sales_by_order(
+    request: Request,
     date_from: str = Query(""),
     date_to: str = Query(""),
     sales_type: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "reporting.export")
     try:
         filters, parsed_date_from, parsed_date_to, _ = _normalize_sales_reporting_filters(
             date_from=date_from,
@@ -3088,6 +3138,7 @@ def initialize_b2c_customers_route(db: Session = Depends(get_db)) -> Response:
 
 @app.get("/planning", response_class=HTMLResponse)
 def planning_home(request: Request) -> HTMLResponse:
+    require_permission(request, "planning.view")
     return templates.TemplateResponse(
         request=request,
         name="planning_home.html",
@@ -3398,6 +3449,7 @@ async def inventory_initialize_opening_balances_route(
 
 @app.get("/planning/customer-order-requirements", response_class=HTMLResponse)
 def customer_order_requirements(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "planning.view")
     requirement_result = build_customer_order_requirements(db)
     return templates.TemplateResponse(
         request=request,
@@ -3420,6 +3472,7 @@ def inventory_parameters(
     message: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "planning.view")
     normalized_type = normalize_product_type(product_type)
     products = list_inventory_parameter_products(
         db,
@@ -3472,6 +3525,10 @@ async def update_inventory_parameters(request: Request, db: Session = Depends(ge
         elif key_text.startswith("yellow_zone_"):
             product_id = int(key_text.replace("yellow_zone_", "", 1))
             yellow_zone_inputs[product_id] = str(value)
+    for permission_code in sorted(
+        _required_planning_inventory_permissions(db, moq_inputs, red_zone_inputs, yellow_zone_inputs)
+    ):
+        require_permission(request, permission_code)
     try:
         update_product_inventory_parameters(db, moq_inputs, red_zone_inputs, yellow_zone_inputs)
         query = f"product_type={quote(product_type)}&message={quote('Planning parameters saved.')}"
@@ -3507,6 +3564,7 @@ def planning_suggestions(
     message: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "planning.view")
     normalized_type = normalize_product_type(product_type)
     requirement_result = build_customer_order_requirements(db)
     mrp_result = build_mrp_result(db)
@@ -3551,6 +3609,7 @@ def planning_suggestions(
 
 @app.post("/planning/suggestions/refresh-inventory-cost")
 def refresh_planning_inventory_and_cost_route(
+    request: Request,
     product_type: str = Form(PRODUCT_TYPE_MANUFACTURED),
     sku: str = Form(""),
     route_id: str = Form(""),
@@ -3559,6 +3618,7 @@ def refresh_planning_inventory_and_cost_route(
     needs_action: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "planning.edit_parameters")
     query = _planning_suggestions_query(product_type, sku, route_id, supplier, status, needs_action)
     try:
         result = refresh_planning_inventory_and_cost(
@@ -3583,6 +3643,7 @@ def refresh_planning_inventory_and_cost_route(
 
 @app.post("/planning/suggestions/planner-quantities")
 async def update_planner_quantities(request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "planning.edit_zones")
     form = await request.form()
     product_type = normalize_product_type(str(form.get("product_type", PRODUCT_TYPE_MANUFACTURED)))
     sku = str(form.get("sku", "")).strip()
@@ -3611,6 +3672,7 @@ async def update_planner_quantities(request: Request, db: Session = Depends(get_
 
 @app.post("/planning/suggestions/clear-planner-quantities")
 def clear_planning_quantities(
+    request: Request,
     product_type: str = Form(PRODUCT_TYPE_MANUFACTURED),
     sku: str = Form(""),
     route_id: str = Form(""),
@@ -3619,6 +3681,7 @@ def clear_planning_quantities(
     needs_action: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "planning.edit_zones")
     clear_planner_quantities(db)
     query = _planning_suggestions_query(product_type, sku, route_id, supplier, status, needs_action)
     query += f"&message={quote('Planner quantities cleared.')}"
@@ -3627,10 +3690,12 @@ def clear_planning_quantities(
 
 @app.get("/planning/suggestions/create-production-order")
 def create_production_order_from_planning(
+    request: Request,
     product_id: int = Query(...),
     planner_qty: str = Query(""),
     db: Session = Depends(get_db),
 ) -> Response:
+    require_permission(request, "production_order.create")
     quantity_error = "Planner quantity must be numeric and greater than 0."
     try:
         quantity = parse_planner_quantity(planner_qty)
@@ -4057,6 +4122,7 @@ def mps_report(
     route_id: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
+    require_permission(request, "planning.view")
     groups = build_mps_groups(db, sku=sku, route_id=route_id)
     routes = list_routes_for_filter(db)
     return templates.TemplateResponse(
@@ -4073,6 +4139,7 @@ def mps_report(
 
 @app.get("/planning/mrp", response_class=HTMLResponse)
 def mrp_report(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "planning.view")
     result = build_mrp_result(db)
     return templates.TemplateResponse(
         request=request,

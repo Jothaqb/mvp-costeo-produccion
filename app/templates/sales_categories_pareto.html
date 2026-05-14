@@ -27,7 +27,9 @@
 
       <div class="report-actions">
         <button type="submit">Apply filters</button>
-        <a class="button secondary" href="{{ export_url }}">Download CSV</a>
+        {% if can(request, "reporting.export") %}
+          <a class="button secondary" href="{{ export_url }}">Download CSV</a>
+        {% endif %}
       </div>
     </form>
   </section>

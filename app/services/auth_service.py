@@ -43,6 +43,8 @@ BASE_PERMISSION_DEFINITIONS = (
     ("b2b_customer_products.edit_prices", "b2b_customer_products", "edit_prices", "Edit B2B customer-specific pricing."),
     ("planning.view", "planning", "view", "View planning data."),
     ("planning.edit_parameters", "planning", "edit_parameters", "Edit planning parameters."),
+    ("planning.edit_moq", "planning", "edit_moq", "Edit planning MOQ values."),
+    ("planning.edit_zones", "planning", "edit_zones", "Edit planning zones and planner quantities."),
     ("sales.view", "sales", "view", "View sales orders and customers."),
     ("sales.create", "sales", "create", "Create sales orders."),
     ("sales.edit", "sales", "edit", "Edit sales orders."),

@@ -2,6 +2,8 @@
 {% import "_formatting.html" as fmt %}
 
 {% block content %}
+  {% set can_edit_moq = can(request, "planning.edit_moq") %}
+  {% set can_edit_zones = can(request, "planning.edit_zones") %}
   <section class="page-hero">
     <p class="eyebrow">Planning</p>
     <h1>Inventory Parameters</h1>
@@ -73,9 +75,9 @@
               {% else %}
                 <td>{{ product.supplier or '' }}</td>
               {% endif %}
-              <td><input name="moq_{{ product.id }}" value="{{ product.planning_moq if product.planning_moq is not none else '' }}" inputmode="decimal"></td>
-              <td><input name="red_zone_{{ product.id }}" value="{{ product.low_stock_qty if product.low_stock_qty is not none else '' }}" inputmode="decimal"></td>
-              <td><input name="yellow_zone_{{ product.id }}" value="{{ product.optimal_stock_qty if product.optimal_stock_qty is not none else '' }}" inputmode="decimal"></td>
+              <td><input name="moq_{{ product.id }}" value="{{ product.planning_moq if product.planning_moq is not none else '' }}" inputmode="decimal" {% if not can_edit_moq %}disabled{% endif %}></td>
+              <td><input name="red_zone_{{ product.id }}" value="{{ product.low_stock_qty if product.low_stock_qty is not none else '' }}" inputmode="decimal" {% if not can_edit_zones %}disabled{% endif %}></td>
+              <td><input name="yellow_zone_{{ product.id }}" value="{{ product.optimal_stock_qty if product.optimal_stock_qty is not none else '' }}" inputmode="decimal" {% if not can_edit_zones %}disabled{% endif %}></td>
               <td>{{ fmt.number_3(product.low_stock_qty + product.planning_moq) if product.low_stock_qty is not none and product.planning_moq is not none else '' }}</td>
             </tr>
           {% else %}
@@ -84,7 +86,11 @@
         </tbody>
       </table>
       <div class="actions form-actions">
-        <button type="submit">Save planning parameters</button>
+        {% if can_edit_moq or can_edit_zones %}
+          <button type="submit">Save planning parameters</button>
+        {% else %}
+          <p class="muted-inline">Read-only access. Planning parameters cannot be changed with your current role.</p>
+        {% endif %}
       </div>
     </form>
   </section>

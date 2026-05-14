@@ -2,6 +2,10 @@
 {% import "_formatting.html" as fmt %}
 
 {% block content %}
+  {% set can_refresh_params = can(request, "planning.edit_parameters") %}
+  {% set can_edit_zones = can(request, "planning.edit_zones") %}
+  {% set can_create_po = can(request, "purchase_order.create") %}
+  {% set can_create_production = can(request, "production_order.create") %}
   <section class="page-hero">
     <p class="eyebrow">Planning</p>
     <h1>Open DDMRP</h1>
@@ -100,9 +104,13 @@
   </section>
 
   <section class="actions">
-    <button type="submit" form="refresh-inventory-cost-form">Refresh Loyverse legacy inventory and standard cost</button>
-    <button type="submit" form="planner-quantity-form">Save planner quantities</button>
-    <button type="submit" form="clear-planner-quantities-form" class="secondary">Clear planner quantities</button>
+    {% if can_refresh_params %}
+      <button type="submit" form="refresh-inventory-cost-form">Refresh Loyverse legacy inventory and standard cost</button>
+    {% endif %}
+    {% if can_edit_zones %}
+      <button type="submit" form="planner-quantity-form">Save planner quantities</button>
+      <button type="submit" form="clear-planner-quantities-form" class="secondary">Clear planner quantities</button>
+    {% endif %}
   </section>
 
   <section class="table-wrap">
@@ -143,20 +151,24 @@
             <td>{{ fmt.number_3(row.inventory_available) }}</td>
             <td><span class="status-pill status-{{ row.status|lower }}">{{ row.status }}</span></td>
             <td>{{ fmt.number_3(row.suggested_quantity) }}</td>
-            <td><input id="planner_qty_{{ product.id }}" form="planner-quantity-form" name="planner_qty_{{ product.id }}" inputmode="decimal" value="{{ fmt.number_3(product.planning_quantity) }}" placeholder="Quantity"></td>
+            <td><input id="planner_qty_{{ product.id }}" form="planner-quantity-form" name="planner_qty_{{ product.id }}" inputmode="decimal" value="{{ fmt.number_3(product.planning_quantity) }}" placeholder="Quantity" {% if not can_edit_zones %}disabled{% endif %}></td>
             <td>
               {% if product_type == 'manufactured' %}
-                <form method="get" action="/planning/suggestions/create-production-order" onsubmit="this.planner_qty.value = document.getElementById('planner_qty_{{ product.id }}').value;">
-                  <input type="hidden" name="product_id" value="{{ product.id }}">
-                  <input type="hidden" name="planner_qty" value="">
-                  <button type="submit">Create OP</button>
-                </form>
+                {% if can_create_production %}
+                  <form method="get" action="/planning/suggestions/create-production-order" onsubmit="this.planner_qty.value = document.getElementById('planner_qty_{{ product.id }}').value;">
+                    <input type="hidden" name="product_id" value="{{ product.id }}">
+                    <input type="hidden" name="planner_qty" value="">
+                    <button type="submit">Create OP</button>
+                  </form>
+                {% endif %}
               {% else %}
-                <form method="get" action="/planning/purchase-orders/new" onsubmit="this.quantity.value = document.getElementById('planner_qty_{{ product.id }}').value;">
-                  <input type="hidden" name="product_id" value="{{ product.id }}">
-                  <input type="hidden" name="quantity" value="">
-                  <button type="submit">Create PO</button>
-                </form>
+                {% if can_create_po %}
+                  <form method="get" action="/planning/purchase-orders/new" onsubmit="this.quantity.value = document.getElementById('planner_qty_{{ product.id }}').value;">
+                    <input type="hidden" name="product_id" value="{{ product.id }}">
+                    <input type="hidden" name="quantity" value="">
+                    <button type="submit">Create PO</button>
+                  </form>
+                {% endif %}
               {% endif %}
             </td>
           </tr>
