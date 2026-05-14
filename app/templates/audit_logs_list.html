@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Admin</p>
+    <h1>Audit Logs</h1>
+    <p class="lead">Review who changed critical ERP data and when, with filters that keep the list focused and paginated.</p>
+  </section>
+
+  {% if error %}
+    <p class="error">{{ error }}</p>
+  {% endif %}
+
+  <section>
+    <form method="get" action="/admin/audit-logs" class="filter-form audit-filter-form">
+      <div class="audit-filter-grid">
+        <div>
+          <label for="date_from">Date from</label>
+          <input id="date_from" name="date_from" type="date" value="{{ filters.date_from }}">
+        </div>
+        <div>
+          <label for="date_to">Date to</label>
+          <input id="date_to" name="date_to" type="date" value="{{ filters.date_to }}">
+        </div>
+        <div>
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text" value="{{ filters.username }}">
+        </div>
+        <div>
+          <label for="module">Module</label>
+          <select id="module" name="module">
+            <option value="">All</option>
+            {% for option in module_options %}
+              <option value="{{ option }}" {% if filters.module == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="action">Action</label>
+          <select id="action" name="action">
+            <option value="">All</option>
+            {% for option in action_options %}
+              <option value="{{ option }}" {% if filters.action == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="entity_type">Entity type</label>
+          <select id="entity_type" name="entity_type">
+            <option value="">All</option>
+            {% for option in entity_type_options %}
+              <option value="{{ option }}" {% if filters.entity_type == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="entity_id">Entity ID</label>
+          <input id="entity_id" name="entity_id" type="text" value="{{ filters.entity_id }}">
+        </div>
+        <div>
+          <label for="search">Search label / notes</label>
+          <input id="search" name="search" type="text" value="{{ filters.search }}">
+        </div>
+        <div>
+          <label for="page_size">Page size</label>
+          <select id="page_size" name="page_size">
+            {% for option in [25, 50, 100, 200] %}
+              <option value="{{ option }}" {% if page_size == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <input name="page" type="hidden" value="1">
+      <div class="form-actions inline-actions">
+        <button type="submit">Apply filters</button>
+        <a class="button secondary" href="/admin/audit-logs">Clear</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="inline-actions audit-pagination-bar">
+    <p class="muted-inline">Showing page {{ page }} of {{ total_pages }}. Total logs: {{ total_count }}.</p>
+    <div class="pagination-links">
+      {% if has_prev %}
+        <a class="button secondary" href="{{ prev_url }}">Previous</a>
+      {% endif %}
+      {% if has_next %}
+        <a class="button secondary" href="{{ next_url }}">Next</a>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Username</th>
+          <th>Module</th>
+          <th>Action</th>
+          <th>Entity type</th>
+          <th>Entity ID</th>
+          <th>Entity label</th>
+          <th>Method</th>
+          <th>Request path</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+          <tr>
+            <td>{{ log.timestamp }}</td>
+            <td>{{ log.username }}</td>
+            <td>{{ log.module }}</td>
+            <td>{{ log.action }}</td>
+            <td>{{ log.entity_type or "" }}</td>
+            <td>{{ log.entity_id or "" }}</td>
+            <td>{{ log.entity_label or "" }}</td>
+            <td>{{ log.method or "" }}</td>
+            <td>{{ log.request_path or "" }}</td>
+            <td>
+              <a href="/admin/audit-logs/{{ log.id }}{% if list_query_string %}?{{ list_query_string }}{% endif %}">View</a>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="10">No audit logs match the current filters.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

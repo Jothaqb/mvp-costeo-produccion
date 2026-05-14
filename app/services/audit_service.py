@@ -39,6 +39,31 @@ def serialize_audit_payload(payload: Any) -> str | None:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=_safe_json_default)
 
 
+def parse_audit_payload(payload: Any) -> Any | None:
+    if payload is None:
+        return None
+    if isinstance(payload, (dict, list, int, float, bool)):
+        return payload
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return payload
+    return payload
+
+
+def format_audit_payload_for_display(payload: Any) -> str:
+    parsed = parse_audit_payload(payload)
+    if parsed is None:
+        return "No data"
+    if isinstance(parsed, str):
+        return parsed
+    return json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=True, default=_safe_json_default)
+
+
 def snapshot_product_for_audit(product: Product) -> dict[str, Any]:
     category = getattr(product, "category", None)
     supplier_record = getattr(product, "supplier_record", None)

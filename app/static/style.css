@@ -663,6 +663,53 @@ button:focus,
   font-size: 0.92rem;
 }
 
+.audit-filter-form {
+  max-width: none;
+}
+
+.audit-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px 16px;
+}
+
+.audit-filter-grid input,
+.audit-filter-grid select {
+  max-width: none;
+  margin-bottom: 0;
+}
+
+.audit-pagination-bar {
+  justify-content: space-between;
+}
+
+.pagination-links {
+  display: inline-flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.audit-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.audit-payload {
+  margin: 0;
+  min-height: 120px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 6px 18px rgba(20, 35, 45, 0.04);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.9rem;
+}
+
 .kpi-grid-compact {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -990,6 +1037,10 @@ button:focus,
 
 @media (max-width: 680px) {
   .inventory-nav-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .audit-detail-grid {
     grid-template-columns: 1fr;
   }
 }

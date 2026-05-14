@@ -70,6 +70,9 @@
         <div class="nav-user-area">
           {% if current_user %}
             <span class="nav-user-label">{{ current_user.full_name or current_user.username }}</span>
+            {% if can(request, "audit.view") %}
+              <a class="nav-link" href="/admin/audit-logs">Audit Logs</a>
+            {% endif %}
             <a class="nav-link" href="/auth/change-password">Change password</a>
             <form class="nav-inline-form" method="post" action="/logout">
               <button class="nav-link nav-link-button" type="submit">Logout</button>

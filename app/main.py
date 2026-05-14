@@ -45,6 +45,7 @@ from app.database import (
 )
 from app.models import (
     Activity,
+    AuditLog,
     B2BCustomer,
     B2BCustomerProduct,
     B2CCustomer,
@@ -253,6 +254,7 @@ from app.services.auth_service import (
 from app.services.audit_service import (
     diff_audit_snapshot_rows,
     diff_audit_snapshots,
+    format_audit_payload_for_display,
     safe_log_audit_event,
     snapshot_b2b_sales_order_for_audit,
     snapshot_b2b_customer_product_for_audit,
@@ -390,6 +392,57 @@ def _parse_optional_date(value: str) -> date | None:
     if not value:
         return None
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _parse_optional_date_safe(value: str) -> date | None:
+    if not value:
+        return None
+    try:
+        return _parse_optional_date(value)
+    except ValueError:
+        return None
+
+
+def _normalize_audit_log_filters(
+    *,
+    date_from: str,
+    date_to: str,
+    username: str,
+    module: str,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    search: str,
+) -> tuple[dict[str, str], date | None, date | None, str | None]:
+    filters = {
+        "date_from": date_from.strip(),
+        "date_to": date_to.strip(),
+        "username": username.strip(),
+        "module": module.strip(),
+        "action": action.strip(),
+        "entity_type": entity_type.strip(),
+        "entity_id": entity_id.strip(),
+        "search": search.strip(),
+    }
+    parsed_date_from = _parse_optional_date_safe(filters["date_from"])
+    parsed_date_to = _parse_optional_date_safe(filters["date_to"])
+
+    if filters["date_from"] and parsed_date_from is None:
+        return filters, None, None, "Date from must use YYYY-MM-DD."
+    if filters["date_to"] and parsed_date_to is None:
+        return filters, None, None, "Date to must use YYYY-MM-DD."
+    if parsed_date_from is not None and parsed_date_to is not None and parsed_date_from > parsed_date_to:
+        return filters, parsed_date_from, parsed_date_to, "Date from cannot be later than date to."
+    return filters, parsed_date_from, parsed_date_to, None
+
+
+def _build_audit_log_list_url(filters: dict[str, str], *, page: int, page_size: int) -> str:
+    query_params: dict[str, str | int] = {"page": page, "page_size": page_size}
+    for key in ("date_from", "date_to", "username", "module", "action", "entity_type", "entity_id", "search"):
+        value = filters.get(key, "").strip()
+        if value:
+            query_params[key] = value
+    return f"/admin/audit-logs?{urlencode(query_params)}"
 
 
 def _normalize_sales_reporting_filters(
@@ -816,6 +869,127 @@ async def bootstrap_admin_submit(request: Request, db: Session = Depends(get_db)
             },
             status_code=400,
         )
+
+
+@app.get("/admin/audit-logs", response_class=HTMLResponse)
+def audit_logs_list(
+    request: Request,
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+    username: str = Query(""),
+    module: str = Query(""),
+    action: str = Query(""),
+    entity_type: str = Query(""),
+    entity_id: str = Query(""),
+    search: str = Query(""),
+    page: int = Query(1),
+    page_size: int = Query(50),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "audit.view")
+    normalized_page = max(page, 1)
+    normalized_page_size = min(max(page_size, 1), 200)
+    filters, parsed_date_from, parsed_date_to, error = _normalize_audit_log_filters(
+        date_from=date_from,
+        date_to=date_to,
+        username=username,
+        module=module,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        search=search,
+    )
+
+    base_query = db.query(AuditLog)
+    if error is None:
+        if parsed_date_from is not None:
+            base_query = base_query.filter(AuditLog.timestamp >= datetime.combine(parsed_date_from, datetime.min.time()))
+        if parsed_date_to is not None:
+            base_query = base_query.filter(
+                AuditLog.timestamp < datetime.combine(parsed_date_to + timedelta(days=1), datetime.min.time())
+            )
+        if filters["username"]:
+            base_query = base_query.filter(AuditLog.username.ilike(f"%{filters['username']}%"))
+        if filters["module"]:
+            base_query = base_query.filter(AuditLog.module == filters["module"])
+        if filters["action"]:
+            base_query = base_query.filter(AuditLog.action == filters["action"])
+        if filters["entity_type"]:
+            base_query = base_query.filter(AuditLog.entity_type == filters["entity_type"])
+        if filters["entity_id"]:
+            base_query = base_query.filter(AuditLog.entity_id == filters["entity_id"])
+        if filters["search"]:
+            search_term = f"%{filters['search']}%"
+            base_query = base_query.filter(or_(AuditLog.entity_label.ilike(search_term), AuditLog.notes.ilike(search_term)))
+
+    total_count = base_query.count() if error is None else 0
+    total_pages = max(1, (total_count + normalized_page_size - 1) // normalized_page_size) if total_count else 1
+    normalized_page = min(normalized_page, total_pages)
+    logs = (
+        base_query.order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+        .offset((normalized_page - 1) * normalized_page_size)
+        .limit(normalized_page_size)
+        .all()
+        if error is None
+        else []
+    )
+
+    module_options = [value for (value,) in db.query(AuditLog.module).distinct().order_by(AuditLog.module).all() if value]
+    action_options = [value for (value,) in db.query(AuditLog.action).distinct().order_by(AuditLog.action).all() if value]
+    entity_type_options = [
+        value
+        for (value,) in db.query(AuditLog.entity_type).filter(AuditLog.entity_type.is_not(None)).distinct().order_by(AuditLog.entity_type).all()
+        if value
+    ]
+    list_url = _build_audit_log_list_url(filters, page=normalized_page, page_size=normalized_page_size)
+
+    return templates.TemplateResponse(
+        request=request,
+        name="audit_logs_list.html",
+        context={
+            "title": "Audit Logs",
+            "logs": logs,
+            "total_count": total_count,
+            "page": normalized_page,
+            "page_size": normalized_page_size,
+            "total_pages": total_pages,
+            "has_prev": normalized_page > 1,
+            "has_next": normalized_page < total_pages,
+            "filters": filters,
+            "module_options": module_options,
+            "action_options": action_options,
+            "entity_type_options": entity_type_options,
+            "error": error,
+            "prev_url": _build_audit_log_list_url(filters, page=normalized_page - 1, page_size=normalized_page_size)
+            if normalized_page > 1
+            else None,
+            "next_url": _build_audit_log_list_url(filters, page=normalized_page + 1, page_size=normalized_page_size)
+            if normalized_page < total_pages
+            else None,
+            "list_url": list_url,
+            "list_query_string": list_url.split("?", 1)[1] if "?" in list_url else "",
+        },
+    )
+
+
+@app.get("/admin/audit-logs/{log_id}", response_class=HTMLResponse)
+def audit_log_detail(request: Request, log_id: int, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "audit.view")
+    audit_log = db.query(AuditLog).filter(AuditLog.id == log_id).one_or_none()
+    if audit_log is None:
+        raise HTTPException(status_code=404, detail="Audit log not found.")
+    back_url = f"/admin/audit-logs?{request.url.query}" if request.url.query else "/admin/audit-logs"
+    return templates.TemplateResponse(
+        request=request,
+        name="audit_log_detail.html",
+        context={
+            "title": "Audit Log Detail",
+            "audit_log": audit_log,
+            "old_values_display": format_audit_payload_for_display(audit_log.old_values),
+            "new_values_display": format_audit_payload_for_display(audit_log.new_values),
+            "back_url": back_url,
+        },
+    )
 
 
 def _process_types() -> list[str]:

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Admin</p>
+    <h1>Audit Log Detail</h1>
+    <p class="lead">Inspect the recorded metadata and before/after payloads for a single audit event.</p>
+  </section>
+
+  <section class="actions">
+    <a class="button secondary" href="{{ back_url }}">Back to Audit Logs</a>
+  </section>
+
+  <section>
+    <dl class="summary">
+      <div>
+        <dt>ID</dt>
+        <dd>{{ audit_log.id }}</dd>
+      </div>
+      <div>
+        <dt>Timestamp</dt>
+        <dd>{{ audit_log.timestamp }}</dd>
+      </div>
+      <div>
+        <dt>Username</dt>
+        <dd>{{ audit_log.username }}</dd>
+      </div>
+      <div>
+        <dt>Module</dt>
+        <dd>{{ audit_log.module }}</dd>
+      </div>
+      <div>
+        <dt>Action</dt>
+        <dd>{{ audit_log.action }}</dd>
+      </div>
+      <div>
+        <dt>Entity type</dt>
+        <dd>{{ audit_log.entity_type or "" }}</dd>
+      </div>
+      <div>
+        <dt>Entity ID</dt>
+        <dd>{{ audit_log.entity_id or "" }}</dd>
+      </div>
+      <div>
+        <dt>Entity label</dt>
+        <dd>{{ audit_log.entity_label or "" }}</dd>
+      </div>
+      <div>
+        <dt>Method</dt>
+        <dd>{{ audit_log.method or "" }}</dd>
+      </div>
+      <div>
+        <dt>Request path</dt>
+        <dd>{{ audit_log.request_path or "" }}</dd>
+      </div>
+      <div>
+        <dt>IP address</dt>
+        <dd>{{ audit_log.ip_address or "" }}</dd>
+      </div>
+      <div>
+        <dt>User ID</dt>
+        <dd>{{ audit_log.user_id if audit_log.user_id is not none else "" }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Notes</h2>
+    <pre class="audit-payload">{{ audit_log.notes or "No data" }}</pre>
+  </section>
+
+  <section class="audit-detail-grid">
+    <div>
+      <h2>Old Values</h2>
+      <pre class="audit-payload">{{ old_values_display }}</pre>
+    </div>
+    <div>
+      <h2>New Values</h2>
+      <pre class="audit-payload">{{ new_values_display }}</pre>
+    </div>
+  </section>
+{% endblock %}
