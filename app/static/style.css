@@ -40,6 +40,7 @@ body {
   margin: 0 auto;
   padding: 0 24px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
@@ -64,8 +65,10 @@ body {
 .nav-user-area {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-left: auto;
+  justify-content: flex-end;
 }
 
 .nav-user-label {
@@ -73,6 +76,11 @@ body {
   font-size: 0.92rem;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.nav-user-name {
+  color: rgba(255, 255, 255, 0.62);
+  font-weight: 600;
 }
 
 .nav-inline-form {

@@ -69,7 +69,12 @@
         </div>
         <div class="nav-user-area">
           {% if current_user %}
-            <span class="nav-user-label">{{ current_user.full_name or current_user.username }}</span>
+            <span class="nav-user-label">
+              User: {{ current_user.username }}
+              {% if current_user.full_name and current_user.full_name != current_user.username %}
+                <span class="nav-user-name">{{ current_user.full_name }}</span>
+              {% endif %}
+            </span>
             {% if can(request, "audit.view") %}
               <a class="nav-link" href="/admin/audit-logs">Audit Logs</a>
             {% endif %}
