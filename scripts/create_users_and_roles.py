@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import getpass
+import secrets
+import string
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,8 +15,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import app.models  # noqa: F401
 from app.database import SessionLocal
-from app.models import Permission, Role, RolePermission
-from app.services.auth_service import ensure_auth_seed_state, sync_admin_role_permissions
+from app.models import Permission, Role, RolePermission, User
+from app.services.auth_service import (
+    assign_role_to_user,
+    ensure_auth_seed_state,
+    hash_password,
+    sync_admin_role_permissions,
+)
 
 
 ROLE_DEFINITIONS = {
@@ -90,6 +98,35 @@ ROLE_DEFINITIONS = {
     },
 }
 
+APPROVED_USERS = (
+    {
+        "full_name": "Olivia",
+        "username": "olivia.rincon",
+        "email": "morioly@gmail.com",
+        "role": "general_operator",
+    },
+    {
+        "full_name": "Andreina",
+        "username": "andreina.rincon",
+        "email": "greencornercr2@gmail.com",
+        "role": "general_approver",
+    },
+    {
+        "full_name": "Jonathan",
+        "username": "jonathan.quirosb",
+        "email": "greencornercr3@gmail.com",
+        "role": "general_approver",
+    },
+    {
+        "full_name": "Jonathan",
+        "username": "jonathan.quiros",
+        "email": "greencornercr1@gmail.com",
+        "role": "admin",
+    },
+)
+
+PASSWORD_ALPHABET = string.ascii_letters + string.digits + "!@#$%^&*()-_=+"
+
 
 @dataclass
 class RoleChangeSummary:
@@ -100,9 +137,29 @@ class RoleChangeSummary:
     final_permissions: list[str]
 
 
+@dataclass
+class UserPlan:
+    username: str
+    full_name: str
+    email: str
+    role_code: str
+    must_change_password: bool
+    is_active: bool
+
+
+@dataclass
+class UserCreateSummary:
+    username: str
+    full_name: str
+    email: str
+    role_code: str
+    must_change_password: bool
+    is_active: bool
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Safely preview or sync ERP roles without creating nominal users."
+        description="Safely preview or sync ERP roles and create approved nominal users."
     )
     parser.add_argument(
         "--sync-roles",
@@ -110,9 +167,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Create or synchronize the approved operational roles.",
     )
     parser.add_argument(
+        "--create-approved-users",
+        action="store_true",
+        help="Create the approved nominal users after synchronizing roles.",
+    )
+    parser.add_argument(
         "--preview",
         action="store_true",
-        help="Preview role changes without writing them to the database.",
+        help="Preview role and approved-user changes without writing them to the database.",
+    )
+    parser.add_argument(
+        "--password-mode",
+        choices=("generate", "getpass"),
+        default="generate",
+        help="Password handling mode for future user creation. Defaults to secure random generation.",
     )
     return parser
 
@@ -209,7 +277,99 @@ def _sync_operational_role(db, role_code: str) -> RoleChangeSummary:
     )
 
 
-def _print_summary(mode: str, summaries: list[RoleChangeSummary]) -> None:
+def _build_approved_user_plans() -> list[UserPlan]:
+    return [
+        UserPlan(
+            username=user["username"],
+            full_name=user["full_name"],
+            email=user["email"],
+            role_code=user["role"],
+            must_change_password=True,
+            is_active=True,
+        )
+        for user in APPROVED_USERS
+    ]
+
+
+def _validate_user_plans(db, user_plans: list[UserPlan]) -> None:
+    available_roles = {role.code for role in db.query(Role).filter(Role.active.is_(True)).all()}
+    required_roles = {"admin", *ROLE_DEFINITIONS.keys()}
+    missing_roles = sorted(required_roles - available_roles)
+    if missing_roles:
+        raise ValueError(f"Missing roles required for user creation: {', '.join(missing_roles)}")
+
+    seen_usernames: set[str] = set()
+    seen_emails: set[str] = set()
+    for user_plan in user_plans:
+        if user_plan.role_code not in available_roles:
+            raise ValueError(f"Role '{user_plan.role_code}' is not available for user '{user_plan.username}'.")
+        if user_plan.username in seen_usernames:
+            raise ValueError(f"Duplicate username in approved list: {user_plan.username}")
+        if user_plan.email in seen_emails:
+            raise ValueError(f"Duplicate email in approved list: {user_plan.email}")
+        seen_usernames.add(user_plan.username)
+        seen_emails.add(user_plan.email)
+
+        existing_user = db.query(User).filter(User.username == user_plan.username).one_or_none()
+        if existing_user is not None:
+            raise ValueError(f"Username already exists: {user_plan.username}")
+        existing_email = db.query(User).filter(User.email == user_plan.email).one_or_none()
+        if existing_email is not None:
+            raise ValueError(f"Email already exists: {user_plan.email}")
+
+
+def _generate_password(length: int = 20) -> str:
+    while True:
+        password = "".join(secrets.choice(PASSWORD_ALPHABET) for _ in range(length))
+        if (
+            any(char.islower() for char in password)
+            and any(char.isupper() for char in password)
+            and any(char.isdigit() for char in password)
+            and any(char in "!@#$%^&*()-_=+" for char in password)
+        ):
+            return password
+
+
+def _prompt_password_for_user(user_plan: UserPlan) -> str:
+    while True:
+        password = getpass.getpass(f"Temporary password for {user_plan.username}: ")
+        confirm = getpass.getpass(f"Confirm temporary password for {user_plan.username}: ")
+        if not password:
+            print("Temporary password is required.")
+            continue
+        if password != confirm:
+            print("Temporary password and confirmation do not match.")
+            continue
+        if len(password) < 10:
+            print("Temporary password must be at least 10 characters long.")
+            continue
+        return password
+
+
+def _create_user(db, user_plan: UserPlan, password: str) -> UserCreateSummary:
+    role = db.query(Role).filter(Role.code == user_plan.role_code).one()
+    user = User(
+        username=user_plan.username,
+        full_name=user_plan.full_name,
+        email=user_plan.email,
+        password_hash=hash_password(password),
+        is_active=user_plan.is_active,
+        must_change_password=user_plan.must_change_password,
+    )
+    db.add(user)
+    db.flush()
+    assign_role_to_user(db, user, role)
+    return UserCreateSummary(
+        username=user.username,
+        full_name=user.full_name,
+        email=user.email or "",
+        role_code=role.code,
+        must_change_password=user.must_change_password,
+        is_active=user.is_active,
+    )
+
+
+def _print_role_summary(mode: str, summaries: list[RoleChangeSummary]) -> None:
     print(f"Mode: {mode}")
     for summary in summaries:
         print(f"Role: {summary.code}")
@@ -219,34 +379,97 @@ def _print_summary(mode: str, summaries: list[RoleChangeSummary]) -> None:
         print(f"  final_permissions={summary.final_permissions}")
 
 
+def _print_user_plan_summary(user_plans: list[UserPlan], *, password_mode: str) -> None:
+    print("Approved users plan:")
+    for user_plan in user_plans:
+        print(
+            f"  username={user_plan.username}, full_name={user_plan.full_name}, "
+            f"email={user_plan.email}, role={user_plan.role_code}, "
+            f"must_change_password={user_plan.must_change_password}, is_active={user_plan.is_active}"
+        )
+    print(f"  password_mode={password_mode}")
+
+
+def _print_created_users(created_users: list[UserCreateSummary]) -> None:
+    print("Created users:")
+    for user in created_users:
+        print(
+            f"  username={user.username}, full_name={user.full_name}, email={user.email}, "
+            f"role={user.role_code}, must_change_password={user.must_change_password}, is_active={user.is_active}"
+        )
+
+
+def _collect_generated_passwords(user_plans: list[UserPlan], password_mode: str) -> dict[str, str]:
+    passwords: dict[str, str] = {}
+    for user_plan in user_plans:
+        if password_mode == "generate":
+            passwords[user_plan.username] = _generate_password()
+        else:
+            passwords[user_plan.username] = _prompt_password_for_user(user_plan)
+    return passwords
+
+
+def _confirm_create_users(user_plans: list[UserPlan], *, password_mode: str) -> None:
+    print("Create approved users summary:")
+    _print_user_plan_summary(user_plans, password_mode=password_mode)
+    confirmation = input("Type CREATE_USERS to continue: ").strip()
+    if confirmation != "CREATE_USERS":
+        raise ValueError("User creation cancelled: confirmation text did not match.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if not args.sync_roles:
+    if not args.sync_roles and not args.create_approved_users:
         parser.print_help()
         return 1
 
     db = SessionLocal()
     try:
         ensure_auth_seed_state(db)
-        summaries = [_sync_admin_role(db)]
-        for role_code in sorted(ROLE_DEFINITIONS.keys()):
-            summaries.append(_sync_operational_role(db, role_code))
+        role_summaries = [_sync_admin_role(db)]
+        role_codes_to_sync = sorted(ROLE_DEFINITIONS.keys())
+        if args.sync_roles or args.create_approved_users:
+            for role_code in role_codes_to_sync:
+                role_summaries.append(_sync_operational_role(db, role_code))
+
+        user_plans: list[UserPlan] = []
+        if args.create_approved_users:
+            user_plans = _build_approved_user_plans()
+            _validate_user_plans(db, user_plans)
 
         if args.preview:
-            _print_summary("preview", summaries)
+            _print_role_summary("preview", role_summaries)
+            if user_plans:
+                _print_user_plan_summary(user_plans, password_mode=args.password_mode)
             db.rollback()
-            print("Preview completed without writing role changes.")
+            print("Preview completed without writing role or user changes.")
             return 0
 
+        created_users: list[UserCreateSummary] = []
+        generated_passwords: dict[str, str] = {}
+
+        if args.create_approved_users:
+            _confirm_create_users(user_plans, password_mode=args.password_mode)
+            generated_passwords = _collect_generated_passwords(user_plans, args.password_mode)
+            for user_plan in user_plans:
+                created_users.append(_create_user(db, user_plan, generated_passwords[user_plan.username]))
+
         db.commit()
-        _print_summary("sync", summaries)
-        print("Role synchronization completed successfully.")
+        _print_role_summary("sync", role_summaries)
+        if created_users:
+            _print_created_users(created_users)
+            print("Temporary passwords (shown once, do not persist them):")
+            for username, password in generated_passwords.items():
+                print(f"  {username}: {password}")
+            print("Approved user creation completed successfully.")
+        else:
+            print("Role synchronization completed successfully.")
         return 0
     except Exception as exc:
         db.rollback()
-        print(f"Role synchronization failed: {exc}")
+        print(f"Role/user synchronization failed: {exc}")
         return 1
     finally:
         db.close()
