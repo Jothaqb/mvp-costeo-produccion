@@ -68,3 +68,21 @@ Notas de seguridad:
 - no acepta password por CLI
 - no usar `/auth/bootstrap-admin` públicamente
 - usarlo solo como one-off de producción o smoke test
+
+## SQLite to PostgreSQL migration dry-run
+
+Antes de migrar datos reales, ejecutar primero un dry-run del migrador:
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py --sqlite-path costeo.db --dry-run
+```
+
+Comportamiento esperado:
+
+- inventaria tablas y conteos de SQLite
+- excluye por default `user_sessions`, `inventory_adjustment_post_tokens` y `purchase_order_receive_tokens`
+- inspecciona PostgreSQL solo si `DATABASE_URL` esta definido
+- no imprime la `DATABASE_URL` completa
+- no escribe en PostgreSQL mientras use `--dry-run`
+
+La migracion real no debe ejecutarse sin aprobacion explicita. Cuando llegue ese momento, el script pedira escribir `MIGRATE` antes de continuar.
