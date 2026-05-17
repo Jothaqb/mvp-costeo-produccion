@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -75,6 +76,8 @@ MIGRATION_TABLES = [
     "inventory_adjustments",
 ]
 
+RESET_TARGET_TABLES = list(dict.fromkeys(MIGRATION_TABLES + EXCLUDED_TABLES))
+
 AGGREGATE_SPECS = [
     ("b2b_sales_orders", "total_amount"),
     ("b2c_sales_orders", "total_amount"),
@@ -102,11 +105,13 @@ class TableProfile:
 class RunSummary:
     dry_run: bool
     source_sqlite_path: str
+    reset_target: bool = False
     source_table_count: int = 0
     source_profiles: dict[str, TableProfile] = field(default_factory=dict)
     source_aggregates: dict[str, str] = field(default_factory=dict)
     target_available: bool = False
     target_masked_url: str = "unavailable"
+    target_dialect: str | None = None
     target_table_count: int | None = None
     target_profiles: dict[str, TableProfile] = field(default_factory=dict)
     target_aggregates: dict[str, str] = field(default_factory=dict)
@@ -140,7 +145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--reset-target",
         action="store_true",
-        help="Reserved for a future approved sprint. Not available in 34E.",
+        help="Reset the PostgreSQL target before a real migration. Required for writes.",
     )
     return parser
 
@@ -231,6 +236,10 @@ def _profile_target_engine(target_engine: Engine) -> tuple[int, dict[str, TableP
     return len(table_names), profiles, aggregates
 
 
+def _quote_identifiers(table_names: list[str]) -> str:
+    return ", ".join(f'"{table_name}"' for table_name in table_names)
+
+
 def _compare_schema(
     source_profiles: dict[str, TableProfile],
     target_profiles: dict[str, TableProfile],
@@ -271,45 +280,64 @@ def _load_rows(engine: Engine, table_name: str) -> list[dict[str, Any]]:
         return [dict(row._mapping) for row in conn.execute(query)]
 
 
-def _assert_target_is_empty(target_engine: Engine) -> None:
-    profiles = _profile_model_tables(target_engine, MIGRATION_TABLES)
-    non_empty = [f"{name}={profile.count}" for name, profile in profiles.items() if profile.count > 0]
-    if non_empty:
-        raise RuntimeError(
-            "Target PostgreSQL is not empty for migratable tables: " + ", ".join(non_empty)
+def _reset_target_tables(connection: Connection) -> None:
+    existing_tables = set(inspect(connection).get_table_names())
+    target_tables = [name for name in RESET_TARGET_TABLES if name in existing_tables]
+    if not target_tables:
+        return
+    connection.execute(
+        text(f"TRUNCATE TABLE {_quote_identifiers(target_tables)} RESTART IDENTITY CASCADE")
+    )
+
+
+def _reset_sequences(connection: Connection) -> None:
+    for table_name in MIGRATION_TABLES:
+        table = Base.metadata.tables[table_name]
+        if "id" not in table.c:
+            continue
+        connection.execute(
+            text(
+                f"SELECT setval(pg_get_serial_sequence('{table_name}', 'id'), "
+                f"COALESCE((SELECT MAX(id) FROM {table_name}), 1), true)"
+            )
         )
 
 
-def _reset_sequences(target_engine: Engine) -> None:
-    with target_engine.begin() as conn:
-        for table_name in MIGRATION_TABLES:
-            table = Base.metadata.tables[table_name]
-            if "id" not in table.c:
-                continue
-            conn.execute(
-                text(
-                    f"SELECT setval(pg_get_serial_sequence('{table_name}', 'id'), "
-                    f"COALESCE((SELECT MAX(id) FROM {table_name}), 1), true)"
-                )
-            )
-
-
-def _migrate_rows(source_engine: Engine, target_engine: Engine, summary: RunSummary) -> None:
+def _migrate_rows(source_engine: Engine, connection: Connection, summary: RunSummary) -> None:
     target_metadata = Base.metadata
-    with target_engine.begin() as conn:
-        for table_name in MIGRATION_TABLES:
+    for table_name in MIGRATION_TABLES:
+        try:
             rows = _load_rows(source_engine, table_name)
-            summary.migrated_counts[table_name] = len(rows)
-            if not rows:
-                summary.skipped.append(f"{table_name}: source empty")
-                continue
-            conn.execute(target_metadata.tables[table_name].insert(), rows)
+        except Exception as exc:  # pragma: no cover - surfaced in summary
+            raise RuntimeError(f"Failed reading source table {table_name}: {exc}") from exc
+        summary.migrated_counts[table_name] = len(rows)
+        if not rows:
+            summary.skipped.append(f"{table_name}: source empty")
+            continue
+        try:
+            connection.execute(target_metadata.tables[table_name].insert(), rows)
+        except Exception as exc:  # pragma: no cover - surfaced in summary
+            raise RuntimeError(f"Failed migrating table {table_name}: {exc}") from exc
 
 
 def _confirm_migration() -> None:
     confirmation = input("Type MIGRATE to continue: ").strip()
     if confirmation != "MIGRATE":
         raise RuntimeError("Migration cancelled: confirmation text did not match.")
+
+
+def _print_real_migration_plan(summary: RunSummary) -> None:
+    print("")
+    print("Real migration plan")
+    print(f"  source_sqlite={summary.source_sqlite_path}")
+    print(f"  source_table_count={summary.source_table_count}")
+    print(f"  target_dialect={summary.target_dialect or 'unknown'}")
+    print(f"  target={summary.target_masked_url}")
+    print(f"  target_table_count={summary.target_table_count if summary.target_table_count is not None else 'unknown'}")
+    print(f"  reset_target={summary.reset_target}")
+    print(f"  tables_to_migrate={len(summary.tables_to_migrate)}")
+    print(f"  tables_excluded={len(summary.tables_excluded)}")
+    print("  excluded_tables=" + ", ".join(summary.tables_excluded))
 
 
 def _print_profiles(title: str, profiles: dict[str, TableProfile], table_names: list[str]) -> None:
@@ -334,10 +362,13 @@ def _print_summary(summary: RunSummary) -> None:
     print("")
     print("Migration summary")
     print(f"  dry_run={summary.dry_run}")
+    print(f"  reset_target={summary.reset_target}")
     print(f"  source_sqlite={summary.source_sqlite_path}")
     print(f"  source_tables={summary.source_table_count}")
     print(f"  target_available={summary.target_available}")
     print(f"  target={summary.target_masked_url}")
+    if summary.target_dialect is not None:
+        print(f"  target_dialect={summary.target_dialect}")
     if summary.target_table_count is not None:
         print(f"  target_tables={summary.target_table_count}")
     print(f"  migration_order_valid={summary.migration_order_valid}")
@@ -360,13 +391,63 @@ def _print_summary(summary: RunSummary) -> None:
             print(f"    - {item}")
 
 
+def _validate_post_migration(summary: RunSummary) -> None:
+    count_mismatches = []
+    id_mismatches = []
+    for table_name in MIGRATION_TABLES:
+        source_profile = summary.source_profiles.get(table_name)
+        target_profile = summary.target_profiles.get(table_name)
+        if source_profile is None or target_profile is None:
+            count_mismatches.append(f"{table_name}: missing profile in source or target")
+            continue
+        if source_profile.count != target_profile.count:
+            count_mismatches.append(
+                f"{table_name}: source_count={source_profile.count} target_count={target_profile.count}"
+            )
+        if source_profile.min_id != target_profile.min_id or source_profile.max_id != target_profile.max_id:
+            if source_profile.min_id is not None or target_profile.min_id is not None:
+                id_mismatches.append(
+                    f"{table_name}: source_min_max=({source_profile.min_id}, {source_profile.max_id}) "
+                    f"target_min_max=({target_profile.min_id}, {target_profile.max_id})"
+                )
+
+    aggregate_mismatches = []
+    for key, source_value in summary.source_aggregates.items():
+        target_value = summary.target_aggregates.get(key)
+        if target_value != source_value:
+            aggregate_mismatches.append(f"{key}: source={source_value} target={target_value}")
+
+    if count_mismatches:
+        summary.validations_failed.extend(count_mismatches)
+    else:
+        summary.validations_ok.append("Post-migration row counts match for all migrated tables.")
+
+    if id_mismatches:
+        summary.validations_failed.extend(id_mismatches)
+    else:
+        summary.validations_ok.append("Post-migration min/max id values match for migrated tables.")
+
+    if aggregate_mismatches:
+        summary.validations_failed.extend(aggregate_mismatches)
+    else:
+        summary.validations_ok.append("Post-migration aggregate metrics match source values.")
+
+
+def _perform_real_migration(source_engine: Engine, target_engine: Engine, summary: RunSummary) -> None:
+    with target_engine.begin() as connection:
+        _reset_target_tables(connection)
+        _migrate_rows(source_engine, connection, summary)
+        _reset_sequences(connection)
+
+    summary.target_table_count, summary.target_profiles, summary.target_aggregates = _profile_target_engine(
+        target_engine
+    )
+    _validate_post_migration(summary)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-
-    if args.reset_target:
-        print("--reset-target is reserved for a later approved sprint and is disabled in 34E.")
-        return 1
 
     sqlite_path = Path(args.sqlite_path).expanduser().resolve()
     if not sqlite_path.exists():
@@ -374,13 +455,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     start = time.perf_counter()
-    summary = RunSummary(dry_run=args.dry_run, source_sqlite_path=str(sqlite_path))
+    summary = RunSummary(
+        dry_run=args.dry_run,
+        reset_target=args.reset_target,
+        source_sqlite_path=str(sqlite_path),
+    )
     source_engine = None
     target_engine = None
 
     try:
         source_url = f"sqlite:///{sqlite_path.as_posix()}"
         source_engine = create_engine(source_url)
+        if source_engine.dialect.name != "sqlite":
+            raise RuntimeError("Source database must be SQLite.")
 
         raw_target_url = os.getenv("DATABASE_URL")
         target_url = _normalize_database_url(raw_target_url)
@@ -420,6 +507,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if target_url:
             target_engine = create_engine(target_url)
+            summary.target_dialect = target_engine.dialect.name
             summary.target_table_count, summary.target_profiles, summary.target_aggregates = _profile_target_engine(
                 target_engine
             )
@@ -455,15 +543,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if not target_url:
                 raise RuntimeError("DATABASE_URL is required for a real migration.")
+            if summary.target_dialect != "postgresql":
+                raise RuntimeError("Target database must be PostgreSQL for a real migration.")
+            if not args.reset_target:
+                raise RuntimeError("Real migration requires --reset-target.")
             if not summary.migration_order_valid:
                 raise RuntimeError("Migration order validation failed.")
             if summary.target_schema_diffs:
                 raise RuntimeError("Target schema differs from source/models. Resolve before migrating.")
-            _assert_target_is_empty(target_engine)
+            _print_real_migration_plan(summary)
             _confirm_migration()
-            _migrate_rows(source_engine, target_engine, summary)
-            if target_engine.dialect.name == "postgresql":
-                _reset_sequences(target_engine)
+            _perform_real_migration(source_engine, target_engine, summary)
             summary.validations_ok.append("Migration completed and sequences reset.")
             return_code = 0
 
