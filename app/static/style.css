@@ -50,6 +50,10 @@ body {
   row-gap: 10px;
 }
 
+.nav-menu {
+  display: contents;
+}
+
 .brand {
   text-decoration: none;
   white-space: nowrap;
@@ -92,6 +96,10 @@ body {
   max-width: 97%;
   max-height: 97%;
   object-fit: contain;
+}
+
+.nav-toggle {
+  display: none;
 }
 
 .nav-links {
@@ -570,38 +578,116 @@ button:focus,
   .top-nav {
     min-height: auto;
     padding: 14px 18px;
-    display: flex;
-    align-items: flex-start;
-    flex-direction: column;
-    row-gap: 0;
-  }
-
-  .nav-links {
-    width: 100%;
-    align-items: stretch;
-    padding-right: 0;
-  }
-
-  .nav-user-area {
-    width: 100%;
-    justify-content: space-between;
-    padding-left: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    align-items: center;
+    column-gap: 16px;
+    row-gap: 12px;
   }
 
   .brand {
-    grid-column: auto;
-    grid-row: auto;
-    align-self: auto;
-    justify-self: auto;
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+    justify-self: start;
     position: static;
     transform: none;
     margin-right: 0;
   }
 
+  .nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 8px;
+    padding: 10px 14px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.92);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    justify-self: end;
+  }
+
+  .nav-toggle:hover,
+  .nav-toggle:focus {
+    background: var(--nav-hover);
+    color: #fff;
+    outline: none;
+  }
+
+  .nav-toggle-icon {
+    font-size: 1.15rem;
+    line-height: 1;
+  }
+
+  .nav-toggle-text {
+    font-size: 0.95rem;
+  }
+
+  .nav-menu {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: none;
+    width: 100%;
+  }
+
+  .top-nav[data-nav-open="true"] .nav-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .nav-links,
+  .nav-user-area {
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    justify-self: stretch;
+  }
+
+  .nav-links {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    grid-column: auto;
+    grid-row: auto;
+    align-self: auto;
+  }
+
+  .nav-user-area {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    justify-content: flex-start;
+    grid-column: auto;
+    grid-row: auto;
+    align-self: auto;
+  }
+
+  .nav-context {
+    min-height: 0;
+    margin-left: 0;
+    border-left: 0;
+    padding-left: 0;
+    padding-bottom: 4px;
+  }
+
   .nav-link,
+  .nav-link-button,
   .nav-trigger {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .nav-inline-form {
+    width: 100%;
   }
 
   .module-grid {

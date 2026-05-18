@@ -33,78 +33,125 @@
             <span class="brand-text">{{ branding_company_name }}</span>
           {% endif %}
         </a>
-        <div class="nav-links">
-          {% if is_production %}
-            <span class="nav-context">Production</span>
-            <a class="nav-link" href="/production">Production</a>
-            <a class="nav-link" href="/imports/new">Import CSV</a>
-            <a class="nav-link" href="/production-orders">Production Orders</a>
-            <a class="nav-link" href="/production/routes">Production Routes</a>
-            {% if is_production_routes %}
-              <a class="nav-link" href="/machines">Resources</a>
-              <a class="nav-link" href="/activities">Activities</a>
-              <a class="nav-link" href="/routes">Routes</a>
-              <a class="nav-link" href="/product-routes">Product Routes</a>
-              <a class="nav-link" href="/rates">Rates</a>
-            {% endif %}
-          {% elif is_sales %}
-            <span class="nav-context">Sales</span>
-            <a class="nav-link" href="/sales">Sales</a>
-            <a class="nav-link" href="/b2b/orders">B2B Sales Orders</a>
-            <a class="nav-link" href="/b2c/orders">B2C Sales Orders</a>
-            <a class="nav-link" href="/b2b/customers">B2B Customers</a>
-            <a class="nav-link" href="/sales/b2c-customers">B2C Customers</a>
-            <a class="nav-link" href="/b2b/loyverse-mappings">B2B Loyverse</a>
-          {% elif is_planning %}
-            <span class="nav-context">Planning</span>
-            <a class="nav-link" href="/planning/inventory-parameters">Inventory Parameters</a>
-            <a class="nav-link" href="/planning/suggestions">Open DDMRP</a>
-            <a class="nav-link" href="/planning/customer-order-requirements">Customer Order Requirements</a>
-            <a class="nav-link" href="/planning/mps">MPS</a>
-            <a class="nav-link" href="/planning/purchase-orders">Purchase Orders</a>
-          {% elif is_master_data %}
-            <span class="nav-context">Master Data</span>
-            <a class="nav-link" href="/master-data">Master Data</a>
-            <a class="nav-link" href="/master-data/products">Products / SKUs</a>
-            <a class="nav-link" href="/master-data/categories">Categories</a>
-            <a class="nav-link" href="/master-data/suppliers">Suppliers</a>
-            <a class="nav-link" href="/master-data/channels">Channels</a>
-            <a class="nav-link" href="/master-data/discounts">Discounts</a>
-          {% elif is_inventory %}
-            <span class="nav-context">Inventory</span>
-            <a class="nav-link" href="/inventory">Inventory Home</a>
-            <a class="nav-link" href="/inventory/balances">Balances</a>
-            <a class="nav-link" href="/inventory/transactions">Transactions</a>
-            <a class="nav-link" href="/inventory/adjustments">Adjustments</a>
-            {% if can(request, "inventory.adjust") %}
-              <a class="nav-link" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
-            {% endif %}
-          {% endif %}
-        </div>
-        <div class="nav-user-area">
-          {% if current_user %}
-            <span class="nav-user-label">
-              User: {{ current_user.username }}
-              {% if current_user.full_name and current_user.full_name != current_user.username %}
-                <span class="nav-user-name">{{ current_user.full_name }}</span>
+        <button
+          class="nav-toggle"
+          type="button"
+          aria-label="Open navigation menu"
+          aria-expanded="false"
+          aria-controls="mobile-navigation"
+        >
+          <span class="nav-toggle-icon" aria-hidden="true">☰</span>
+          <span class="nav-toggle-text">Menu</span>
+        </button>
+        <div class="nav-menu" id="mobile-navigation">
+          <div class="nav-links">
+            {% if is_production %}
+              <span class="nav-context">Production</span>
+              <a class="nav-link" href="/production">Production</a>
+              <a class="nav-link" href="/imports/new">Import CSV</a>
+              <a class="nav-link" href="/production-orders">Production Orders</a>
+              <a class="nav-link" href="/production/routes">Production Routes</a>
+              {% if is_production_routes %}
+                <a class="nav-link" href="/machines">Resources</a>
+                <a class="nav-link" href="/activities">Activities</a>
+                <a class="nav-link" href="/routes">Routes</a>
+                <a class="nav-link" href="/product-routes">Product Routes</a>
+                <a class="nav-link" href="/rates">Rates</a>
               {% endif %}
-            </span>
-            {% if can(request, "admin.users.manage") %}
-              <a class="nav-link" href="/admin/branding">Branding</a>
+            {% elif is_sales %}
+              <span class="nav-context">Sales</span>
+              <a class="nav-link" href="/sales">Sales</a>
+              <a class="nav-link" href="/b2b/orders">B2B Sales Orders</a>
+              <a class="nav-link" href="/b2c/orders">B2C Sales Orders</a>
+              <a class="nav-link" href="/b2b/customers">B2B Customers</a>
+              <a class="nav-link" href="/sales/b2c-customers">B2C Customers</a>
+              <a class="nav-link" href="/b2b/loyverse-mappings">B2B Loyverse</a>
+            {% elif is_planning %}
+              <span class="nav-context">Planning</span>
+              <a class="nav-link" href="/planning/inventory-parameters">Inventory Parameters</a>
+              <a class="nav-link" href="/planning/suggestions">Open DDMRP</a>
+              <a class="nav-link" href="/planning/customer-order-requirements">Customer Order Requirements</a>
+              <a class="nav-link" href="/planning/mps">MPS</a>
+              <a class="nav-link" href="/planning/purchase-orders">Purchase Orders</a>
+            {% elif is_master_data %}
+              <span class="nav-context">Master Data</span>
+              <a class="nav-link" href="/master-data">Master Data</a>
+              <a class="nav-link" href="/master-data/products">Products / SKUs</a>
+              <a class="nav-link" href="/master-data/categories">Categories</a>
+              <a class="nav-link" href="/master-data/suppliers">Suppliers</a>
+              <a class="nav-link" href="/master-data/channels">Channels</a>
+              <a class="nav-link" href="/master-data/discounts">Discounts</a>
+            {% elif is_inventory %}
+              <span class="nav-context">Inventory</span>
+              <a class="nav-link" href="/inventory">Inventory Home</a>
+              <a class="nav-link" href="/inventory/balances">Balances</a>
+              <a class="nav-link" href="/inventory/transactions">Transactions</a>
+              <a class="nav-link" href="/inventory/adjustments">Adjustments</a>
+              {% if can(request, "inventory.adjust") %}
+                <a class="nav-link" href="/inventory/initialize-opening-balances">Initialize Opening Balances</a>
+              {% endif %}
             {% endif %}
-            {% if can(request, "audit.view") %}
-              <a class="nav-link" href="/admin/audit-logs">Audit Logs</a>
+          </div>
+          <div class="nav-user-area">
+            {% if current_user %}
+              <span class="nav-user-label">
+                User: {{ current_user.username }}
+                {% if current_user.full_name and current_user.full_name != current_user.username %}
+                  <span class="nav-user-name">{{ current_user.full_name }}</span>
+                {% endif %}
+              </span>
+              {% if can(request, "admin.users.manage") %}
+                <a class="nav-link" href="/admin/branding">Branding</a>
+              {% endif %}
+              {% if can(request, "audit.view") %}
+                <a class="nav-link" href="/admin/audit-logs">Audit Logs</a>
+              {% endif %}
+              <a class="nav-link" href="/auth/change-password">Change password</a>
+              <form class="nav-inline-form" method="post" action="/logout">
+                <button class="nav-link nav-link-button" type="submit">Logout</button>
+              </form>
             {% endif %}
-            <a class="nav-link" href="/auth/change-password">Change password</a>
-            <form class="nav-inline-form" method="post" action="/logout">
-              <button class="nav-link nav-link-button" type="submit">Logout</button>
-            </form>
-          {% endif %}
+          </div>
         </div>
       </nav>
     </header>
     <main>
       {% block content %}{% endblock %}
     </main>
+    <script>
+      (() => {
+        const nav = document.querySelector(".top-nav");
+        const toggle = document.querySelector(".nav-toggle");
+        const mediaQuery = window.matchMedia("(max-width: 820px)");
+        if (!nav || !toggle) {
+          return;
+        }
+
+        const syncExpanded = (expanded) => {
+          nav.dataset.navOpen = expanded ? "true" : "false";
+          toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+          toggle.setAttribute("aria-label", expanded ? "Close navigation menu" : "Open navigation menu");
+        };
+
+        syncExpanded(false);
+
+        toggle.addEventListener("click", () => {
+          const isExpanded = toggle.getAttribute("aria-expanded") == "true";
+          syncExpanded(!isExpanded);
+        });
+
+        const resetDesktopState = (event) => {
+          if (!event.matches) {
+            syncExpanded(false);
+          }
+        };
+
+        if (typeof mediaQuery.addEventListener === "function") {
+          mediaQuery.addEventListener("change", resetDesktopState);
+        } else if (typeof mediaQuery.addListener === "function") {
+          mediaQuery.addListener(resetDesktopState);
+        }
+      })();
+    </script>
   </body>
 </html>
