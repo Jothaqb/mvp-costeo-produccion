@@ -5,10 +5,19 @@
   --text: #17212b;
   --muted: #66737f;
   --line: #d9e1e5;
-  --nav: #16251f;
-  --nav-hover: #20362e;
-  --accent: #0f766e;
-  --accent-hover: #115e59;
+  --gc-green: #058a44;
+  --gc-green-hover: #047a3c;
+  --gc-green-active: #036b35;
+  --gc-green-border: rgba(5, 138, 68, 0.35);
+  --gc-green-strong-border: rgba(5, 138, 68, 0.55);
+  --gc-green-soft: rgba(5, 138, 68, 0.08);
+  --gc-green-shadow: rgba(5, 138, 68, 0.18);
+  --gc-green-ring: rgba(5, 138, 68, 0.14);
+  --nav: var(--gc-green);
+  --nav-hover: var(--gc-green-hover);
+  --accent: var(--gc-green);
+  --accent-hover: var(--gc-green-hover);
+  --accent-active: var(--gc-green-active);
   --link: #2563eb;
   --link-hover: #1d4ed8;
   --danger: #b42318;
@@ -174,6 +183,11 @@ body {
   color: #fff;
 }
 
+.nav-link-button:active {
+  background: var(--accent-active);
+  color: #fff;
+}
+
 .nav-context {
   display: inline-flex;
   align-items: center;
@@ -208,6 +222,11 @@ body {
   color: #fff;
   background: var(--nav-hover);
   outline: none;
+}
+
+.nav-link:active {
+  color: #fff;
+  background: var(--accent-active);
 }
 
 main {
@@ -296,7 +315,7 @@ p {
 .module-link-card:hover,
 .module-link-card:focus {
   transform: translateY(-2px);
-  border-color: rgba(15, 118, 110, 0.35);
+  border-color: var(--gc-green-border);
   box-shadow: 0 18px 42px rgba(20, 35, 45, 0.12);
   outline: none;
 }
@@ -334,7 +353,7 @@ p {
   font-size: 1.05rem;
   font-weight: 800;
   text-decoration: none;
-  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.18);
+  box-shadow: 0 10px 24px var(--gc-green-shadow);
 }
 
 .home-cta:hover,
@@ -413,7 +432,7 @@ input:focus,
 select:focus,
 textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+  box-shadow: 0 0 0 3px var(--gc-green-ring);
   outline: none;
 }
 
@@ -444,6 +463,11 @@ button:focus,
 .button:focus {
   background: var(--accent-hover);
   outline: none;
+}
+
+button:active,
+.button:active {
+  background: var(--accent-active);
 }
 
 .button.secondary {
@@ -618,6 +642,10 @@ button:focus,
     background: var(--nav-hover);
     color: #fff;
     outline: none;
+  }
+
+  .nav-toggle:active {
+    background: var(--accent-active);
   }
 
   .nav-toggle-icon {
@@ -813,15 +841,15 @@ button:focus,
 .inventory-nav-card:hover,
 .inventory-nav-card:focus {
   transform: translateY(-2px);
-  border-color: rgba(15, 118, 110, 0.35);
+  border-color: var(--gc-green-border);
   box-shadow: 0 14px 32px rgba(20, 35, 45, 0.1);
   outline: none;
 }
 
 .inventory-nav-card-active {
-  border-color: rgba(15, 118, 110, 0.55);
-  background: rgba(15, 118, 110, 0.06);
-  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
+  border-color: var(--gc-green-strong-border);
+  background: var(--gc-green-soft);
+  box-shadow: 0 10px 24px rgba(5, 138, 68, 0.12);
 }
 
 .inventory-nav-card-body {
@@ -1207,8 +1235,8 @@ button:focus,
 }
 
 .pareto-card-a {
-  background: rgba(15, 118, 110, 0.08);
-  border-color: rgba(15, 118, 110, 0.35);
+  background: var(--gc-green-soft);
+  border-color: var(--gc-green-border);
 }
 
 .pareto-card-b {
@@ -1270,9 +1298,9 @@ button:focus,
 
 .lookup-result-button:hover,
 .lookup-result-button:focus {
-  background: rgba(15, 118, 110, 0.08);
-  border-color: rgba(15, 118, 110, 0.35);
-  box-shadow: 0 0 0 1px rgba(15, 118, 110, 0.18);
+  background: var(--gc-green-soft);
+  border-color: var(--gc-green-border);
+  box-shadow: 0 0 0 1px var(--gc-green-shadow);
   outline: none;
 }
 
