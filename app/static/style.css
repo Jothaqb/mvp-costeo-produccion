@@ -110,18 +110,31 @@ body {
 }
 
 .nav-inline-form {
+  max-width: none;
   margin: 0;
   display: inline-flex;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .nav-link-button {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
   border: 0;
+  border-radius: 8px;
   box-shadow: none;
   background: transparent;
+  font: inherit;
   padding: 9px 12px;
   color: rgba(255, 255, 255, 0.92);
   font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
 }
 
 .nav-link-button:hover,
@@ -170,6 +183,7 @@ main {
   max-width: 1240px;
   margin: 0 auto;
   padding: 36px 24px 56px;
+  background: #fff;
 }
 
 section {
@@ -731,7 +745,7 @@ button:focus,
 }
 
 .po-print-page {
-  background: #f4f7f5;
+  background: #fff;
 }
 
 .po-print-main {
