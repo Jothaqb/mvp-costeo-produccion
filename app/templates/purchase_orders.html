@@ -16,7 +16,7 @@
       <a class="button" href="/planning/purchase-orders/new">New Purchase Order</a>
     {% endif %}
     {% if can(request, "purchase_order.import") %}
-      <a class="button secondary" href="/planning/purchase-orders/import">Import Historical CSV</a>
+      <a class="button" href="/planning/purchase-orders/import">Import Historical CSV</a>
     {% endif %}
   </section>
 
@@ -60,17 +60,17 @@
             <td>{{ order.po_number }}</td>
             <td>{{ order.po_date }}</td>
             <td>{{ order.supplier_name_snapshot }}</td>
-            <td><span class="status-pill status-{{ order.status|lower }}">{{ order.status|capitalize }}</span></td>
+            <td><span class="table-status-text">{{ order.status|capitalize }}</span></td>
             <td>{{ order.lines|length }}</td>
             <td>{{ fmt.money_crc(order.estimated_total) }}</td>
             <td class="inline-actions">
-              <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}">View</a>
-              <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/print" target="_blank" rel="noopener">Print</a>
+              <a class="table-link" href="/planning/purchase-orders/{{ order.id }}">View</a>
+              <a class="table-link" href="/planning/purchase-orders/{{ order.id }}/print" target="_blank" rel="noopener">Print</a>
               {% if order.status == 'draft' and can(request, "purchase_order.edit") %}
-                <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/edit">Edit</a>
+                <a class="table-link" href="/planning/purchase-orders/{{ order.id }}/edit">Edit</a>
               {% endif %}
               {% if order.status in ['draft', 'incomplete'] and can(request, "purchase_order.receive") %}
-                <a class="button secondary" href="/planning/purchase-orders/{{ order.id }}/receive">Receive</a>
+                <a class="table-link" href="/planning/purchase-orders/{{ order.id }}/receive">Receive</a>
               {% endif %}
             </td>
           </tr>

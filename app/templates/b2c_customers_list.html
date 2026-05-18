@@ -5,12 +5,12 @@
     <h1>{{ title }}</h1>
     {% if message %}<p class="success">{{ message }}</p>{% endif %}
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <div class="actions">
+    <section class="actions">
       <a class="button" href="/sales/b2c-customers/new">New B2C Customer</a>
-      <form method="post" action="/sales/b2c-customers/initialize-from-mappings">
-        <button type="submit">Initialize from Customer Mappings</button>
+      <form class="actions-form" method="post" action="/sales/b2c-customers/initialize-from-mappings">
+        <button class="button" type="submit">Initialize from Customer Mappings</button>
       </form>
-    </div>
+    </section>
     <form method="get" action="/sales/b2c-customers">
       {% if message %}<input type="hidden" name="message" value="{{ message }}">{% endif %}
       {% if error %}<input type="hidden" name="error" value="{{ error }}">{% endif %}

@@ -1,5 +1,5 @@
 :root {
-  --bg: #f5f7f8;
+  --bg: #ffffff;
   --surface: #ffffff;
   --surface-muted: #eef3f2;
   --text: #17212b;
@@ -9,6 +9,8 @@
   --nav-hover: #20362e;
   --accent: #0f766e;
   --accent-hover: #115e59;
+  --link: #2563eb;
+  --link-hover: #1d4ed8;
   --danger: #b42318;
   --shadow: 0 12px 30px rgba(20, 35, 45, 0.08);
 }
@@ -85,10 +87,23 @@ body {
 
 .nav-inline-form {
   margin: 0;
+  display: inline-flex;
 }
 
 .nav-link-button {
   appearance: none;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  padding: 9px 12px;
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 700;
+}
+
+.nav-link-button:hover,
+.nav-link-button:focus {
+  background: var(--nav-hover);
+  color: #fff;
 }
 
 .nav-context {
@@ -371,10 +386,39 @@ button:focus,
   background: #3f4d57;
 }
 
+.table-link {
+  color: var(--link);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.table-link:hover,
+.table-link:focus {
+  color: var(--link-hover);
+}
+
+.table-status-text {
+  color: var(--text);
+  font-weight: 650;
+  text-decoration: none;
+}
+
 .actions {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.actions-form {
+  max-width: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+  display: inline-flex;
+  margin: 0;
 }
 
 .summary {

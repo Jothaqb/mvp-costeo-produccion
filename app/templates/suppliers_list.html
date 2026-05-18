@@ -3,7 +3,10 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
-    <p><a href="/master-data/suppliers/new">New supplier</a> | <a href="/master-data/suppliers/import">Import Suppliers CSV</a></p>
+    <section class="actions">
+      <a class="button" href="/master-data/suppliers/new">New supplier</a>
+      <a class="button" href="/master-data/suppliers/import">Import Suppliers CSV</a>
+    </section>
     <form method="get" action="/master-data/suppliers">
       <label for="q">Search supplier name, contact, phone or email</label>
       <input id="q" name="q" value="{{ filters.q }}" placeholder="Search supplier name, contact, phone or email">

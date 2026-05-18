@@ -4,11 +4,12 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
-    <p>
-      {% if can(request, "sales.create") %}<a href="/b2b/orders/new">New B2B order</a> | {% endif %}
-      {% if can(request, "sales.import") %}<a href="/b2b/orders/import">Import Historical CSV</a> | {% endif %}
-      <a href="/b2b/customers">Customers</a> | <a href="/b2b/loyverse-mappings">Loyverse mappings</a>
-    </p>
+    <section class="actions">
+      {% if can(request, "sales.create") %}<a class="button" href="/b2b/orders/new">New B2B order</a>{% endif %}
+      {% if can(request, "sales.import") %}<a class="button" href="/b2b/orders/import">Import Historical CSV</a>{% endif %}
+      <a class="button" href="/b2b/customers">Customers</a>
+      <a class="button" href="/b2b/loyverse-mappings">Loyverse mappings</a>
+    </section>
     <form method="get" action="/b2b/orders">
       <label for="customer_id">Customer</label>
       <select id="customer_id" name="customer_id">

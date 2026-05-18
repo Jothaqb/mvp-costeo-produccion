@@ -6,9 +6,9 @@
     <h1>{{ product.sku }} - {{ product.name }}</h1>
     <div class="actions">
       {% if can(request, "product.edit") %}
-        <a role="button" href="/master-data/products/{{ product.id }}/edit">Edit product</a>
+        <a class="button" href="/master-data/products/{{ product.id }}/edit">Edit product</a>
       {% endif %}
-      <a role="button" class="secondary" href="/master-data/products">Back to products</a>
+      <a class="button" href="/master-data/products">Back to products</a>
     </div>
 
     <dl class="summary">
@@ -43,7 +43,7 @@
       </p>
       {% if can(request, "bom.view") %}
         <div class="actions">
-          <a role="button" href="/master-data/products/{{ product.id }}/bom/edit">
+          <a class="button" href="/master-data/products/{{ product.id }}/bom/edit">
             {% if can(request, "bom.edit") %}
               {% if bom %}Edit BOM{% else %}Create BOM{% endif %}
             {% else %}

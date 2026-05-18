@@ -20,9 +20,9 @@
   {% if product_type == 'purchased' and mrp_has_warnings %}<p class="error">MRP contains warnings/omissions. Review <a href="/planning/mrp">MRP</a>.</p>{% endif %}
 
   <section class="actions">
-    <a class="button{% if product_type != 'manufactured' %} secondary{% endif %}" href="/planning/suggestions?product_type=manufactured">Manufactured Products</a>
-    <a class="button{% if product_type != 'purchased' %} secondary{% endif %}" href="/planning/suggestions?product_type=purchased">Purchased Products</a>
-    <a class="button secondary" href="/planning/mps">MPS</a>
+    <a class="button" href="/planning/suggestions?product_type=manufactured">Manufactured Products</a>
+    <a class="button" href="/planning/suggestions?product_type=purchased">Purchased Products</a>
+    <a class="button" href="/planning/mps">MPS</a>
   </section>
 
   <section>

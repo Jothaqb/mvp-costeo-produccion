@@ -4,8 +4,10 @@
   <section>
     <h1>{{ title }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <p><a href="/b2c/orders">Back to B2C Sales Orders</a></p>
-    <p><a href="/b2c/orders/import/template">Download B2C CSV Template</a></p>
+    <section class="actions">
+      <a class="button" href="/b2c/orders">Back to B2C Sales Orders</a>
+      <a class="button" href="/b2c/orders/import/template">Download B2C CSV Template</a>
+    </section>
     <p class="muted-inline">Historical imports create invoiced sales orders for reporting only. They do not create Kardex, InventoryTransaction, or inventory movements.</p>
     <form action="/b2c/orders/import" method="post" enctype="multipart/form-data">
       <label for="file">CSV file</label>

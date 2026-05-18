@@ -4,11 +4,10 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
-    <p>
-      {% if can(request, "sales.create") %}<a href="/b2c/orders/new">New B2C order</a>{% endif %}
-      {% if can(request, "sales.create") and can(request, "sales.import") %} | {% endif %}
-      {% if can(request, "sales.import") %}<a href="/b2c/orders/import">Import Historical CSV</a>{% endif %}
-    </p>
+    <section class="actions">
+      {% if can(request, "sales.create") %}<a class="button" href="/b2c/orders/new">New B2C order</a>{% endif %}
+      {% if can(request, "sales.import") %}<a class="button" href="/b2c/orders/import">Import Historical CSV</a>{% endif %}
+    </section>
     <form method="get" action="/b2c/orders">
       <label for="q">Search customer name</label>
       <input id="q" name="q" value="{{ filters.q }}" placeholder="Search customer name">
