@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -149,6 +149,25 @@ class AppSequence(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
     next_value: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    company_name: Mapped[str] = mapped_column(String(255), default="Green Corner", nullable=False)
+    logo_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    logo_mime_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    logo_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    updated_by_user: Mapped["User | None"] = relationship("User", foreign_keys=[updated_by_user_id])
 
 
 class User(Base):

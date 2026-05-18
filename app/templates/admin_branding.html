@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Admin</p>
+    <h1>Branding / Company Logo</h1>
+    <p class="lead">Upload or replace the Green Corner logo used in the ERP header.</p>
+  </section>
+
+  <section class="branding-layout">
+    <div class="branding-card">
+      <h2>Current header logo</h2>
+      {% if has_logo %}
+        <div class="branding-preview-frame">
+          <img
+            class="branding-preview-image"
+            src="/branding/logo{% if logo_version %}?v={{ logo_version }}{% endif %}"
+            alt="{{ company_name }}"
+          >
+        </div>
+      {% else %}
+        <div class="branding-preview-frame branding-preview-empty">
+          <span>{{ company_name }}</span>
+        </div>
+        <p class="branding-help">No logo uploaded yet. The header will keep showing the Green Corner text fallback.</p>
+      {% endif %}
+    </div>
+
+    <div class="branding-card">
+      <h2>Upload logo</h2>
+      <p class="branding-help">Allowed formats: PNG, JPG, JPEG, WEBP. Maximum file size: 1 MB.</p>
+      {% if error %}<p class="error">{{ error }}</p>{% endif %}
+      {% if success %}<p class="success">{{ success }}</p>{% endif %}
+      <form method="post" action="/admin/branding/logo" enctype="multipart/form-data">
+        <label for="branding_logo_file">Logo file</label>
+        <input id="branding_logo_file" name="file" type="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" required>
+
+        <div class="form-actions">
+          <button type="submit">Upload logo</button>
+          <a class="button secondary" href="/">Back to home</a>
+        </div>
+      </form>
+    </div>
+  </section>
+{% endblock %}

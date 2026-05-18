@@ -3,6 +3,7 @@ import io
 from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from fastapi import Depends, FastAPI, File, Form, Query, Request, UploadFile
@@ -45,6 +46,7 @@ from app.database import (
 )
 from app.models import (
     Activity,
+    AppSettings,
     AuditLog,
     B2BCustomer,
     B2BCustomerProduct,
@@ -335,6 +337,10 @@ app = FastAPI(title="Real Production Costing MVP")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 ZERO = Decimal("0")
+MAX_LOGO_BYTES = 1024 * 1024
+BRANDING_SETTINGS_ID = 1
+ALLOWED_LOGO_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
+ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 templates.env.globals["can"] = can
 
 
@@ -491,6 +497,69 @@ def _csv_blank_if_none(value: object) -> object:
     return "" if value is None else value
 
 
+def _get_app_settings(db: Session) -> AppSettings | None:
+    return db.query(AppSettings).filter(AppSettings.id == BRANDING_SETTINGS_ID).one_or_none()
+
+
+def _get_or_create_app_settings(db: Session) -> AppSettings:
+    settings = _get_app_settings(db)
+    if settings is None:
+        settings = AppSettings(id=BRANDING_SETTINGS_ID, company_name="Green Corner")
+        db.add(settings)
+        db.flush()
+    return settings
+
+
+def _branding_logo_version(settings: AppSettings | None) -> int | None:
+    if settings is None or not settings.logo_bytes or settings.updated_at is None:
+        return None
+    return int(settings.updated_at.timestamp())
+
+
+def _apply_branding_state(db: Session, request: Request) -> None:
+    settings = _get_app_settings(db)
+    company_name = "Green Corner"
+    has_logo = False
+    logo_version = None
+    if settings is not None:
+        if settings.company_name.strip():
+            company_name = settings.company_name.strip()
+        has_logo = bool(settings.logo_bytes and settings.logo_mime_type)
+        logo_version = _branding_logo_version(settings)
+    request.state.branding_company_name = company_name
+    request.state.has_branding_logo = has_logo
+    request.state.branding_logo_version = logo_version
+
+
+def _logo_magic_matches(content: bytes, mime_type: str) -> bool:
+    if mime_type == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime_type == "image/jpeg":
+        return content.startswith(b"\xff\xd8\xff")
+    if mime_type == "image/webp":
+        return len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP"
+    return False
+
+
+def _validate_logo_upload(upload: UploadFile, content: bytes) -> tuple[str, str]:
+    filename = Path(upload.filename or "").name.strip()
+    if not filename:
+        raise ValueError("Please choose a logo file.")
+    extension = Path(filename).suffix.lower()
+    if extension not in ALLOWED_LOGO_EXTENSIONS:
+        raise ValueError("Logo must use PNG, JPG, JPEG, or WEBP format.")
+    mime_type = (upload.content_type or "").strip().lower()
+    if mime_type not in ALLOWED_LOGO_MIME_TYPES:
+        raise ValueError("Logo MIME type must be PNG, JPG/JPEG, or WEBP.")
+    if not content:
+        raise ValueError("Logo file is empty.")
+    if len(content) > MAX_LOGO_BYTES:
+        raise ValueError("Logo file must be 1 MB or smaller.")
+    if not _logo_magic_matches(content, mime_type):
+        raise ValueError("Logo file content does not match the selected format.")
+    return filename, mime_type
+
+
 def _sales_row_detail_url(sales_source: str, order_id: int) -> str:
     return f"/b2b/orders/{order_id}" if sales_source == "B2B" else f"/b2c/orders/{order_id}"
 
@@ -565,11 +634,16 @@ async def authentication_middleware(request: Request, call_next):
     path = request.url.path
     request.state.current_user = None
     request.state.current_permissions = set()
-    if is_public_path(path):
-        return await call_next(request)
+    request.state.branding_company_name = "Green Corner"
+    request.state.has_branding_logo = False
+    request.state.branding_logo_version = None
 
     db = SessionLocal()
     try:
+        _apply_branding_state(db, request)
+        if is_public_path(path) or path == "/branding/logo":
+            db.rollback()
+            return await call_next(request)
         current_auth = get_current_user_from_request(db, request)
         if current_auth is None:
             if not any_active_users(db):
@@ -577,9 +651,9 @@ async def authentication_middleware(request: Request, call_next):
             return _auth_redirect("/login", request)
         request.state.current_user = current_auth.user
         request.state.current_permissions = current_auth.permissions
-        response = await call_next(request)
-        db.commit()
-        return response
+        db.expunge(current_auth.user)
+        db.rollback()
+        return await call_next(request)
     finally:
         db.close()
 
@@ -775,6 +849,100 @@ async def change_password_submit(request: Request, db: Session = Depends(get_db)
             "error": None,
             "success": "Password updated successfully.",
         },
+    )
+
+
+@app.get("/admin/branding", response_class=HTMLResponse)
+def branding_page(
+    request: Request,
+    updated: int = Query(0),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "admin.users.manage")
+    settings = _get_app_settings(db)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_branding.html",
+        context={
+            "title": "Branding / Company Logo",
+            "error": None,
+            "success": "Logo updated successfully." if updated else None,
+            "company_name": request.state.branding_company_name,
+            "has_logo": bool(settings and settings.logo_bytes and settings.logo_mime_type),
+            "logo_version": _branding_logo_version(settings),
+        },
+    )
+
+
+@app.post("/admin/branding/logo", response_class=HTMLResponse)
+async def branding_logo_upload(request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)) -> Response:
+    current_user = require_permission(request, "admin.users.manage")
+    settings = _get_app_settings(db)
+    content = await file.read()
+    try:
+        filename, mime_type = _validate_logo_upload(file, content)
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_branding.html",
+            context={
+                "title": "Branding / Company Logo",
+                "error": str(exc),
+                "success": None,
+                "company_name": request.state.branding_company_name,
+                "has_logo": bool(settings and settings.logo_bytes and settings.logo_mime_type),
+                "logo_version": _branding_logo_version(settings),
+            },
+            status_code=400,
+        )
+
+    settings = _get_or_create_app_settings(db)
+    try:
+        settings.company_name = settings.company_name.strip() or "Green Corner"
+        settings.logo_bytes = content
+        settings.logo_mime_type = mime_type
+        settings.logo_filename = filename
+        settings.updated_at = datetime.utcnow()
+        settings.updated_by_user_id = current_user.id
+        db.commit()
+    except Exception:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_branding.html",
+            context={
+                "title": "Branding / Company Logo",
+                "error": "Unable to save the logo right now. Please try again.",
+                "success": None,
+                "company_name": request.state.branding_company_name,
+                "has_logo": bool(settings and settings.logo_bytes and settings.logo_mime_type),
+                "logo_version": _branding_logo_version(settings),
+            },
+            status_code=500,
+        )
+
+    safe_log_audit_event(
+        module="admin",
+        action="branding_logo_updated",
+        entity_type="app_settings",
+        entity_id=str(settings.id),
+        entity_label="company_logo",
+        notes=f"Uploaded branding logo {filename}.",
+        request=request,
+        user=current_user,
+    )
+    return _redirect("/admin/branding?updated=1")
+
+
+@app.get("/branding/logo")
+def branding_logo(db: Session = Depends(get_db)) -> Response:
+    settings = _get_app_settings(db)
+    if settings is None or not settings.logo_bytes or not settings.logo_mime_type:
+        raise HTTPException(status_code=404, detail="Logo not found.")
+    return Response(
+        content=settings.logo_bytes,
+        media_type=settings.logo_mime_type,
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 
 

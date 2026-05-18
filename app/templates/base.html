@@ -15,9 +15,24 @@
     {% set is_planning = path == "/planning" or path.startswith("/planning/") %}
     {% set is_production_routes = path == "/production/routes" or path.startswith("/production/routes/") or path == "/activities" or path.startswith("/activities/") or path == "/machines" or path.startswith("/machines/") or path == "/routes" or path.startswith("/routes/") or path == "/product-routes" or path.startswith("/product-routes/") or path == "/rates" or path.startswith("/rates/") %}
     {% set is_production = path == "/production" or path.startswith("/production/") or path == "/imports" or path.startswith("/imports/") or path == "/production-orders" or path.startswith("/production-orders/") or is_production_routes %}
+    {% set branding_company_name = request.state.branding_company_name if request.state is defined and request.state.branding_company_name is defined else "Green Corner" %}
+    {% set has_branding_logo = request.state.has_branding_logo if request.state is defined and request.state.has_branding_logo is defined else False %}
+    {% set branding_logo_version = request.state.branding_logo_version if request.state is defined and request.state.branding_logo_version is defined else None %}
     <header class="site-header">
       <nav class="top-nav" aria-label="Main navigation">
-        <a class="brand" href="/">Green Corner</a>
+        <a class="brand" href="/" aria-label="{{ branding_company_name }}">
+          {% if has_branding_logo %}
+            <span class="brand-logo-frame">
+              <img
+                class="brand-logo"
+                src="/branding/logo{% if branding_logo_version %}?v={{ branding_logo_version }}{% endif %}"
+                alt="{{ branding_company_name }}"
+              >
+            </span>
+          {% else %}
+            <span class="brand-text">{{ branding_company_name }}</span>
+          {% endif %}
+        </a>
         <div class="nav-links">
           {% if is_production %}
             <span class="nav-context">Production</span>
@@ -74,6 +89,9 @@
                 <span class="nav-user-name">{{ current_user.full_name }}</span>
               {% endif %}
             </span>
+            {% if can(request, "admin.users.manage") %}
+              <a class="nav-link" href="/admin/branding">Branding</a>
+            {% endif %}
             {% if can(request, "audit.view") %}
               <a class="nav-link" href="/admin/audit-logs">Audit Logs</a>
             {% endif %}
