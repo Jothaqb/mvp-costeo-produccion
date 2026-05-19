@@ -497,6 +497,14 @@ button:active,
   text-decoration: none;
 }
 
+.purchase-orders-table .table-link {
+  font-weight: 400;
+}
+
+.purchase-orders-table .table-status-text {
+  font-weight: 400;
+}
+
 .actions {
   display: flex;
   gap: 12px;

@@ -5,7 +5,9 @@
   <section>
     <h1>{{ order.order_number }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <p><a href="/b2c/orders">Sales history</a></p>
+    <div class="actions">
+      <a class="button" href="/b2c/orders">Sales History</a>
+    </div>
     <p class="muted-inline">This order keeps a historical customer snapshot. Later edits to the B2C customer master do not change saved order customer data.</p>
     <dl class="summary">
       <div><dt>Status</dt><dd>{{ order.status }}</dd></div>

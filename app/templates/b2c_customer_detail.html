@@ -4,8 +4,8 @@
   <section>
     <h1>{{ customer.name }}</h1>
     <div class="actions">
-      <a role="button" href="/sales/b2c-customers/{{ customer.id }}/edit">Edit customer</a>
-      <a role="button" class="secondary" href="/sales/b2c-customers">Back to B2C Customers</a>
+      <a class="button" href="/sales/b2c-customers/{{ customer.id }}/edit">Edit customer</a>
+      <a class="button" href="/sales/b2c-customers">Back to B2C Customers</a>
     </div>
     <dl class="summary">
       <div><dt>Active</dt><dd>{{ "Yes" if customer.active else "No" }}</dd></div>
