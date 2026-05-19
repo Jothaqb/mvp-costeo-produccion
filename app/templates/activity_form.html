@@ -14,8 +14,10 @@
       <label for="description">Description</label>
       <textarea id="description" name="description">{{ activity.description if activity and activity.description else '' }}</textarea>
 
-      <label><input name="applies_labor" type="checkbox" value="true" {% if not activity or activity.applies_labor %}checked{% endif %}> Applies labor</label>
-      <label><input name="applies_machine" type="checkbox" value="true" {% if activity and activity.applies_machine %}checked{% endif %}> Applies machine</label>
+      <div class="checkbox-group">
+        <label class="checkbox-label"><input name="applies_labor" type="checkbox" value="true" {% if not activity or activity.applies_labor %}checked{% endif %}> Applies labor</label>
+        <label class="checkbox-label"><input name="applies_machine" type="checkbox" value="true" {% if activity and activity.applies_machine %}checked{% endif %}> Applies machine</label>
+      </div>
 
       <label for="default_machine_id">Default machine</label>
       <select id="default_machine_id" name="default_machine_id">
@@ -25,7 +27,7 @@
         {% endfor %}
       </select>
 
-      <label><input name="active" type="checkbox" value="true" {% if not activity or activity.active %}checked{% endif %}> Active</label>
+      <label class="checkbox-label"><input name="active" type="checkbox" value="true" {% if not activity or activity.active %}checked{% endif %}> Active</label>
       <button type="submit">Save</button>
     </form>
   </section>

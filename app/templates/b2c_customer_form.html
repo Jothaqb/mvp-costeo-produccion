@@ -29,7 +29,7 @@
       <label for="observations">Observations</label>
       <textarea id="observations" name="observations">{{ customer.observations if customer and customer.observations else '' }}</textarea>
 
-      <label>
+      <label class="checkbox-label">
         <input type="checkbox" name="active" value="true" {% if not customer or customer.active %}checked{% endif %}>
         Active
       </label>

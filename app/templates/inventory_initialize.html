@@ -45,7 +45,7 @@
   {% if confirmation_required %}
     <section>
       <form method="post" action="/inventory/initialize-opening-balances" class="wide-form">
-        <label>
+        <label class="checkbox-label">
           <input type="checkbox" name="confirm_initialize" value="yes" required>
           I understand this will create one-time opening balances from legacy Product snapshot fields: Product.current_inventory_qty and Product.standard_cost.
         </label>

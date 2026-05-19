@@ -9,20 +9,22 @@
       <label for="name">Name</label>
       <input id="name" name="name" value="{{ form_data.name }}" required>
 
-      <label>
-        <input type="checkbox" name="applies_to_b2b" {% if form_data.applies_to_b2b %}checked{% endif %}>
-        Applies to B2B
-      </label>
+      <div class="checkbox-group">
+        <label class="checkbox-label">
+          <input type="checkbox" name="applies_to_b2b" {% if form_data.applies_to_b2b %}checked{% endif %}>
+          Applies to B2B
+        </label>
 
-      <label>
-        <input type="checkbox" name="applies_to_b2c" {% if form_data.applies_to_b2c %}checked{% endif %}>
-        Applies to B2C
-      </label>
+        <label class="checkbox-label">
+          <input type="checkbox" name="applies_to_b2c" {% if form_data.applies_to_b2c %}checked{% endif %}>
+          Applies to B2C
+        </label>
+      </div>
 
       <label for="observations">Observations</label>
       <textarea id="observations" name="observations">{{ form_data.observations }}</textarea>
 
-      <label>
+      <label class="checkbox-label">
         <input type="checkbox" name="active" {% if form_data.active %}checked{% endif %}>
         Active
       </label>

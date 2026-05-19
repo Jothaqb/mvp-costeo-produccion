@@ -21,7 +21,7 @@
       <label for="version">Version</label>
       <input id="version" name="version" value="{{ route.version if route else '1' }}" required>
 
-      <label><input name="active" type="checkbox" value="true" {% if not route or route.active %}checked{% endif %}> Active</label>
+      <label class="checkbox-label"><input name="active" type="checkbox" value="true" {% if not route or route.active %}checked{% endif %}> Active</label>
       <button type="submit">Save</button>
     </form>
   </section>

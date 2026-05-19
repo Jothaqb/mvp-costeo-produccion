@@ -20,7 +20,7 @@
       <label for="notes">Notes</label>
       <textarea id="notes" name="notes">{{ form_data.notes }}</textarea>
 
-      <label><input type="checkbox" name="active" value="true" {% if form_data.active %}checked{% endif %}> Active</label>
+      <label class="checkbox-label"><input type="checkbox" name="active" value="true" {% if form_data.active %}checked{% endif %}> Active</label>
 
       <button type="submit">Save supplier</button>
       <a href="/master-data/suppliers">Cancel</a>

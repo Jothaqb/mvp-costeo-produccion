@@ -11,7 +11,7 @@
       <label for="description">Description</label>
       <textarea id="description" name="description">{{ form_data.description }}</textarea>
 
-      <label><input type="checkbox" name="active" value="true" {% if form_data.active %}checked{% endif %}> Active</label>
+      <label class="checkbox-label"><input type="checkbox" name="active" value="true" {% if form_data.active %}checked{% endif %}> Active</label>
 
       <button type="submit">Save category</button>
       <a href="/master-data/categories">Cancel</a>

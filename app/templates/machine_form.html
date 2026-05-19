@@ -11,7 +11,7 @@
       <label for="name">Name</label>
       <input id="name" name="name" value="{{ machine.name if machine else '' }}" required>
 
-      <label><input name="active" type="checkbox" value="true" {% if not machine or machine.active %}checked{% endif %}> Active</label>
+      <label class="checkbox-label"><input name="active" type="checkbox" value="true" {% if not machine or machine.active %}checked{% endif %}> Active</label>
       <button type="submit">Save</button>
     </form>
   </section>

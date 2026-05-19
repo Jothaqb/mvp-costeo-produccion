@@ -18,7 +18,7 @@
         {% endfor %}
       </select>
 
-      <label><input type="checkbox" name="route_status" value="no_route" {% if filters.route_status == 'no_route' %}checked{% endif %}> No route assigned</label>
+      <label class="checkbox-label"><input type="checkbox" name="route_status" value="no_route" {% if filters.route_status == 'no_route' %}checked{% endif %}> No route assigned</label>
       <button type="submit">Filter</button>
       <a class="button" href="/product-routes">Clear</a>
     </form>

@@ -20,8 +20,10 @@
         {% endfor %}
       </select>
 
-      <label><input name="required" type="checkbox" value="true" checked> Required</label>
-      <label><input name="visible_default" type="checkbox" value="true" checked> Visible by default</label>
+      <div class="checkbox-group">
+        <label class="checkbox-label"><input name="required" type="checkbox" value="true" checked> Required</label>
+        <label class="checkbox-label"><input name="visible_default" type="checkbox" value="true" checked> Visible by default</label>
+      </div>
       <button type="submit">Add</button>
     </form>
   </section>

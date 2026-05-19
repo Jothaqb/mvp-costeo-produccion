@@ -67,10 +67,12 @@
         <input type="hidden" name="standard_cost" value="{{ standard_cost_value }}">
       {% endif %}
 
-      <label><input type="checkbox" name="active" value="true" {% if product_data.active %}checked{% endif %}> Active</label>
-      <label><input type="checkbox" name="available_for_sale_gc" value="true" {% if product_data.available_for_sale_gc %}checked{% endif %}> Available for sale</label>
-      <label><input type="checkbox" name="is_manufactured" value="true" {% if product_data.is_manufactured %}checked{% endif %}> Manufactured product</label>
-      <label><input type="checkbox" name="is_purchased_product" value="true" {% if product_data.is_purchased_product %}checked{% endif %}> Purchased product</label>
+      <div class="checkbox-group">
+        <label class="checkbox-label"><input type="checkbox" name="active" value="true" {% if product_data.active %}checked{% endif %}> Active</label>
+        <label class="checkbox-label"><input type="checkbox" name="available_for_sale_gc" value="true" {% if product_data.available_for_sale_gc %}checked{% endif %}> Available for sale</label>
+        <label class="checkbox-label"><input type="checkbox" name="is_manufactured" value="true" {% if product_data.is_manufactured %}checked{% endif %}> Manufactured product</label>
+        <label class="checkbox-label"><input type="checkbox" name="is_purchased_product" value="true" {% if product_data.is_purchased_product %}checked{% endif %}> Purchased product</label>
+      </div>
 
       <p class="muted-inline">Manufactured and purchased flags can be left blank for products that are not yet classified.</p>
       <p class="muted-inline">Standard cost is a reference/fallback value. Official ERP average cost comes from InventoryBalance / Kardex.</p>

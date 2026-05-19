@@ -57,7 +57,7 @@
         {% endfor %}
       </select>
 
-      <label><input type="checkbox" name="needs_action" value="true" {% if filters.needs_action %}checked{% endif %}> Needs action only</label>
+      <label class="checkbox-label"><input type="checkbox" name="needs_action" value="true" {% if filters.needs_action %}checked{% endif %}> Needs action only</label>
       <a class="button secondary" href="/planning/suggestions?product_type={{ product_type }}">Clear filters</a>
       <button type="submit">Filter</button>
     </form>
