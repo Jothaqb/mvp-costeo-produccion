@@ -2757,12 +2757,14 @@ def total_sales(
 ) -> HTMLResponse:
     require_permission(request, "reporting.view")
     error = None
-    rows = []
+    full_rows = []
+    table_rows = []
     monthly_chart_data: list[dict[str, object]] = []
     monthly_cogs_hidden = False
     export_url = _build_sales_export_url("/sales/total/export", {"sales_type": "all"})
     filters = {"date_from": "", "date_to": "", "sales_type": "all"}
     using_default_date_window = False
+    is_truncated = False
 
     try:
         filters, parsed_date_from, parsed_date_to, using_default_date_window = _normalize_sales_reporting_filters(
@@ -2771,12 +2773,14 @@ def total_sales(
             sales_type=sales_type,
             apply_default_date_window=True,
         )
-        rows = get_total_sales_rows(
+        full_rows = get_total_sales_rows(
             db,
             date_from=parsed_date_from,
             date_to=parsed_date_to,
             sales_type=filters["sales_type"],
         )
+        table_rows = full_rows[:300]
+        is_truncated = len(full_rows) > 300
         monthly_chart_points = get_total_sales_monthly_summary(
             db,
             date_from=parsed_date_from,
@@ -2814,10 +2818,11 @@ def total_sales(
         name="total_sales.html",
         context={
             "title": "Total Sales",
-            "rows": rows,
+            "rows": table_rows,
             "filters": filters,
             "error": error,
-            "result_count": len(rows),
+            "result_count": len(full_rows),
+            "is_truncated": is_truncated,
             "using_default_date_window": using_default_date_window,
             "export_url": export_url,
             "monthly_chart_data": monthly_chart_data,

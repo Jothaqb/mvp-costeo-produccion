@@ -37,6 +37,9 @@
         <p class="muted-inline">Showing last 30 days by default. Use date filters to search the full historical period.</p>
       {% endif %}
       <p class="muted-inline">{{ result_count }} invoiced sales lines found.</p>
+      {% if is_truncated %}
+        <p class="muted-inline">Showing first 300 rows of {{ result_count }}. Download CSV for full detail.</p>
+      {% endif %}
     </div>
 
     <div class="chart-panel">
