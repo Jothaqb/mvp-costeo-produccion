@@ -3634,14 +3634,12 @@ def inventory_balances_report(
     )
 
 
-@app.get("/inventory/transactions", response_class=HTMLResponse)
-def inventory_transactions_report(
-    request: Request,
-    date_from: str = Query(default=""),
-    date_to: str = Query(default=""),
-    db: Session = Depends(get_db),
-) -> HTMLResponse:
-    require_permission(request, "inventory.view")
+def _build_inventory_transactions_query(
+    db: Session,
+    *,
+    date_from: str = "",
+    date_to: str = "",
+):
     parsed_date_from = _parse_optional_date_query(date_from)
     parsed_date_to = _parse_optional_date_query(date_to)
 
@@ -3654,9 +3652,19 @@ def inventory_transactions_report(
         transactions_query = transactions_query.filter(
             InventoryTransaction.transaction_date < datetime.combine(parsed_date_to + timedelta(days=1), datetime.min.time())
         )
+    return transactions_query
 
+
+@app.get("/inventory/transactions", response_class=HTMLResponse)
+def inventory_transactions_report(
+    request: Request,
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "inventory.view")
     transactions = (
-        transactions_query
+        _build_inventory_transactions_query(db, date_from=date_from, date_to=date_to)
         .order_by(InventoryTransaction.transaction_date.desc(), InventoryTransaction.id.desc())
         .all()
     )
@@ -3670,6 +3678,60 @@ def inventory_transactions_report(
             "date_to": date_to.strip(),
             "opening_balances_initialized": _inventory_opening_balance_exists(db),
         },
+    )
+
+
+@app.get("/inventory/transactions/export")
+def export_inventory_transactions_csv(
+    request: Request,
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "inventory.view")
+    transactions = (
+        _build_inventory_transactions_query(db, date_from=date_from, date_to=date_to)
+        .order_by(InventoryTransaction.transaction_date.desc(), InventoryTransaction.id.desc())
+        .all()
+    )
+    csv_rows = [
+        (
+            transaction.transaction_date,
+            transaction.product.sku if transaction.product else "",
+            transaction.transaction_type,
+            (
+                f"{transaction.source_type or ''}{f' #{transaction.source_id}' if transaction.source_id else ''}"
+                if transaction.source_type or transaction.source_id
+                else ""
+            ),
+            _csv_blank_if_none(transaction.quantity_in),
+            _csv_blank_if_none(transaction.quantity_out),
+            _csv_blank_if_none(transaction.unit_cost),
+            _csv_blank_if_none(transaction.total_cost),
+            _csv_blank_if_none(transaction.running_quantity),
+            _csv_blank_if_none(transaction.running_average_cost),
+            _csv_blank_if_none(transaction.running_inventory_value),
+            transaction.notes or "",
+        )
+        for transaction in transactions
+    ]
+    return _csv_report_response(
+        filename="inventory_transactions_report.csv",
+        headers=(
+            "Date",
+            "SKU",
+            "Transaction Type",
+            "Source",
+            "Quantity In",
+            "Quantity Out",
+            "Unit Cost",
+            "Total Cost",
+            "Running Qty",
+            "Running Avg Cost",
+            "Running Inventory Value",
+            "Notes",
+        ),
+        rows=csv_rows,
     )
 
 

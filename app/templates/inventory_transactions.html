@@ -27,6 +27,14 @@
     </form>
   </section>
 
+  <section class="actions">
+    <form method="get" action="/inventory/transactions/export" class="actions-form">
+      <input type="hidden" name="date_from" value="{{ date_from or '' }}">
+      <input type="hidden" name="date_to" value="{{ date_to or '' }}">
+      <button type="submit">Download CSV</button>
+    </form>
+  </section>
+
   <section class="table-wrap">
     <table>
       <thead>
