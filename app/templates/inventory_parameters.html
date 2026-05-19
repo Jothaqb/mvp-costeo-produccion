@@ -21,8 +21,25 @@
   <section>
     <form method="get" action="/planning/inventory-parameters" class="filter-form">
       <input type="hidden" name="product_type" value="{{ product_type }}">
-      <label for="sku">SKU filter</label>
-      <input id="sku" name="sku" value="{{ filters.sku }}" placeholder="Search SKU">
+      <div class="product-lookup-field">
+        <label for="sku">SKU filter</label>
+        <input
+          id="sku"
+          name="sku"
+          type="search"
+          value="{{ filters.sku }}"
+          placeholder="Search SKU, name, or description"
+          autocomplete="off"
+          data-product-lookup-url="/planning/inventory-parameters/product-search"
+          data-product-lookup-mode="sku"
+          data-product-lookup-target="#sku"
+          data-product-lookup-extra-params="product_type"
+          data-product-lookup-results-id="inventory_parameters_lookup_results"
+          data-product-lookup-preview-id="inventory_parameters_lookup_preview"
+        >
+        <div id="inventory_parameters_lookup_results" class="lookup-results" hidden></div>
+        <div id="inventory_parameters_lookup_preview" class="muted-inline">Type SKU, name, or description to see suggestions. Select a product to fill the exact SKU filter.</div>
+      </div>
 
       {% if product_type == 'manufactured' %}
         <label for="route_id">Route</label>
@@ -94,4 +111,5 @@
       </div>
     </form>
   </section>
+  <script src="{{ url_for('static', path='/product_lookup.js') }}"></script>
 {% endblock %}

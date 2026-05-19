@@ -14,13 +14,30 @@
 
   <section>
     <form method="get" action="/inventory/balances" class="inline-filter-form">
-      <label for="q">Search by SKU or description</label>
-      <input id="q" name="q" type="search" value="{{ q or '' }}" placeholder="Search by SKU or description">
-      <button type="submit">Apply</button>
+      <div class="product-lookup-field">
+        <label for="q">Search by SKU or product name</label>
+        <input
+          id="q"
+          name="q"
+          type="search"
+          value="{{ q or '' }}"
+          placeholder="Search by SKU or product name"
+          autocomplete="off"
+          data-product-lookup-url="/inventory/balances/product-search"
+          data-product-lookup-mode="sku"
+          data-product-lookup-target="#q"
+          data-product-lookup-results-id="inventory_balances_lookup_results"
+          data-product-lookup-preview-id="inventory_balances_lookup_preview"
+        >
+        <div id="inventory_balances_lookup_results" class="lookup-results" hidden></div>
+        <div id="inventory_balances_lookup_preview" class="muted-inline"></div>
+      </div>
+      <button type="submit">Search</button>
       {% if q %}
         <a href="/inventory/balances">Clear</a>
       {% endif %}
     </form>
+    <p class="muted-inline">Partial matches are supported. This report only shows products with inventory balances.</p>
   </section>
 
   <section class="table-wrap">
@@ -51,4 +68,5 @@
       </tbody>
     </table>
   </section>
+  <script src="{{ url_for('static', path='/product_lookup.js') }}"></script>
 {% endblock %}

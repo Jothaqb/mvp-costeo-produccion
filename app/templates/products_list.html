@@ -13,8 +13,25 @@
       {% endif %}
     </section>
     <form method="get" action="/master-data/products">
-      <label for="q">Search SKU or product name</label>
-      <input id="q" name="q" value="{{ filters.q }}" placeholder="Search SKU or product name">
+      <div class="product-lookup-field">
+        <label for="q">Search SKU, product name, or description</label>
+        <input
+          id="q"
+          name="q"
+          type="search"
+          value="{{ filters.q }}"
+          placeholder="Search SKU, product name, or description"
+          autocomplete="off"
+          data-product-lookup-url="/master-data/products/lookup"
+          data-product-lookup-mode="sku"
+          data-product-lookup-target="#q"
+          data-product-lookup-extra-params="active"
+          data-product-lookup-results-id="products_lookup_results"
+          data-product-lookup-preview-id="products_lookup_preview"
+        >
+        <div id="products_lookup_results" class="lookup-results" hidden></div>
+        <div id="products_lookup_preview" class="muted-inline"></div>
+      </div>
 
       <label for="active">Active status</label>
       <select id="active" name="active">
@@ -26,6 +43,7 @@
       <button type="submit">Search</button>
       <a href="/master-data/products">Clear</a>
     </form>
+    <p class="muted-inline">Partial matches are supported. Select a suggestion to fill the exact SKU, or search manually by SKU, product name, or description.</p>
     <p class="muted-inline">Results: {{ result_count }}</p>
     <table>
       <thead>
@@ -66,4 +84,5 @@
       </tbody>
     </table>
   </section>
+  <script src="{{ url_for('static', path='/product_lookup.js') }}"></script>
 {% endblock %}

@@ -1351,6 +1351,29 @@ button:active,
   font-size: 0.92rem;
 }
 
+.product-lookup-field {
+  display: flex;
+  flex: 1 1 280px;
+  flex-direction: column;
+  min-width: 240px;
+}
+
+.product-lookup-field input {
+  margin-bottom: 0;
+}
+
+.product-lookup-field .lookup-results {
+  margin: 6px 0 0;
+}
+
+.product-lookup-field .muted-inline {
+  margin-top: 6px;
+}
+
+.product-lookup-empty {
+  margin: 0;
+}
+
 @media (max-width: 1040px) {
   .inventory-nav-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

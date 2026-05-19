@@ -1360,6 +1360,48 @@ def _product_lookup_payload(product: Product) -> dict[str, object]:
     }
 
 
+def _product_lookup_results(
+    db: Session,
+    *,
+    search_text: str,
+    active_filter: str = "active",
+    manufactured_only: bool = False,
+    purchased_only: bool = False,
+    with_inventory_balance: bool = False,
+    limit: int = 20,
+) -> list[Product]:
+    normalized_search = search_text.strip()
+    if len(normalized_search) < 2:
+        return []
+
+    pattern = f"%{normalized_search}%"
+    query = db.query(Product)
+    if with_inventory_balance:
+        query = query.join(InventoryBalance, InventoryBalance.product_id == Product.id)
+
+    if active_filter == "active":
+        query = query.filter(Product.active.is_(True))
+    elif active_filter == "inactive":
+        query = query.filter(Product.active.is_(False))
+
+    if manufactured_only:
+        query = query.filter(Product.is_manufactured.is_(True))
+    if purchased_only:
+        query = query.filter(Product.is_purchased_product.is_(True))
+
+    query = query.filter(
+        or_(
+            Product.sku.ilike(pattern),
+            Product.name.ilike(pattern),
+            Product.description.ilike(pattern),
+        )
+    )
+    if with_inventory_balance:
+        query = query.distinct()
+
+    return query.order_by(Product.sku, Product.name).limit(limit).all()
+
+
 def _purchase_order_line_inputs_from_form(form) -> list[dict[str, str]]:
     indexes = [str(index).strip() for index in form.getlist("line_index") if str(index).strip()]
     return [
@@ -2208,6 +2250,7 @@ def products_master(
             or_(
                 Product.sku.ilike(term),
                 Product.name.ilike(term),
+                Product.description.ilike(term),
             )
         )
     if filters["active"] == "active":
@@ -2310,24 +2353,70 @@ def search_master_data_products(
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     require_permission(request, "product.view")
-    search_text = q.strip()
-    if len(search_text) < 2:
-        return JSONResponse([])
+    products = _product_lookup_results(db, search_text=q, active_filter="active")
+    return JSONResponse([_product_lookup_payload(product) for product in products])
 
-    pattern = f"%{search_text}%"
-    products = (
-        db.query(Product)
-        .filter(
-            Product.active.is_(True),
-            or_(
-                Product.sku.ilike(pattern),
-                Product.name.ilike(pattern),
-                Product.description.ilike(pattern),
-            ),
-        )
-        .order_by(Product.sku, Product.name)
-        .limit(20)
-        .all()
+
+@app.get("/master-data/products/lookup")
+def lookup_products_master(
+    request: Request,
+    q: str = Query(default=""),
+    active: str = Query(default="all"),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    require_permission(request, "product.view")
+    normalized_active = (active or "all").strip().lower() or "all"
+    if normalized_active not in {"all", "active", "inactive"}:
+        normalized_active = "all"
+    products = _product_lookup_results(db, search_text=q, active_filter=normalized_active)
+    return JSONResponse([_product_lookup_payload(product) for product in products])
+
+
+@app.get("/planning/inventory-parameters/product-search")
+def search_inventory_parameter_products(
+    request: Request,
+    q: str = Query(default=""),
+    product_type: str = Query(PRODUCT_TYPE_MANUFACTURED),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    require_permission(request, "planning.view")
+    normalized_type = normalize_product_type(product_type)
+    products = _product_lookup_results(
+        db,
+        search_text=q,
+        active_filter="active",
+        manufactured_only=normalized_type == PRODUCT_TYPE_MANUFACTURED,
+        purchased_only=normalized_type == PRODUCT_TYPE_PURCHASED,
+    )
+    return JSONResponse([_product_lookup_payload(product) for product in products])
+
+
+@app.get("/inventory/balances/product-search")
+def search_inventory_balance_products(
+    request: Request,
+    q: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    require_permission(request, "inventory.view")
+    products = _product_lookup_results(
+        db,
+        search_text=q,
+        active_filter="all",
+        with_inventory_balance=True,
+    )
+    return JSONResponse([_product_lookup_payload(product) for product in products])
+
+
+@app.get("/product-routes/product-search")
+def search_product_route_products(
+    q: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    products = _product_lookup_results(
+        db,
+        search_text=q,
+        active_filter="active",
+        manufactured_only=True,
     )
     return JSONResponse([_product_lookup_payload(product) for product in products])
 

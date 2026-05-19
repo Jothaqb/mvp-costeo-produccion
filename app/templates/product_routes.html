@@ -7,8 +7,24 @@
     {% if message %}<p class="success">{{ message }}</p>{% endif %}
 
     <form method="get" action="/product-routes" class="filters">
-      <label for="product_sku">Product SKU</label>
-      <input id="product_sku" name="product_sku" value="{{ filters.product_sku }}">
+      <div class="product-lookup-field">
+        <label for="product_sku">Product SKU</label>
+        <input
+          id="product_sku"
+          name="product_sku"
+          type="search"
+          value="{{ filters.product_sku }}"
+          placeholder="Search SKU, name, or description"
+          autocomplete="off"
+          data-product-lookup-url="/product-routes/product-search"
+          data-product-lookup-mode="sku"
+          data-product-lookup-target="#product_sku"
+          data-product-lookup-results-id="product_routes_lookup_results"
+          data-product-lookup-preview-id="product_routes_lookup_preview"
+        >
+        <div id="product_routes_lookup_results" class="lookup-results" hidden></div>
+        <div id="product_routes_lookup_preview" class="muted-inline">Suggestions include active manufactured products only. Select a product to fill the exact SKU filter.</div>
+      </div>
 
       <label for="route_filter">Route</label>
       <select id="route_filter" name="route_id">
@@ -88,4 +104,5 @@
       });
     }
   </script>
+  <script src="{{ url_for('static', path='/product_lookup.js') }}"></script>
 {% endblock %}
