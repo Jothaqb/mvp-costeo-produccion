@@ -84,7 +84,7 @@ LOYVERSE_CATEGORY_INDEX = 3
 LOYVERSE_AVERAGE_COST_INDEX = 12
 LOYVERSE_SUPPLIER_INDEX = 18
 LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX = 20
-LOYVERSE_B2B_PRICE_INDEX = 21
+LOYVERSE_B2C_PRICE_INDEX = 21
 LOYVERSE_INVENTORY_INDEX = 22
 LOYVERSE_LOW_STOCK_INDEX = 23
 LOYVERSE_OPTIMAL_STOCK_INDEX = 24
@@ -358,14 +358,14 @@ def _create_parent_records_from_loyverse_row(
     sku = product.sku
     name = product.name
     imported_category_name = _clean_optional_text(_cell(row, LOYVERSE_CATEGORY_INDEX))
-    imported_b2b_price = parse_decimal(_cell(row, LOYVERSE_B2B_PRICE_INDEX))
+    imported_b2c_price = parse_decimal(_cell(row, LOYVERSE_B2C_PRICE_INDEX))
 
     header = ImportedBomHeader(
         import_batch=batch,
         product_sku=sku,
         product_name=name,
         category_name_snapshot=imported_category_name,
-        b2b_price_snapshot=_valid_import_b2b_price(imported_b2b_price),
+        b2b_price_snapshot=_valid_import_b2c_price(imported_b2c_price),
         standard_cost=product.standard_cost,
         use_production=True,
     )
@@ -382,7 +382,7 @@ def _upsert_product_master_from_loyverse_row(db: Session, row: list[str]) -> Pro
     name = _cell(row, LOYVERSE_PARENT_NAME_INDEX) or sku
     standard_cost = parse_decimal(_cell(row, LOYVERSE_AVERAGE_COST_INDEX))
     imported_category_name = _clean_optional_text(_cell(row, LOYVERSE_CATEGORY_INDEX))
-    imported_b2b_price = parse_decimal(_cell(row, LOYVERSE_B2B_PRICE_INDEX))
+    imported_b2c_price = parse_decimal(_cell(row, LOYVERSE_B2C_PRICE_INDEX))
 
     product = db.query(Product).filter(Product.sku == sku).one_or_none()
     if product is None:
@@ -393,7 +393,7 @@ def _upsert_product_master_from_loyverse_row(db: Session, row: list[str]) -> Pro
     product.standard_cost = standard_cost
     product.is_manufactured = _is_manufactured_parent_row(row)
     _apply_category_enrichment(db, product, imported_category_name)
-    _apply_b2b_price_enrichment(product, imported_b2b_price)
+    _apply_b2c_price_enrichment(product, imported_b2c_price)
     _apply_planning_snapshot_fields(product, row)
     return product
 
@@ -428,17 +428,17 @@ def _apply_category_enrichment(db: Session, product: Product, category_name: str
     product.category_id = category.id
 
 
-def _apply_b2b_price_enrichment(product: Product, imported_b2b_price: Decimal | None) -> None:
-    valid_b2b_price = _valid_import_b2b_price(imported_b2b_price)
-    if valid_b2b_price is None:
+def _apply_b2c_price_enrichment(product: Product, imported_b2c_price: Decimal | None) -> None:
+    valid_b2c_price = _valid_import_b2c_price(imported_b2c_price)
+    if valid_b2c_price is None:
         return
-    product.b2b_price = valid_b2b_price
+    product.b2c_price = valid_b2c_price
 
 
-def _valid_import_b2b_price(imported_b2b_price: Decimal | None) -> Decimal | None:
-    if imported_b2b_price is None or imported_b2b_price < 0:
+def _valid_import_b2c_price(imported_b2c_price: Decimal | None) -> Decimal | None:
+    if imported_b2c_price is None or imported_b2c_price < 0:
         return None
-    return imported_b2b_price
+    return imported_b2c_price
 
 
 def _clean_optional_text(value: str | None) -> str | None:
