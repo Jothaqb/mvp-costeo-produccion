@@ -4,6 +4,14 @@
   <section>
     <h1>{{ title }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if can_deactivate and category %}
+      <form
+        id="deactivate-category-form"
+        method="post"
+        action="/master-data/categories/{{ category.id }}/delete"
+        onsubmit="return confirm('Are you sure you want to deactivate this category?');"
+      ></form>
+    {% endif %}
     <form method="post" action="{{ form_action }}">
       <label for="name">Name</label>
       <input id="name" name="name" value="{{ form_data.name }}" required>
@@ -13,8 +21,13 @@
 
       <label class="checkbox-label"><input type="checkbox" name="active" value="true" {% if form_data.active %}checked{% endif %}> Active</label>
 
-      <button type="submit">Save category</button>
-      <a href="/master-data/categories">Cancel</a>
+      <div class="actions">
+        <button type="submit">Save category</button>
+        {% if can_deactivate and category %}
+          <button type="submit" form="deactivate-category-form">Deactivate category</button>
+        {% endif %}
+        <a href="/master-data/categories">Cancel</a>
+      </div>
     </form>
   </section>
 {% endblock %}

@@ -4,6 +4,7 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
+    {% if message %}<p>{{ message }}</p>{% endif %}
     <section class="actions">
       {% if can(request, "product.create") %}
         <a class="button" href="/master-data/products/new">New product / SKU</a>

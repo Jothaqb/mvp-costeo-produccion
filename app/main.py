@@ -72,6 +72,8 @@ from app.models import (
     OverheadRate,
     Permission,
     Product,
+    ProductBomHeader,
+    ProductBomLine,
     ProductCategory,
     ProductionOrder,
     ProductionOrderActivity,
@@ -341,6 +343,7 @@ MAX_LOGO_BYTES = 1024 * 1024
 BRANDING_SETTINGS_ID = 1
 ALLOWED_LOGO_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+MASTER_DATA_DEACTIVATE_ROLE_CODES = {"admin", "general_approver"}
 templates.env.globals["can"] = can
 
 
@@ -1243,6 +1246,7 @@ def _product_form_context(
     suppliers: list[Supplier],
     error: str | None = None,
     product_data: dict[str, object] | None = None,
+    can_deactivate: bool = False,
 ) -> dict[str, object]:
     data = product_data or {
         "sku": product.sku if product else "",
@@ -1268,6 +1272,66 @@ def _product_form_context(
         "categories": categories,
         "suppliers": suppliers,
         "error": error,
+        "can_deactivate": can_deactivate and product is not None and product.active,
+    }
+
+
+def _current_role_codes(request: Request) -> set[str]:
+    current_user = getattr(request.state, "current_user", None)
+    if current_user is None:
+        return set()
+    return {
+        link.role.code
+        for link in getattr(current_user, "user_role_links", [])
+        if link.role is not None and link.role.active and link.role.code
+    }
+
+
+def _can_deactivate_master_data(request: Request) -> bool:
+    return bool(_current_role_codes(request) & MASTER_DATA_DEACTIVATE_ROLE_CODES)
+
+
+def _require_master_data_deactivate_role(request: Request):
+    current_user = require_authenticated_user(request)
+    if not _can_deactivate_master_data(request):
+        raise HTTPException(status_code=403, detail="You do not have access to deactivate master data.")
+    return current_user
+
+
+def _active_b2b_catalog_exists_for_sku(db: Session, sku: str) -> bool:
+    normalized_sku = (sku or "").strip()
+    if not normalized_sku:
+        return False
+    return (
+        db.query(B2BCustomerProduct.id)
+        .filter(
+            B2BCustomerProduct.sku == normalized_sku,
+            B2BCustomerProduct.active.is_(True),
+        )
+        .first()
+        is not None
+    )
+
+
+def _active_bom_component_exists_for_product(db: Session, product_id: int) -> bool:
+    return (
+        db.query(ProductBomLine.id)
+        .join(ProductBomHeader, ProductBomHeader.id == ProductBomLine.bom_header_id)
+        .filter(
+            ProductBomLine.component_product_id == product_id,
+            ProductBomHeader.active.is_(True),
+        )
+        .first()
+        is not None
+    )
+
+
+def _category_audit_snapshot(category: ProductCategory) -> dict[str, object]:
+    return {
+        "category_id": category.id,
+        "name": category.name,
+        "description": category.description,
+        "active": category.active,
     }
 
 
@@ -1680,12 +1744,16 @@ def master_data_home(request: Request) -> HTMLResponse:
 
 
 @app.get("/master-data/categories", response_class=HTMLResponse)
-def product_categories(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def product_categories(
+    request: Request,
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
     categories = db.query(ProductCategory).order_by(ProductCategory.name, ProductCategory.id).all()
     return templates.TemplateResponse(
         request=request,
         name="product_categories_list.html",
-        context={"title": "Product Categories", "categories": categories},
+        context={"title": "Product Categories", "categories": categories, "message": message},
     )
 
 
@@ -1700,6 +1768,7 @@ def new_product_category(request: Request) -> HTMLResponse:
             "category": None,
             "form_data": {"name": "", "description": "", "active": True},
             "error": None,
+            "can_deactivate": False,
         },
     )
 
@@ -1731,6 +1800,7 @@ async def create_product_category_route(request: Request, db: Session = Depends(
                 "category": None,
                 "form_data": form_data,
                 "error": str(exc),
+                "can_deactivate": False,
             },
         )
 
@@ -1751,6 +1821,7 @@ def edit_product_category(category_id: int, request: Request, db: Session = Depe
                 "active": category.active,
             },
             "error": None,
+            "can_deactivate": _can_deactivate_master_data(request) and category.active,
         },
     )
 
@@ -1788,8 +1859,37 @@ async def update_product_category_route(
                 "category": category,
                 "form_data": form_data,
                 "error": str(exc),
+                "can_deactivate": _can_deactivate_master_data(request) and category.active,
             },
         )
+
+
+@app.post("/master-data/categories/{category_id}/delete")
+def deactivate_product_category_route(
+    category_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    _require_master_data_deactivate_role(request)
+    category = db.query(ProductCategory).filter(ProductCategory.id == category_id).one()
+    old_snapshot = _category_audit_snapshot(category)
+    category.active = False
+    db.commit()
+    db.refresh(category)
+    new_snapshot = _category_audit_snapshot(category)
+    if old_snapshot != new_snapshot:
+        safe_log_audit_event(
+            module="master_data",
+            action="product_category_deactivated",
+            entity_type="product_category",
+            entity_id=category.id,
+            entity_label=category.name,
+            old_values=old_snapshot,
+            new_values=new_snapshot,
+            request=request,
+        )
+    message = f"Category {category.name} was deactivated."
+    return _redirect(f"/master-data/categories?message={quote(message)}")
 
 
 @app.get("/master-data/suppliers", response_class=HTMLResponse)
@@ -2232,6 +2332,7 @@ def products_master(
     request: Request,
     q: str = Query(""),
     active: str = Query("all"),
+    message: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     require_permission(request, "product.view")
@@ -2266,6 +2367,7 @@ def products_master(
             "products": products,
             "filters": filters,
             "result_count": len(products),
+            "message": message,
         },
     )
 
@@ -2433,6 +2535,7 @@ def new_product_master(request: Request, db: Session = Depends(get_db)) -> HTMLR
             product=None,
             categories=list_category_options(db),
             suppliers=list_supplier_options(db),
+            can_deactivate=False,
         ),
     )
 
@@ -2492,12 +2595,19 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
                 suppliers=list_supplier_options(db, supplier_id),
                 error=str(exc),
                 product_data=product_data,
+                can_deactivate=False,
             ),
         )
 
 
 @app.get("/master-data/products/{product_id}", response_class=HTMLResponse)
-def product_detail(product_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def product_detail(
+    product_id: int,
+    request: Request,
+    error: str | None = Query(default=None),
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
     require_permission(request, "product.view")
     product = get_product_for_detail(db, product_id)
     balance = get_product_balance(db, product_id)
@@ -2515,6 +2625,9 @@ def product_detail(product_id: int, request: Request, db: Session = Depends(get_
             "balance": balance,
             "bom": bom,
             "bom_lines": bom_lines,
+            "can_deactivate": _can_deactivate_master_data(request) and product.active,
+            "error": error,
+            "message": message,
         },
     )
 
@@ -2532,6 +2645,7 @@ def edit_product_master(product_id: int, request: Request, db: Session = Depends
             product=product,
             categories=list_category_options(db, product.category_id),
             suppliers=list_supplier_options(db, product.supplier_id),
+            can_deactivate=_can_deactivate_master_data(request),
         ),
     )
 
@@ -2604,8 +2718,58 @@ async def update_product_master_route(
                 suppliers=list_supplier_options(db, supplier_id),
                 error=str(exc),
                 product_data=product_data,
+                can_deactivate=_can_deactivate_master_data(request),
             ),
         )
+
+
+@app.post("/master-data/products/{product_id}/delete")
+def deactivate_product_master(
+    product_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    _require_master_data_deactivate_role(request)
+    product = get_product_for_detail(db, product_id)
+
+    if _active_b2b_catalog_exists_for_sku(db, product.sku):
+        message = (
+            "Cannot deactivate this product because it is active in B2B customer catalogs. "
+            "Deactivate it from those customer catalogs first."
+        )
+        return _redirect(f"/master-data/products/{product.id}?error={quote(message)}")
+
+    if _active_bom_component_exists_for_product(db, product.id):
+        message = (
+            "Cannot deactivate this product because it is used as a component in active BOMs. "
+            "Remove or replace it from those BOMs first."
+        )
+        return _redirect(f"/master-data/products/{product.id}?error={quote(message)}")
+
+    old_snapshot = snapshot_product_for_audit(product)
+    product.active = False
+    product.available_for_sale_gc = False
+    db.commit()
+    db.refresh(product)
+
+    changed_old, changed_new = diff_audit_snapshots(
+        old_snapshot,
+        snapshot_product_for_audit(product),
+    )
+    if changed_old is not None and changed_new is not None:
+        safe_log_audit_event(
+            module="master_data",
+            action="product_deactivated",
+            entity_type="product",
+            entity_id=product.id,
+            entity_label=f"{product.sku} - {product.name}",
+            old_values=changed_old,
+            new_values=changed_new,
+            request=request,
+        )
+
+    message = f"Product {product.sku} - {product.name} was deactivated."
+    return _redirect(f"/master-data/products?active=inactive&message={quote(message)}")
 
 
 @app.get("/master-data/products/{product_id}/bom/edit", response_class=HTMLResponse)

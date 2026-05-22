@@ -4,9 +4,20 @@
 {% block content %}
   <section>
     <h1>{{ product.sku }} - {{ product.name }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if message %}<p>{{ message }}</p>{% endif %}
     <div class="actions">
       {% if can(request, "product.edit") %}
         <a class="button" href="/master-data/products/{{ product.id }}/edit">Edit product</a>
+      {% endif %}
+      {% if can_deactivate %}
+        <form
+          method="post"
+          action="/master-data/products/{{ product.id }}/delete"
+          onsubmit="return confirm('Are you sure you want to deactivate this product?');"
+        >
+          <button type="submit">Deactivate product</button>
+        </form>
       {% endif %}
       <a class="button" href="/master-data/products">Back to products</a>
     </div>
