@@ -28,9 +28,7 @@
 
       <label for="phone">Phone</label>
       <input id="phone" name="phone" value="{{ customer.phone if customer and customer.phone else '' }}">
-
-      <label for="loyverse_customer_id">Loyverse customer ID</label>
-      <input id="loyverse_customer_id" name="loyverse_customer_id" value="{{ customer.loyverse_customer_id if customer and customer.loyverse_customer_id else '' }}">
+      <input type="hidden" name="loyverse_customer_id" value="{{ customer.loyverse_customer_id if customer and customer.loyverse_customer_id else '' }}">
 
       <label class="checkbox-label">
         <input type="checkbox" name="active" value="true" {% if not customer or customer.active %}checked{% endif %}>

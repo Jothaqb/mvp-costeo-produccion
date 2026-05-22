@@ -39,16 +39,5 @@
         {% endif %}
       </div>
     </article>
-
-    {% if can(request, "inventory.adjust") %}
-      <a class="module-card module-link-card" href="/inventory/initialize-opening-balances" aria-label="Initialize Opening Balances">
-        <div>
-          <p class="eyebrow">Setup</p>
-          <h2>Initialize Opening Balances</h2>
-          <p>Run or review the one-time initialization from legacy Product snapshot fields: Product.current_inventory_qty and Product.standard_cost.</p>
-        </div>
-        <span class="module-entry">Initialize Opening Balances</span>
-      </a>
-    {% endif %}
   </section>
 {% endblock %}
