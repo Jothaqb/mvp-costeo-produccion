@@ -332,6 +332,46 @@ def ensure_auth_tables() -> None:
         connection.exec_driver_sql("CREATE INDEX IF NOT EXISTS ix_user_sessions_user_id ON user_sessions (user_id)")
 
 
+def ensure_password_reset_tables() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INTEGER NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                token_hash VARCHAR(255) NOT NULL UNIQUE,
+                created_at DATETIME NOT NULL,
+                expires_at DATETIME NOT NULL,
+                used_at DATETIME,
+                requested_ip VARCHAR(255),
+                requested_user_agent VARCHAR(500),
+                consumed_ip VARCHAR(255),
+                consumed_user_agent VARCHAR(500),
+                FOREIGN KEY(user_id) REFERENCES users (id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_password_reset_tokens_token_hash "
+            "ON password_reset_tokens (token_hash)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_user_id "
+            "ON password_reset_tokens (user_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_expires_at "
+            "ON password_reset_tokens (expires_at)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_used_at "
+            "ON password_reset_tokens (used_at)"
+        )
+
+
 def ensure_audit_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

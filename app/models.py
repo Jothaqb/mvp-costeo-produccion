@@ -205,6 +205,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    password_reset_tokens: Mapped[list["PasswordResetToken"]] = relationship(
+        "PasswordResetToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 class Role(Base):
@@ -314,6 +319,23 @@ class UserSession(Base):
     user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     user: Mapped["User"] = relationship("User", back_populates="sessions")
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    requested_ip: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    requested_user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    consumed_ip: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    consumed_user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="password_reset_tokens")
 
 
 class AuditLog(Base):

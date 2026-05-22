@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -31,6 +32,7 @@ from app.database import (
     ensure_inventory_adjustment_tables,
     ensure_inventory_ledger_tables,
     ensure_master_data_tables,
+    ensure_password_reset_tables,
     ensure_product_bom_tables,
     ensure_product_default_route_column,
     ensure_product_is_manufactured_column,
@@ -274,6 +276,16 @@ from app.services.audit_service import (
     snapshot_purchase_order_for_audit,
     summarize_historical_import_result,
 )
+from app.services.password_reset_service import (
+    PasswordResetEmailDeliveryError,
+    PasswordResetTokenExpiredError,
+    PasswordResetTokenInvalidError,
+    PasswordResetTokenUsedError,
+    complete_password_reset,
+    normalize_reset_email,
+    request_password_reset,
+    validate_password_reset_token,
+)
 from app.services.total_sales_service import (
     get_sales_by_order,
     get_sales_categories_pareto,
@@ -327,6 +339,7 @@ ensure_b2c_customer_tables()
 ensure_channel_master_tables()
 ensure_inventory_adjustment_tables()
 ensure_auth_tables()
+ensure_password_reset_tables()
 ensure_audit_tables()
 _auth_seed_db = SessionLocal()
 try:
@@ -344,6 +357,10 @@ BRANDING_SETTINGS_ID = 1
 ALLOWED_LOGO_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MASTER_DATA_DEACTIVATE_ROLE_CODES = {"admin", "general_approver"}
+AUTH_PUBLIC_EXTRA_PATHS = {
+    "/auth/forgot-password",
+    "/auth/reset-password",
+}
 templates.env.globals["can"] = can
 
 
@@ -371,6 +388,13 @@ def _set_auth_cookie(response: Response, token: str) -> None:
 
 def _clear_auth_cookie(response: Response) -> None:
     response.delete_cookie(key=SESSION_COOKIE_NAME, httponly=True, samesite="lax")
+
+
+def _app_base_url(request: Request) -> str:
+    configured = os.getenv("APP_BASE_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    return str(request.base_url).rstrip("/")
 
 
 def _csv_attachment_response(*, filename: str, headers: tuple[str, ...], example_row: tuple[str, ...]) -> Response:
@@ -644,7 +668,7 @@ async def authentication_middleware(request: Request, call_next):
     db = SessionLocal()
     try:
         _apply_branding_state(db, request)
-        if is_public_path(path) or path == "/branding/logo":
+        if is_public_path(path) or path in AUTH_PUBLIC_EXTRA_PATHS or path == "/branding/logo":
             db.rollback()
             return await call_next(request)
         current_auth = get_current_user_from_request(db, request)
@@ -773,6 +797,301 @@ async def logout_submit(request: Request, db: Session = Depends(get_db)) -> Resp
     response = _redirect("/login")
     _clear_auth_cookie(response)
     return response
+
+
+@app.get("/auth/forgot-password", response_class=HTMLResponse)
+def forgot_password_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="forgot_password.html",
+        context={
+            "title": "Forgot Password",
+            "error": None,
+            "success": None,
+            "email": "",
+        },
+    )
+
+
+@app.post("/auth/forgot-password")
+async def forgot_password_submit(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    form = await request.form()
+    email = str(form.get("email", ""))
+    if not email.strip():
+        return templates.TemplateResponse(
+            request=request,
+            name="forgot_password.html",
+            context={
+                "title": "Forgot Password",
+                "error": "Email is required.",
+                "success": None,
+                "email": email,
+            },
+            status_code=400,
+        )
+
+    normalized_email = normalize_reset_email(email)
+    try:
+        result = request_password_reset(
+            db,
+            email=email,
+            requested_ip=request.client.host if request.client else None,
+            requested_user_agent=request.headers.get("user-agent"),
+            app_base_url=_app_base_url(request),
+        )
+        db.commit()
+    except PasswordResetEmailDeliveryError:
+        db.rollback()
+        result = None
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_requested",
+            entity_type="user",
+            request=request,
+            username="anonymous",
+        )
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_request_ignored",
+            entity_type="user",
+            notes="email_delivery_failed",
+            request=request,
+            username="anonymous",
+        )
+    else:
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_requested",
+            entity_type="user",
+            entity_id=result.user.id if result.user is not None else None,
+            entity_label=result.user.username if result.user is not None else None,
+            request=request,
+            username="anonymous",
+        )
+        if result.email_sent:
+            safe_log_audit_event(
+                module="auth",
+                action="password_reset_email_sent",
+                entity_type="user",
+                entity_id=result.user.id if result.user is not None else None,
+                entity_label=result.user.username if result.user is not None else None,
+                request=request,
+                username="anonymous",
+            )
+        else:
+            safe_log_audit_event(
+                module="auth",
+                action="password_reset_request_ignored",
+                entity_type="user",
+                entity_id=result.user.id if result.user is not None else None,
+                entity_label=result.user.username if result.user is not None else None,
+                notes=result.outcome if result is not None else "ignored",
+                request=request,
+                username="anonymous",
+            )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="forgot_password.html",
+        context={
+            "title": "Forgot Password",
+            "error": None,
+            "success": "If an account exists for that email, a reset link has been sent.",
+            "email": normalized_email,
+        },
+    )
+
+
+@app.get("/auth/reset-password", response_class=HTMLResponse)
+def reset_password_page(
+    request: Request,
+    token: str = Query(default=""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    context = {
+        "title": "Reset Password",
+        "token": token,
+        "token_valid": False,
+        "error": None,
+        "success": None,
+    }
+    try:
+        validate_password_reset_token(db, token)
+        context["token_valid"] = True
+    except PasswordResetTokenExpiredError:
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_expired_token",
+            entity_type="password_reset_token",
+            request=request,
+            username="anonymous",
+        )
+        context["error"] = "This password reset link is invalid or has expired. Request a new one."
+    except PasswordResetTokenUsedError:
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_used_token",
+            entity_type="password_reset_token",
+            request=request,
+            username="anonymous",
+        )
+        context["error"] = "This password reset link is invalid or has expired. Request a new one."
+    except PasswordResetTokenInvalidError:
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_invalid_token",
+            entity_type="password_reset_token",
+            request=request,
+            username="anonymous",
+        )
+        context["error"] = "This password reset link is invalid or has expired. Request a new one."
+    return templates.TemplateResponse(
+        request=request,
+        name="reset_password.html",
+        context=context,
+    )
+
+
+@app.post("/auth/reset-password")
+async def reset_password_submit(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    form = await request.form()
+    token = str(form.get("token", ""))
+    new_password = str(form.get("new_password", ""))
+    confirm_new_password = str(form.get("confirm_new_password", ""))
+
+    try:
+        token_record = validate_password_reset_token(db, token)
+    except PasswordResetTokenExpiredError:
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_expired_token",
+            entity_type="password_reset_token",
+            request=request,
+            username="anonymous",
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="reset_password.html",
+            context={
+                "title": "Reset Password",
+                "token": token,
+                "token_valid": False,
+                "error": "This password reset link is invalid or has expired. Request a new one.",
+                "success": None,
+            },
+            status_code=400,
+        )
+    except PasswordResetTokenUsedError:
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_used_token",
+            entity_type="password_reset_token",
+            request=request,
+            username="anonymous",
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="reset_password.html",
+            context={
+                "title": "Reset Password",
+                "token": token,
+                "token_valid": False,
+                "error": "This password reset link is invalid or has expired. Request a new one.",
+                "success": None,
+            },
+            status_code=400,
+        )
+    except PasswordResetTokenInvalidError:
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_invalid_token",
+            entity_type="password_reset_token",
+            request=request,
+            username="anonymous",
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="reset_password.html",
+            context={
+                "title": "Reset Password",
+                "token": token,
+                "token_valid": False,
+                "error": "This password reset link is invalid or has expired. Request a new one.",
+                "success": None,
+            },
+            status_code=400,
+        )
+
+    user = token_record.user
+    error: str | None = None
+    if not new_password:
+        error = "New password is required."
+    elif not confirm_new_password:
+        error = "Password confirmation is required."
+    elif new_password != confirm_new_password:
+        error = "New password and confirmation do not match."
+    elif not new_password.strip():
+        error = "New password cannot be empty or only spaces."
+    elif len(new_password) < 10:
+        error = "New password must be at least 10 characters long."
+    elif user is not None and verify_password(new_password, user.password_hash):
+        error = "New password must be different from the current password."
+
+    if error is not None:
+        return templates.TemplateResponse(
+            request=request,
+            name="reset_password.html",
+            context={
+                "title": "Reset Password",
+                "token": token,
+                "token_valid": True,
+                "error": error,
+                "success": None,
+            },
+            status_code=400,
+        )
+
+    revoked_sessions_count = complete_password_reset(
+        db,
+        token_record,
+        new_password=new_password,
+        consumed_ip=request.client.host if request.client else None,
+        consumed_user_agent=request.headers.get("user-agent"),
+    )
+    db.commit()
+
+    if user is not None:
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_completed",
+            entity_type="user",
+            entity_id=user.id,
+            entity_label=user.username,
+            request=request,
+            username="anonymous",
+        )
+        safe_log_audit_event(
+            module="auth",
+            action="password_reset_sessions_revoked",
+            entity_type="user",
+            entity_id=user.id,
+            entity_label=user.username,
+            notes=f"revoked_sessions={revoked_sessions_count}",
+            request=request,
+            username="anonymous",
+        )
+
+    return templates.TemplateResponse(
+        request=request,
+        name="reset_password.html",
+        context={
+            "title": "Reset Password",
+            "token": "",
+            "token_valid": False,
+            "error": None,
+            "success": "Your password has been updated. You can now sign in with the new password.",
+        },
+    )
 
 
 @app.get("/auth/change-password", response_class=HTMLResponse)
