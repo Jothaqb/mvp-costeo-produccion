@@ -11,7 +11,7 @@
     <h1>Open DDMRP</h1>
     <p class="lead">Review replenishment signals from ERP inventory, direct customer demand, MRP demand, zones, MOQ, and saved planner quantities.</p>
     <p>Inventory source: ERP Kardex / InventoryBalance</p>
-    <p>Planning inventory comes from ERP Kardex / InventoryBalance. This refresh updates legacy/reference Product snapshot fields only.</p>
+    <p>Planning inventory and replenishment signals are managed internally by the ERP.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -81,32 +81,7 @@
     {% if filters.needs_action %}<input type="hidden" name="needs_action" value="true">{% endif %}
   </form>
 
-  <form id="refresh-inventory-cost-form" method="post" action="/planning/suggestions/refresh-inventory-cost">
-    <input type="hidden" name="product_type" value="{{ product_type }}">
-    <input type="hidden" name="sku" value="{{ filters.sku }}">
-    <input type="hidden" name="route_id" value="{{ filters.route_id }}">
-    <input type="hidden" name="supplier" value="{{ filters.supplier }}">
-    <input type="hidden" name="status" value="{{ filters.status }}">
-    {% if filters.needs_action %}<input type="hidden" name="needs_action" value="true">{% endif %}
-  </form>
-
-  <section>
-    <dl class="summary">
-      <div>
-        <dt>Last Loyverse legacy inventory refresh</dt>
-        <dd>{{ view_sync_summary.inventory_last_sync }}</dd>
-      </div>
-      <div>
-        <dt>Last Loyverse standard cost refresh</dt>
-        <dd>{{ view_sync_summary.cost_last_sync }}</dd>
-      </div>
-    </dl>
-  </section>
-
   <section class="actions">
-    {% if can_refresh_params %}
-      <button type="submit" form="refresh-inventory-cost-form">Refresh Loyverse legacy inventory and standard cost</button>
-    {% endif %}
     {% if can_edit_zones %}
       <button type="submit" form="planner-quantity-form">Save planner quantities</button>
       <button type="submit" form="clear-planner-quantities-form" class="secondary">Clear planner quantities</button>
