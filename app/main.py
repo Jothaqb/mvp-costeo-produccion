@@ -257,6 +257,21 @@ from app.services.auth_service import (
     revoke_session,
     verify_password,
 )
+from app.services.admin_user_service import (
+    FUNCTIONAL_ROLE_CODES,
+    AdminUserConfigurationError,
+    AdminUserNotFoundError,
+    AdminUserValidationError,
+    activate_admin_user,
+    create_admin_user,
+    deactivate_admin_user,
+    get_admin_user_for_edit,
+    get_user_functional_role_code,
+    list_admin_users,
+    list_assignable_roles,
+    send_password_setup_link_for_user,
+    update_admin_user,
+)
 from app.services.audit_service import (
     diff_audit_snapshot_rows,
     diff_audit_snapshots,
@@ -278,6 +293,7 @@ from app.services.audit_service import (
 )
 from app.services.password_reset_service import (
     PasswordResetEmailDeliveryError,
+    PasswordResetIssueResult,
     PasswordResetTokenExpiredError,
     PasswordResetTokenInvalidError,
     PasswordResetTokenUsedError,
@@ -397,6 +413,18 @@ def _app_base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
+def _safe_internal_redirect_target(value: str | None, fallback: str) -> str:
+    target = (value or "").strip()
+    if target.startswith("/") and not target.startswith("//"):
+        return target
+    return fallback
+
+
+def _append_query_message(url: str, *, key: str, value: str) -> str:
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}{key}={quote(value)}"
+
+
 def _csv_attachment_response(*, filename: str, headers: tuple[str, ...], example_row: tuple[str, ...]) -> Response:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -476,6 +504,79 @@ def _build_audit_log_list_url(filters: dict[str, str], *, page: int, page_size: 
         if value:
             query_params[key] = value
     return f"/admin/audit-logs?{urlencode(query_params)}"
+
+
+def _admin_user_snapshot(user: User) -> dict[str, object]:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "full_name": user.full_name,
+        "email": user.email,
+        "is_active": user.is_active,
+        "must_change_password": user.must_change_password,
+        "role_code": get_user_functional_role_code(user),
+    }
+
+
+def _admin_role_label(role_code: str | None) -> str:
+    labels = {
+        "admin": "Admin",
+        "general_operator": "General Operator",
+        "general_approver": "General Approver",
+    }
+    return labels.get(role_code or "", role_code or "Unassigned")
+
+
+def _admin_user_rows(users: list[User], *, current_user_id: int | None) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for user in users:
+        role_code = get_user_functional_role_code(user)
+        rows.append(
+            {
+                "id": user.id,
+                "username": user.username,
+                "full_name": user.full_name,
+                "email": user.email,
+                "is_active": user.is_active,
+                "must_change_password": user.must_change_password,
+                "last_login_at": user.last_login_at,
+                "role_code": role_code,
+                "role_name": _admin_role_label(role_code),
+                "is_current_user": current_user_id == user.id,
+            }
+        )
+    return rows
+
+
+def _admin_user_form_data(
+    *,
+    username: str = "",
+    full_name: str = "",
+    email: str = "",
+    is_active: bool = True,
+    role_code: str = "",
+    original_role_code: str = "",
+) -> dict[str, object]:
+    return {
+        "username": username,
+        "full_name": full_name,
+        "email": email,
+        "is_active": is_active,
+        "role_code": role_code,
+        "original_role_code": original_role_code,
+    }
+
+
+def _admin_user_setup_message(result: PasswordResetIssueResult, *, created: bool) -> str:
+    if result.outcome == "email_sent":
+        return "User created and password setup email sent." if created else "Password setup email sent."
+    if result.outcome == "emails_disabled":
+        return (
+            "User created, setup email not sent because auth emails are disabled."
+            if created
+            else "Password setup email not sent because auth emails are disabled."
+        )
+    return "User created, but setup email could not be sent." if created else "Password setup email could not be sent."
 
 
 def _normalize_sales_reporting_filters(
@@ -1172,6 +1273,427 @@ async def change_password_submit(request: Request, db: Session = Depends(get_db)
             "success": "Password updated successfully.",
         },
     )
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+def admin_users_list_page(
+    request: Request,
+    message: str = Query(""),
+    error: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    current_user = require_permission(request, "admin.users.manage")
+    users = list_admin_users(db)
+    config_error = None
+    try:
+        list_assignable_roles(db)
+    except AdminUserConfigurationError as exc:
+        config_error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_users_list.html",
+        context={
+            "title": "Admin / Users",
+            "users": _admin_user_rows(users, current_user_id=current_user.id),
+            "message": message.strip() or None,
+            "error": error.strip() or config_error,
+        },
+    )
+
+
+@app.get("/admin/users/new", response_class=HTMLResponse)
+def admin_users_new_page(
+    request: Request,
+    error: str = Query(""),
+    message: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    require_permission(request, "admin.users.manage")
+    role_options: list[Role] = []
+    config_error = None
+    try:
+        role_options = list_assignable_roles(db)
+    except AdminUserConfigurationError as exc:
+        config_error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_user_form.html",
+        context={
+            "title": "New User",
+            "error": error.strip() or config_error,
+            "message": message.strip() or None,
+            "form_action": "/admin/users",
+            "form_data": _admin_user_form_data(is_active=True),
+            "role_options": role_options,
+            "user": None,
+        },
+    )
+
+
+@app.post("/admin/users")
+async def admin_users_create(request: Request, db: Session = Depends(get_db)):
+    current_user = require_permission(request, "admin.users.manage")
+    form = await request.form()
+    form_data = _admin_user_form_data(
+        username=str(form.get("username", "")).strip(),
+        full_name=str(form.get("full_name", "")).strip(),
+        email=str(form.get("email", "")).strip(),
+        is_active=str(form.get("is_active", "")).strip().lower() == "true",
+        role_code=str(form.get("role_code", "")).strip(),
+    )
+    try:
+        role_options = list_assignable_roles(db)
+        user, setup_result = create_admin_user(
+            db,
+            username=str(form_data["username"]),
+            full_name=str(form_data["full_name"]),
+            email=str(form_data["email"]),
+            is_active=bool(form_data["is_active"]),
+            role_code=str(form_data["role_code"]),
+            requested_ip=request.client.host if request.client else None,
+            requested_user_agent=request.headers.get("user-agent"),
+            app_base_url=_app_base_url(request),
+        )
+        db.commit()
+    except AdminUserConfigurationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_user_form.html",
+            context={
+                "title": "New User",
+                "error": str(exc),
+                "message": None,
+                "form_action": "/admin/users",
+                "form_data": form_data,
+                "role_options": [],
+                "user": None,
+            },
+            status_code=500,
+        )
+    except AdminUserValidationError as exc:
+        db.rollback()
+        role_options = []
+        try:
+            role_options = list_assignable_roles(db)
+        except AdminUserConfigurationError:
+            role_options = []
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_user_form.html",
+            context={
+                "title": "New User",
+                "error": str(exc),
+                "message": None,
+                "form_action": "/admin/users",
+                "form_data": form_data,
+                "role_options": role_options,
+                "user": None,
+            },
+            status_code=400,
+        )
+
+    safe_log_audit_event(
+        module="admin",
+        action="user_created",
+        entity_type="user",
+        entity_id=user.id,
+        entity_label=user.username,
+        new_values=_admin_user_snapshot(user),
+        notes=f"setup_outcome={setup_result.outcome}",
+        request=request,
+        user=current_user,
+    )
+    if setup_result.email_sent:
+        safe_log_audit_event(
+            module="admin",
+            action="user_password_setup_email_sent",
+            entity_type="user",
+            entity_id=user.id,
+            entity_label=user.username,
+            request=request,
+            user=current_user,
+        )
+    elif setup_result.outcome == "email_delivery_failed":
+        safe_log_audit_event(
+            module="admin",
+            action="user_password_setup_email_failed",
+            entity_type="user",
+            entity_id=user.id,
+            entity_label=user.username,
+            request=request,
+            user=current_user,
+        )
+
+    return _redirect(_append_query_message("/admin/users", key="message", value=_admin_user_setup_message(setup_result, created=True)))
+
+
+@app.get("/admin/users/{user_id}/edit", response_class=HTMLResponse)
+def admin_users_edit_page(
+    request: Request,
+    user_id: int,
+    message: str = Query(""),
+    error: str = Query(""),
+    db: Session = Depends(get_db),
+):
+    current_user = require_permission(request, "admin.users.manage")
+    try:
+        user = get_admin_user_for_edit(db, user_id)
+    except AdminUserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    role_options: list[Role] = []
+    config_error = None
+    try:
+        role_options = list_assignable_roles(db)
+    except AdminUserConfigurationError as exc:
+        config_error = str(exc)
+
+    role_code = get_user_functional_role_code(user) or ""
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_user_form.html",
+        context={
+            "title": f"Edit User / {user.username}",
+            "error": error.strip() or config_error,
+            "message": message.strip() or None,
+            "form_action": f"/admin/users/{user.id}/edit",
+            "form_data": _admin_user_form_data(
+                username=user.username,
+                full_name=user.full_name,
+                email=user.email or "",
+                is_active=user.is_active,
+                role_code=role_code,
+                original_role_code=role_code,
+            ),
+            "role_options": role_options,
+            "user": user,
+            "is_current_user": current_user.id == user.id,
+        },
+    )
+
+
+@app.post("/admin/users/{user_id}/edit")
+async def admin_users_edit_submit(request: Request, user_id: int, db: Session = Depends(get_db)):
+    current_user = require_permission(request, "admin.users.manage")
+    try:
+        user = get_admin_user_for_edit(db, user_id)
+    except AdminUserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    before_snapshot = _admin_user_snapshot(user)
+    form = await request.form()
+    form_data = _admin_user_form_data(
+        username=user.username,
+        full_name=str(form.get("full_name", "")).strip(),
+        email=str(form.get("email", "")).strip(),
+        is_active=str(form.get("is_active", "")).strip().lower() == "true",
+        role_code=str(form.get("role_code", "")).strip(),
+        original_role_code=get_user_functional_role_code(user) or "",
+    )
+
+    try:
+        role_options = list_assignable_roles(db)
+        update_result = update_admin_user(
+            db,
+            user=user,
+            acting_user=current_user,
+            full_name=str(form_data["full_name"]),
+            email=str(form_data["email"]),
+            is_active=bool(form_data["is_active"]),
+            role_code=str(form_data["role_code"]),
+        )
+        db.commit()
+    except AdminUserConfigurationError as exc:
+        db.rollback()
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_user_form.html",
+            context={
+                "title": f"Edit User / {user.username}",
+                "error": str(exc),
+                "message": None,
+                "form_action": f"/admin/users/{user.id}/edit",
+                "form_data": form_data,
+                "role_options": [],
+                "user": user,
+                "is_current_user": current_user.id == user.id,
+            },
+            status_code=500,
+        )
+    except AdminUserValidationError as exc:
+        db.rollback()
+        role_options = []
+        try:
+            role_options = list_assignable_roles(db)
+        except AdminUserConfigurationError:
+            role_options = []
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_user_form.html",
+            context={
+                "title": f"Edit User / {user.username}",
+                "error": str(exc),
+                "message": None,
+                "form_action": f"/admin/users/{user.id}/edit",
+                "form_data": form_data,
+                "role_options": role_options,
+                "user": user,
+                "is_current_user": current_user.id == user.id,
+            },
+            status_code=400,
+        )
+
+    after_snapshot = _admin_user_snapshot(user)
+    safe_log_audit_event(
+        module="admin",
+        action="user_updated",
+        entity_type="user",
+        entity_id=user.id,
+        entity_label=user.username,
+        old_values=before_snapshot,
+        new_values=after_snapshot,
+        notes=(
+            f"role:{update_result.previous_role_code}->{update_result.current_role_code}; "
+            f"revoked_sessions={update_result.revoked_session_count}"
+        ),
+        request=request,
+        user=current_user,
+    )
+    success_message = "User updated successfully."
+    if update_result.revoked_session_count:
+        success_message = (
+            f"User updated successfully. Revoked {update_result.revoked_session_count} active session(s)."
+        )
+    return _redirect(
+        _append_query_message(
+            f"/admin/users/{user.id}/edit",
+            key="message",
+            value=success_message,
+        )
+    )
+
+
+@app.post("/admin/users/{user_id}/send-password-setup")
+async def admin_users_send_password_setup(
+    request: Request,
+    user_id: int,
+    db: Session = Depends(get_db),
+):
+    current_user = require_permission(request, "admin.users.manage")
+    redirect_to = "/admin/users"
+    try:
+        user = get_admin_user_for_edit(db, user_id)
+    except AdminUserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    form = await request.form()
+    redirect_to = _safe_internal_redirect_target(str(form.get("redirect_to", "")), f"/admin/users/{user.id}/edit")
+
+    try:
+        setup_result = send_password_setup_link_for_user(
+            db,
+            user,
+            requested_ip=request.client.host if request.client else None,
+            requested_user_agent=request.headers.get("user-agent"),
+            app_base_url=_app_base_url(request),
+        )
+        db.commit()
+    except AdminUserValidationError as exc:
+        db.rollback()
+        return _redirect(_append_query_message(redirect_to, key="error", value=str(exc)))
+    except AdminUserConfigurationError as exc:
+        db.rollback()
+        return _redirect(_append_query_message(redirect_to, key="error", value=str(exc)))
+
+    action = "user_password_setup_email_sent" if setup_result.email_sent else "user_password_setup_email_failed"
+    if setup_result.outcome == "emails_disabled":
+        action = "user_password_setup_email_skipped"
+    safe_log_audit_event(
+        module="admin",
+        action=action,
+        entity_type="user",
+        entity_id=user.id,
+        entity_label=user.username,
+        notes=f"setup_outcome={setup_result.outcome}",
+        request=request,
+        user=current_user,
+    )
+    return _redirect(
+        _append_query_message(
+            redirect_to,
+            key="message",
+            value=_admin_user_setup_message(setup_result, created=False),
+        )
+    )
+
+
+@app.post("/admin/users/{user_id}/deactivate")
+async def admin_users_deactivate(request: Request, user_id: int, db: Session = Depends(get_db)):
+    current_user = require_permission(request, "admin.users.manage")
+    try:
+        user = get_admin_user_for_edit(db, user_id)
+    except AdminUserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    before_snapshot = _admin_user_snapshot(user)
+    form = await request.form()
+    redirect_to = _safe_internal_redirect_target(str(form.get("redirect_to", "")), "/admin/users")
+
+    try:
+        revoked_session_count = deactivate_admin_user(db, user, current_user)
+        db.commit()
+    except AdminUserValidationError as exc:
+        db.rollback()
+        return _redirect(_append_query_message(redirect_to, key="error", value=str(exc)))
+
+    safe_log_audit_event(
+        module="admin",
+        action="user_deactivated",
+        entity_type="user",
+        entity_id=user.id,
+        entity_label=user.username,
+        old_values=before_snapshot,
+        new_values=_admin_user_snapshot(user),
+        notes=f"revoked_sessions={revoked_session_count}",
+        request=request,
+        user=current_user,
+    )
+    message = "User deactivated successfully."
+    if revoked_session_count:
+        message = f"User deactivated successfully. Revoked {revoked_session_count} active session(s)."
+    return _redirect(_append_query_message(redirect_to, key="message", value=message))
+
+
+@app.post("/admin/users/{user_id}/activate")
+async def admin_users_activate(request: Request, user_id: int, db: Session = Depends(get_db)):
+    current_user = require_permission(request, "admin.users.manage")
+    try:
+        user = get_admin_user_for_edit(db, user_id)
+    except AdminUserNotFoundError:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    before_snapshot = _admin_user_snapshot(user)
+    form = await request.form()
+    redirect_to = _safe_internal_redirect_target(str(form.get("redirect_to", "")), "/admin/users")
+    try:
+        activate_admin_user(db, user)
+        db.commit()
+    except AdminUserValidationError as exc:
+        db.rollback()
+        return _redirect(_append_query_message(redirect_to, key="error", value=str(exc)))
+    safe_log_audit_event(
+        module="admin",
+        action="user_activated",
+        entity_type="user",
+        entity_id=user.id,
+        entity_label=user.username,
+        old_values=before_snapshot,
+        new_values=_admin_user_snapshot(user),
+        request=request,
+        user=current_user,
+    )
+    return _redirect(_append_query_message(redirect_to, key="message", value="User activated successfully."))
 
 
 @app.get("/admin/branding", response_class=HTMLResponse)

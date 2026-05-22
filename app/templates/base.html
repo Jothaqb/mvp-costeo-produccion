@@ -96,11 +96,17 @@
                   <span class="nav-user-name">{{ current_user.full_name }}</span>
                 {% endif %}
               </span>
-              {% if can(request, "admin.users.manage") %}
-                <a class="nav-link" href="/admin/branding">Branding</a>
-              {% endif %}
-              {% if can(request, "audit.view") %}
-                <a class="nav-link" href="/admin/audit-logs">Audit Logs</a>
+              {% if can(request, "admin.users.manage") or can(request, "audit.view") %}
+                <span class="nav-context">Admin</span>
+                {% if can(request, "admin.users.manage") %}
+                  <a class="nav-link" href="/admin/users">Users</a>
+                {% endif %}
+                {% if can(request, "audit.view") %}
+                  <a class="nav-link" href="/admin/audit-logs">Audit Logs</a>
+                {% endif %}
+                {% if can(request, "admin.users.manage") %}
+                  <a class="nav-link" href="/admin/branding">Branding</a>
+                {% endif %}
               {% endif %}
               <a class="nav-link" href="/auth/change-password">Change password</a>
               <form class="nav-inline-form" method="post" action="/logout">

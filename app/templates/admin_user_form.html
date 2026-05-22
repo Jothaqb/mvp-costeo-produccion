@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Admin</p>
+    <h1>{{ title }}</h1>
+    <p class="lead">Use one functional role per user: admin, general operator, or general approver.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if message %}<p class="success">{{ message }}</p>{% endif %}
+
+  {% if user %}
+    <form
+      id="toggle-user-active-form"
+      method="post"
+      action="/admin/users/{{ user.id }}/{{ 'deactivate' if user.is_active else 'activate' }}"
+      {% if user.is_active %}onsubmit="return confirm('Are you sure you want to deactivate this user?');"{% endif %}
+    >
+      <input type="hidden" name="redirect_to" value="/admin/users/{{ user.id }}/edit">
+    </form>
+    <form method="post" id="send-password-setup-form" action="/admin/users/{{ user.id }}/send-password-setup">
+      <input type="hidden" name="redirect_to" value="/admin/users/{{ user.id }}/edit">
+    </form>
+  {% endif %}
+
+  <section>
+    <form method="post" action="{{ form_action }}" onsubmit="return confirmAdminRoleAssignment();">
+      <label for="username">Username</label>
+      <input
+        id="username"
+        name="username"
+        value="{{ form_data.username }}"
+        {% if user %}readonly{% else %}required{% endif %}
+      >
+      {% if user %}
+        <p class="muted-inline">Username cannot be changed from this screen.</p>
+      {% endif %}
+
+      <label for="full_name">Full name</label>
+      <input id="full_name" name="full_name" value="{{ form_data.full_name }}" required>
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" value="{{ form_data.email }}" required>
+
+      <label for="role_code">Functional role</label>
+      <select id="role_code" name="role_code" required>
+        <option value="">Select a role</option>
+        {% for role in role_options %}
+          <option value="{{ role.code }}" {% if form_data.role_code == role.code %}selected{% endif %}>{{ role.name }}</option>
+        {% endfor %}
+      </select>
+      <p class="muted-inline">This screen keeps exactly one functional role per user.</p>
+
+      <label class="checkbox-label">
+        <input type="checkbox" name="is_active" value="true" {% if form_data.is_active %}checked{% endif %}>
+        Active
+      </label>
+
+      {% if form_data.role_code == "admin" or form_data.original_role_code == "admin" %}
+        <p class="muted-inline">Admin users can manage ERP users and other administrative setup flows.</p>
+      {% endif %}
+
+      <input type="hidden" id="original_role_code" value="{{ form_data.original_role_code }}">
+
+      <div class="actions">
+        <button type="submit">Save user</button>
+        {% if user %}
+          <button type="submit" form="send-password-setup-form">Resend setup link</button>
+          {% if user.is_active and is_current_user %}
+            <span class="muted-inline">You cannot deactivate your own user account.</span>
+          {% else %}
+            <button type="submit" form="toggle-user-active-form">{{ "Deactivate user" if user.is_active else "Activate user" }}</button>
+          {% endif %}
+        {% endif %}
+        <a href="/admin/users">Cancel</a>
+      </div>
+    </form>
+  </section>
+
+  <script>
+    function confirmAdminRoleAssignment() {
+      const roleSelect = document.getElementById("role_code");
+      const originalRoleInput = document.getElementById("original_role_code");
+      if (!roleSelect || !originalRoleInput) {
+        return true;
+      }
+
+      const selectedRole = roleSelect.value;
+      const originalRole = originalRoleInput.value;
+      if (selectedRole === "admin" && originalRole !== "admin") {
+        return window.confirm("Are you sure you want to assign admin access to this user?");
+      }
+      return true;
+    }
+  </script>
+{% endblock %}

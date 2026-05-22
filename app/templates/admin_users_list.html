@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Admin</p>
+    <h1>Users</h1>
+    <p class="lead">Create, activate, deactivate, and maintain ERP users without leaving the admin area.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if message %}<p class="success">{{ message }}</p>{% endif %}
+
+  <section class="actions">
+    <a class="button" href="/admin/users/new">New user</a>
+  </section>
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Full name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Active</th>
+          <th>Password setup</th>
+          <th>Last login</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+          <tr>
+            <td>{{ user.username }}</td>
+            <td>{{ user.full_name }}</td>
+            <td>{{ user.email or "" }}</td>
+            <td>{{ user.role_name }}</td>
+            <td>{{ "Yes" if user.is_active else "No" }}</td>
+            <td>{{ "Pending" if user.must_change_password else "Completed" }}</td>
+            <td>{{ user.last_login_at or "" }}</td>
+            <td>
+              <div class="actions">
+                <a class="button secondary" href="/admin/users/{{ user.id }}/edit">Edit</a>
+                <form class="actions-form" method="post" action="/admin/users/{{ user.id }}/send-password-setup">
+                  <input type="hidden" name="redirect_to" value="/admin/users">
+                  <button type="submit">Resend setup link</button>
+                </form>
+                {% if user.is_active %}
+                  {% if user.is_current_user %}
+                    <span class="muted-inline">Current user</span>
+                  {% else %}
+                    <form
+                      class="actions-form"
+                      method="post"
+                      action="/admin/users/{{ user.id }}/deactivate"
+                      onsubmit="return confirm('Are you sure you want to deactivate this user?');"
+                    >
+                      <input type="hidden" name="redirect_to" value="/admin/users">
+                      <button type="submit">Deactivate</button>
+                    </form>
+                  {% endif %}
+                {% else %}
+                  <form class="actions-form" method="post" action="/admin/users/{{ user.id }}/activate">
+                    <input type="hidden" name="redirect_to" value="/admin/users">
+                    <button type="submit">Activate</button>
+                  </form>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="8">No users found.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}

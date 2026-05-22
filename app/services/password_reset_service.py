@@ -38,6 +38,12 @@ class PasswordResetRequestResult:
     user: User | None
 
 
+@dataclass(frozen=True)
+class PasswordResetIssueResult:
+    outcome: str
+    email_sent: bool
+
+
 def normalize_reset_email(email: str) -> str:
     return (email or "").strip().lower()
 
@@ -71,42 +77,35 @@ def request_password_reset(
     if not user.email or not _email_appears_valid(user.email):
         return PasswordResetRequestResult(outcome="stored_email_invalid", email_sent=False, user=user)
 
-    raw_token = secrets.token_urlsafe(32)
-    now = datetime.utcnow()
-    token_record = PasswordResetToken(
-        user_id=user.id,
-        token_hash=_hash_reset_token(raw_token),
-        created_at=now,
-        expires_at=now + timedelta(minutes=password_reset_token_ttl_minutes()),
-        used_at=None,
-        requested_ip=(requested_ip or "")[:255] or None,
-        requested_user_agent=(requested_user_agent or "")[:500] or None,
-        consumed_ip=None,
-        consumed_user_agent=None,
+    issue_result = _issue_password_reset_token_for_user(
+        db,
+        user=user,
+        requested_ip=requested_ip,
+        requested_user_agent=requested_user_agent,
+        app_base_url=app_base_url,
+        raise_on_delivery_error=True,
     )
+    return PasswordResetRequestResult(outcome=issue_result.outcome, email_sent=issue_result.email_sent, user=user)
 
-    if auth_emails_enabled():
-        try:
-            send_password_reset_email(
-                to_email=user.email,
-                full_name=user.full_name,
-                reset_link=build_password_reset_link(app_base_url, raw_token),
-            )
-        except Exception as exc:
-            raise PasswordResetEmailDeliveryError(str(exc)) from exc
-        email_sent = True
-        outcome = "email_sent"
-    else:
-        reset_link = build_password_reset_link(app_base_url, raw_token)
-        if _should_print_local_reset_link():
-            print(f"[auth][local-only] password reset link for {user.email}: {reset_link}")
-        email_sent = False
-        outcome = "emails_disabled"
 
-    _invalidate_pending_password_reset_tokens(db, user.id, used_at=now)
-    db.add(token_record)
-    db.flush()
-    return PasswordResetRequestResult(outcome=outcome, email_sent=email_sent, user=user)
+def issue_password_setup_for_user(
+    db: Session,
+    *,
+    user: User,
+    requested_ip: str | None,
+    requested_user_agent: str | None,
+    app_base_url: str,
+) -> PasswordResetIssueResult:
+    if not user.email or not _email_appears_valid(user.email):
+        raise ValueError("A valid email is required for password setup.")
+    return _issue_password_reset_token_for_user(
+        db,
+        user=user,
+        requested_ip=requested_ip,
+        requested_user_agent=requested_user_agent,
+        app_base_url=app_base_url,
+        raise_on_delivery_error=False,
+    )
 
 
 def validate_password_reset_token(db: Session, raw_token: str) -> PasswordResetToken:
@@ -203,6 +202,52 @@ def _invalidate_pending_password_reset_tokens(db: Session, user_id: int, *, used
 
 def _hash_reset_token(raw_token: str) -> str:
     return hashlib.sha256((raw_token or "").encode("utf-8")).hexdigest()
+
+
+def _issue_password_reset_token_for_user(
+    db: Session,
+    *,
+    user: User,
+    requested_ip: str | None,
+    requested_user_agent: str | None,
+    app_base_url: str,
+    raise_on_delivery_error: bool,
+) -> PasswordResetIssueResult:
+    raw_token = secrets.token_urlsafe(32)
+    now = datetime.utcnow()
+    token_record = PasswordResetToken(
+        user_id=user.id,
+        token_hash=_hash_reset_token(raw_token),
+        created_at=now,
+        expires_at=now + timedelta(minutes=password_reset_token_ttl_minutes()),
+        used_at=None,
+        requested_ip=(requested_ip or "")[:255] or None,
+        requested_user_agent=(requested_user_agent or "")[:500] or None,
+        consumed_ip=None,
+        consumed_user_agent=None,
+    )
+    reset_link = build_password_reset_link(app_base_url, raw_token)
+
+    _invalidate_pending_password_reset_tokens(db, user.id, used_at=now)
+    db.add(token_record)
+    db.flush()
+
+    if auth_emails_enabled():
+        try:
+            send_password_reset_email(
+                to_email=user.email or "",
+                full_name=user.full_name,
+                reset_link=reset_link,
+            )
+        except Exception as exc:
+            if raise_on_delivery_error:
+                raise PasswordResetEmailDeliveryError(str(exc)) from exc
+            return PasswordResetIssueResult(outcome="email_delivery_failed", email_sent=False)
+        return PasswordResetIssueResult(outcome="email_sent", email_sent=True)
+
+    if _should_print_local_reset_link():
+        print(f"[auth][local-only] password reset link for {user.email}: {reset_link}")
+    return PasswordResetIssueResult(outcome="emails_disabled", email_sent=False)
 
 
 def _email_appears_valid(email: str) -> bool:
