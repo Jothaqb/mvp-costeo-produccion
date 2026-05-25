@@ -303,6 +303,30 @@ def delete_open_production_order(db: Session, order_id: int) -> None:
     db.commit()
 
 
+def refresh_order_bom_from_master(db: Session, order_id: int) -> ProductionOrder:
+    order = get_order(db, order_id)
+    if order.status != ProductionOrderStatus.DRAFT.value:
+        raise ProductionOrderValidationError("Only draft production orders can refresh BOM from master.")
+
+    bom_header = _get_active_product_bom_header_for_refresh(db, order.product_id)
+    if bom_header is None:
+        raise ProductionOrderValidationError("Production order product has no active Product Master BOM to refresh from.")
+    if not bom_header.lines:
+        raise ProductionOrderValidationError("Production order product master BOM has no lines to refresh from.")
+
+    for material in list(order.materials):
+        db.delete(material)
+    db.flush()
+    db.expire(order, ["materials"])
+
+    _copy_product_bom(db, order, bom_header)
+    _validate_order_bom_total_limit(order)
+    _recalculate_order_material_snapshot(order)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
 def start_order(db: Session, order_id: int) -> ProductionOrder:
     order = get_order(db, order_id)
     if order.status != ProductionOrderStatus.DRAFT.value:
@@ -705,6 +729,21 @@ def _get_product_bom_header(db: Session, product_id: int) -> ProductBomHeader | 
     if header is None or not header.lines:
         return None
     return header
+
+
+def _get_active_product_bom_header_for_refresh(db: Session, product_id: int) -> ProductBomHeader | None:
+    return (
+        db.query(ProductBomHeader)
+        .options(
+            joinedload(ProductBomHeader.lines).joinedload(ProductBomLine.component_product),
+            joinedload(ProductBomHeader.lines).joinedload(ProductBomLine.source_imported_bom_line),
+        )
+        .filter(
+            ProductBomHeader.product_id == product_id,
+            ProductBomHeader.active.is_(True),
+        )
+        .one_or_none()
+    )
 
 
 def _copy_bom(db: Session, order: ProductionOrder, bom_header: ImportedBomHeader) -> None:

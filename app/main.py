@@ -325,6 +325,7 @@ from app.services.production_order_service import (
     create_production_order,
     delete_open_production_order,
     parse_optional_decimal,
+    refresh_order_bom_from_master,
     start_order,
     update_activity_capture,
     update_order_bom,
@@ -2525,6 +2526,7 @@ def _production_order_detail_response(
     request: Request,
     db: Session,
     error: str | None = None,
+    message: str | None = None,
 ) -> HTMLResponse:
     order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
     materials = (
@@ -2555,6 +2557,7 @@ def _production_order_detail_response(
         if activity.activity_code_snapshot in activity_catalog_by_code
     }
     can_edit_bom = order.status == "draft" and can(request, "production_order.edit")
+    can_refresh_bom_from_master = order.status == "draft" and can(request, "production_order.edit")
     can_delete_draft = order.status == "draft" and can(request, "production_order.edit")
     can_delete_in_progress = (
         order.status == "in_progress"
@@ -2577,8 +2580,10 @@ def _production_order_detail_response(
             "activity_permissions": activity_permissions,
             "inventory_readiness": build_production_inventory_readiness(db, order_id),
             "error": error,
+            "message": message,
             "is_closed": order.status == "closed",
             "can_edit_bom": can_edit_bom,
+            "can_refresh_bom_from_master": can_refresh_bom_from_master,
             "can_delete_order": can_delete_draft or can_delete_in_progress,
             "delete_confirm_message": delete_confirm_message,
         },
@@ -7906,9 +7911,14 @@ def create_production_order_route(
 
 
 @app.get("/production-orders/{order_id}", response_class=HTMLResponse)
-def production_order_detail(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+def production_order_detail(
+    order_id: int,
+    request: Request,
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
     require_permission(request, "production_order.view")
-    return _production_order_detail_response(order_id, request, db)
+    return _production_order_detail_response(order_id, request, db, message=message)
 
 
 @app.get("/production-orders/{order_id}/loyverse-inventory-preview", response_class=HTMLResponse)
@@ -8182,6 +8192,52 @@ async def update_production_order_bom(
                 "error": str(exc),
             },
         )
+
+
+@app.post("/production-orders/{order_id}/bom/refresh-from-master")
+def refresh_production_order_bom_from_master_route(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "production_order.edit")
+    order_before = (
+        db.query(ProductionOrder)
+        .options(joinedload(ProductionOrder.materials))
+        .filter(ProductionOrder.id == order_id)
+        .one()
+    )
+    if order_before.status != "draft":
+        return _production_order_detail_response(
+            order_id,
+            request,
+            db,
+            "Only draft production orders can refresh BOM from master.",
+        )
+
+    old_snapshot = snapshot_production_order_bom_for_audit(order_before)
+    try:
+        order_after = refresh_order_bom_from_master(db, order_id)
+        new_snapshot = snapshot_production_order_bom_for_audit(order_after)
+        if old_snapshot != new_snapshot:
+            safe_log_audit_event(
+                module="production",
+                action="production_order_bom_refreshed_from_master",
+                entity_type="production_order",
+                entity_id=order_after.id,
+                entity_label=order_after.internal_order_number,
+                old_values=old_snapshot,
+                new_values=new_snapshot,
+                notes="Refreshed from current product master BOM.",
+                request=request,
+            )
+        return _redirect(
+            f"/production-orders/{order_id}?message="
+            f"{quote('Production order BOM was refreshed from the current Product Master BOM.')}"
+        )
+    except ProductionOrderValidationError as exc:
+        db.rollback()
+        return _production_order_detail_response(order_id, request, db, str(exc))
 
 
 @app.post("/production-orders/{order_id}/delete")

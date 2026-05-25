@@ -5,6 +5,7 @@
   <section>
     <h1>{{ order.internal_order_number }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
     <dl class="summary">
       <div>
         <dt>Status</dt>
@@ -85,6 +86,11 @@
         <a role="button" href="/production-orders/{{ order.id }}/print" target="_blank" aria-label="Print worksheet" title="Print worksheet">&#128424;</a>
         {% if can_edit_bom %}
           <a role="button" href="/production-orders/{{ order.id }}/bom/edit">Edit BOM</a>
+        {% endif %}
+        {% if can_refresh_bom_from_master %}
+          <form method="post" action="/production-orders/{{ order.id }}/bom/refresh-from-master" onsubmit="return confirm('This will replace the current material snapshot with the current Product Master BOM. Continue?');">
+            <button type="submit">Refresh BOM from master</button>
+          </form>
         {% endif %}
         {% if order.status == "draft" and can(request, "production_order.edit") %}
           <form method="post" action="/production-orders/{{ order.id }}/start">
