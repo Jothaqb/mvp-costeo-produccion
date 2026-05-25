@@ -323,6 +323,7 @@ from app.services.production_order_service import (
     ProductionOrderValidationError,
     close_order_with_inventory_posting,
     create_production_order,
+    delete_open_production_order,
     parse_optional_decimal,
     start_order,
     update_activity_capture,
@@ -373,6 +374,7 @@ BRANDING_SETTINGS_ID = 1
 ALLOWED_LOGO_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MASTER_DATA_DEACTIVATE_ROLE_CODES = {"admin", "general_approver"}
+PRODUCTION_ORDER_IN_PROGRESS_DELETE_ROLE_CODES = {"admin", "general_approver"}
 AUTH_PUBLIC_EXTRA_PATHS = {
     "/auth/forgot-password",
     "/auth/reset-password",
@@ -2139,6 +2141,18 @@ def _require_master_data_deactivate_role(request: Request):
     return current_user
 
 
+def _can_delete_in_progress_production_order(request: Request) -> bool:
+    return bool(_current_role_codes(request) & PRODUCTION_ORDER_IN_PROGRESS_DELETE_ROLE_CODES)
+
+
+def _production_order_delete_audit_snapshot(order: ProductionOrder) -> dict[str, object]:
+    return {
+        "order": snapshot_production_order_for_audit(order),
+        "materials": snapshot_production_order_bom_for_audit(order),
+        "activities": snapshot_production_order_activities_for_audit(order),
+    }
+
+
 def _active_b2b_catalog_exists_for_sku(db: Session, sku: str) -> bool:
     normalized_sku = (sku or "").strip()
     if not normalized_sku:
@@ -2540,6 +2554,18 @@ def _production_order_detail_response(
         for activity in activities
         if activity.activity_code_snapshot in activity_catalog_by_code
     }
+    can_edit_bom = order.status == "draft" and can(request, "production_order.edit")
+    can_delete_draft = order.status == "draft" and can(request, "production_order.edit")
+    can_delete_in_progress = (
+        order.status == "in_progress"
+        and can(request, "production_order.edit")
+        and _can_delete_in_progress_production_order(request)
+    )
+    delete_confirm_message = (
+        "Are you sure you want to delete this in-progress production order? This action cannot be undone."
+        if order.status == "in_progress"
+        else "Are you sure you want to delete this draft production order? This action cannot be undone."
+    )
     return templates.TemplateResponse(
         request=request,
         name="production_order_detail.html",
@@ -2552,6 +2578,9 @@ def _production_order_detail_response(
             "inventory_readiness": build_production_inventory_readiness(db, order_id),
             "error": error,
             "is_closed": order.status == "closed",
+            "can_edit_bom": can_edit_bom,
+            "can_delete_order": can_delete_draft or can_delete_in_progress,
+            "delete_confirm_message": delete_confirm_message,
         },
     )
 
@@ -8053,8 +8082,8 @@ def edit_production_order_bom(
 ) -> HTMLResponse:
     require_permission(request, "production_order.edit")
     order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
-    if order.status == "closed":
-        return _production_order_detail_response(order_id, request, db, "Closed orders are read-only.")
+    if order.status != "draft":
+        return _production_order_detail_response(order_id, request, db, "Only draft production orders can edit BOM.")
 
     materials = (
         db.query(ProductionOrderMaterial)
@@ -8085,6 +8114,9 @@ async def update_production_order_bom(
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "production_order.edit")
+    current_order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    if current_order.status != "draft":
+        return _production_order_detail_response(order_id, request, db, "Only draft production orders can edit BOM.")
     order_before = (
         db.query(ProductionOrder)
         .options(joinedload(ProductionOrder.materials))
@@ -8150,6 +8182,51 @@ async def update_production_order_bom(
                 "error": str(exc),
             },
         )
+
+
+@app.post("/production-orders/{order_id}/delete")
+def delete_production_order_route(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "production_order.edit")
+    order = (
+        db.query(ProductionOrder)
+        .options(
+            joinedload(ProductionOrder.materials),
+            joinedload(ProductionOrder.activities),
+        )
+        .filter(ProductionOrder.id == order_id)
+        .one()
+    )
+    if order.status == "closed":
+        return _production_order_detail_response(
+            order_id,
+            request,
+            db,
+            "Closed production orders cannot be deleted in this sprint.",
+        )
+    if order.status == "in_progress" and not _can_delete_in_progress_production_order(request):
+        return _production_order_detail_response(
+            order_id,
+            request,
+            db,
+            "Only admin or general approver can delete in-progress production orders.",
+        )
+
+    delete_snapshot = _production_order_delete_audit_snapshot(order)
+    order_label = order.internal_order_number
+    try:
+        delete_open_production_order(db, order_id)
+        safe_log_audit_event(
+            module="production",
+            action="production_order_deleted",
+            entity_type="production_order",
+            entity_id=order_id,
+            entity_label=order_label,
+            old_values=delete_snapshot,
+            request=request,
+        )
+        return _redirect("/production-orders")
+    except ProductionOrderValidationError as exc:
+        return _production_order_detail_response(order_id, request, db, str(exc))
 
 
 @app.post("/production-orders/{order_id}/start")

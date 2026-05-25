@@ -7,6 +7,7 @@ from app.models import ImportBatch, ImportedBomHeader, ImportedBomLine, Product,
 
 
 ZERO = Decimal("0")
+ROUTE_CODE_BOM_TOTAL_EXEMPT = "R_DESHID_GRANEL"
 
 
 class ProductBomValidationError(Exception):
@@ -175,6 +176,8 @@ def save_product_bom(
     if not prepared_lines:
         raise ProductBomValidationError("BOM must contain at least one valid component line.")
 
+    _validate_bom_total_limit(product, prepared_lines)
+
     for existing_line in list(header.lines):
         db.delete(existing_line)
     db.flush()
@@ -302,3 +305,21 @@ def _parse_line_id(value: object) -> int:
     if not text.isdigit():
         raise ProductBomValidationError("BOM line identifier is invalid.")
     return int(text)
+
+
+def _validate_bom_total_limit(product: Product, prepared_lines: list[dict[str, object]]) -> None:
+    route = product.default_route
+    route_code = (route.code if route is not None else "").strip().upper()
+    if route_code == ROUTE_CODE_BOM_TOTAL_EXEMPT:
+        return
+
+    total_quantity = ZERO
+    for prepared in prepared_lines:
+        quantity_standard = prepared.get("quantity_standard")
+        if isinstance(quantity_standard, Decimal):
+            total_quantity += quantity_standard
+
+    if total_quantity > Decimal("1.1"):
+        raise ProductBomValidationError(
+            "Total BOM quantity cannot exceed 1.1 unless the product route is R_DESHID_GRANEL."
+        )

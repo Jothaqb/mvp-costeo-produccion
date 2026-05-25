@@ -83,7 +83,7 @@
     {% if not is_closed %}
       <div class="actions">
         <a role="button" href="/production-orders/{{ order.id }}/print" target="_blank" aria-label="Print worksheet" title="Print worksheet">&#128424;</a>
-        {% if can(request, "production_order.edit") %}
+        {% if can_edit_bom %}
           <a role="button" href="/production-orders/{{ order.id }}/bom/edit">Edit BOM</a>
         {% endif %}
         {% if order.status == "draft" and can(request, "production_order.edit") %}
@@ -94,6 +94,11 @@
         {% if order.status == "in_progress" and can(request, "production_order.close") %}
           <form method="post" action="/production-orders/{{ order.id }}/close">
             <button type="submit">Close order</button>
+          </form>
+        {% endif %}
+        {% if can_delete_order %}
+          <form method="post" action="/production-orders/{{ order.id }}/delete" onsubmit="return confirm('{{ delete_confirm_message }}');">
+            <button type="submit">Delete order</button>
           </form>
         {% endif %}
       </div>

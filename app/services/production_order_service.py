@@ -48,6 +48,7 @@ ONE = Decimal("1")
 LEDGER_PRODUCTION_SOURCE_TYPE = "production_order"
 LEDGER_COMPONENT_CONSUMPTION_TYPE = "production_component_consumption"
 LEDGER_PRODUCTION_RECEIPT_TYPE = "production_receipt"
+ROUTE_CODE_BOM_TOTAL_EXEMPT = "R_DESHID_GRANEL"
 LEDGER_PRODUCTION_RECEIPT_NOTE = (
     "Ledger production receipt cost calculated from ledger component consumption + "
     "labor/overhead/machine. ProductionOrder.real_unit_cost remains unchanged."
@@ -225,7 +226,7 @@ def update_order_bom(
     new_material: dict[str, str],
 ) -> ProductionOrder:
     order = get_order(db, order_id)
-    _ensure_not_closed(order)
+    _ensure_draft_only(order)
 
     materials_by_id = {material.id: material for material in order.materials}
     deleted_ids = set(deleted_material_ids)
@@ -247,25 +248,23 @@ def update_order_bom(
             raise ProductionOrderValidationError("Quantity standard cannot be negative.")
 
         component_product = _resolve_component_product(db, update.get("component_sku"))
-        previous_sku = material.component_sku
         material.component_sku = component_product.sku
         material.component_name = component_product.name
-        if previous_sku != component_product.sku:
-            if component_product.standard_cost is None:
-                raise ProductionOrderValidationError(
-                    f"Product {component_product.sku} has no standard cost and cannot be used in the BOM."
-                )
-            material.unit_cost_snapshot = component_product.standard_cost
+        material.unit_cost_snapshot = _resolve_component_unit_cost(
+            db,
+            component_product,
+            fallback=material.unit_cost_snapshot,
+        )
         material.quantity_standard = quantity_standard
-        material.required_quantity = _calculate_required_quantity(order, quantity_standard)
 
     new_component_sku = (new_material.get("component_sku") or "").strip()
     new_quantity_text = (new_material.get("quantity_standard") or "").strip()
     if new_component_sku or new_quantity_text:
         component_product = _resolve_component_product(db, new_component_sku)
-        if component_product.standard_cost is None:
+        unit_cost_snapshot = _resolve_component_unit_cost(db, component_product)
+        if unit_cost_snapshot is None:
             raise ProductionOrderValidationError(
-                f"Product {component_product.sku} has no standard cost and cannot be added to the BOM."
+                f"Product {component_product.sku} has no inventory average cost or standard cost and cannot be added to the BOM."
             )
         quantity_standard = parse_optional_decimal(new_quantity_text, "New line quantity standard")
         if quantity_standard is None:
@@ -279,16 +278,29 @@ def update_order_bom(
                 component_name=component_product.name,
                 quantity_standard=quantity_standard,
                 required_quantity=_calculate_required_quantity(order, quantity_standard),
-                unit_cost_snapshot=component_product.standard_cost,
+                unit_cost_snapshot=unit_cost_snapshot,
                 line_cost=None,
                 component_type="material",
                 include_in_real_cost=True,
             )
         )
 
+    db.flush()
+    db.expire(order, ["materials"])
+    _validate_order_bom_total_limit(order)
+    _recalculate_order_material_snapshot(order)
     db.commit()
     db.refresh(order)
     return order
+
+
+def delete_open_production_order(db: Session, order_id: int) -> None:
+    order = get_order(db, order_id)
+    if order.status == ProductionOrderStatus.CLOSED.value:
+        raise ProductionOrderValidationError("Closed production orders cannot be deleted in this sprint.")
+    _ensure_no_existing_inventory_transactions_for_delete(db, order)
+    db.delete(order)
+    db.commit()
 
 
 def start_order(db: Session, order_id: int) -> ProductionOrder:
@@ -418,6 +430,37 @@ def _calculate_required_quantity(order: ProductionOrder, quantity_standard: Deci
     return order.planned_qty * quantity_standard
 
 
+def _calculate_snapshot_line_cost(
+    order: ProductionOrder,
+    quantity_standard: Decimal | None,
+    unit_cost_snapshot: Decimal | None,
+) -> Decimal | None:
+    if quantity_standard is None or unit_cost_snapshot is None:
+        return None
+    return quantity_standard * _material_snapshot_scaling_factor(order) * unit_cost_snapshot
+
+
+def _material_snapshot_scaling_factor(order: ProductionOrder) -> Decimal:
+    if order.process_type in INPUT_SCALED_PROCESS_TYPES:
+        if order.input_qty is not None and order.input_qty > ZERO:
+            return order.input_qty
+    return ONE
+
+
+def _recalculate_order_material_snapshot(order: ProductionOrder) -> None:
+    total = ZERO
+    for material in order.materials:
+        material.required_quantity = _calculate_required_quantity(order, material.quantity_standard)
+        material.line_cost = _calculate_snapshot_line_cost(
+            order,
+            material.quantity_standard,
+            material.unit_cost_snapshot,
+        )
+        if material.include_in_real_cost and material.line_cost is not None:
+            total += material.line_cost
+    order.material_snapshot_cost_total = total
+
+
 def _prepare_order_close(db: Session, order: ProductionOrder) -> None:
     if order.status != ProductionOrderStatus.IN_PROGRESS.value:
         raise ProductionOrderValidationError("Only in-progress orders can be closed.")
@@ -451,6 +494,21 @@ def _ensure_no_existing_production_ledger_posting(db: Session, order: Production
     if existing_transaction is not None:
         raise ProductionOrderValidationError(
             f"Production order {order.internal_order_number} already has inventory ledger postings."
+        )
+
+
+def _ensure_no_existing_inventory_transactions_for_delete(db: Session, order: ProductionOrder) -> None:
+    existing_transaction = (
+        db.query(InventoryTransaction.id)
+        .filter(
+            InventoryTransaction.source_type == LEDGER_PRODUCTION_SOURCE_TYPE,
+            InventoryTransaction.source_id == order.id,
+        )
+        .first()
+    )
+    if existing_transaction is not None:
+        raise ProductionOrderValidationError(
+            "Cannot delete this production order because inventory transactions are already associated with it."
         )
 
 
@@ -584,6 +642,24 @@ def _resolve_component_product(db: Session, component_sku: str | None) -> Produc
     return product
 
 
+def _resolve_component_unit_cost(
+    db: Session,
+    component_product: Product,
+    *,
+    fallback: Decimal | None = None,
+) -> Decimal | None:
+    balance = (
+        db.query(InventoryBalance)
+        .filter(InventoryBalance.product_id == component_product.id)
+        .one_or_none()
+    )
+    if balance is not None and balance.average_unit_cost is not None and balance.average_unit_cost > ZERO:
+        return balance.average_unit_cost
+    if component_product.standard_cost is not None:
+        return component_product.standard_cost
+    return fallback
+
+
 def _copy_route_activities(
     db: Session,
     order: ProductionOrder,
@@ -662,6 +738,9 @@ def _copy_bom(db: Session, order: ProductionOrder, bom_header: ImportedBomHeader
                 include_in_real_cost=line.include_in_real_cost,
             )
         )
+    db.flush()
+    db.expire(order, ["materials"])
+    _recalculate_order_material_snapshot(order)
 
 
 def _copy_product_bom(db: Session, order: ProductionOrder, bom_header: ProductBomHeader) -> None:
@@ -688,6 +767,9 @@ def _copy_product_bom(db: Session, order: ProductionOrder, bom_header: ProductBo
                 ),
             )
         )
+    db.flush()
+    db.expire(order, ["materials"])
+    _recalculate_order_material_snapshot(order)
 
 
 def _resolve_product_bom_unit_cost(db: Session, line: ProductBomLine) -> Decimal | None:
@@ -712,3 +794,26 @@ def _resolve_product_bom_unit_cost(db: Session, line: ProductBomLine) -> Decimal
 def _ensure_not_closed(order: ProductionOrder) -> None:
     if order.status == ProductionOrderStatus.CLOSED.value:
         raise ProductionOrderValidationError("Closed orders are read-only.")
+
+
+def _ensure_draft_only(order: ProductionOrder) -> None:
+    if order.status != ProductionOrderStatus.DRAFT.value:
+        raise ProductionOrderValidationError("Only draft production orders can edit BOM.")
+
+
+def _validate_order_bom_total_limit(order: ProductionOrder) -> None:
+    route = order.route
+    route_code = (route.code if route is not None else "").strip().upper()
+    if route_code == ROUTE_CODE_BOM_TOTAL_EXEMPT:
+        return
+
+    total_quantity = ZERO
+    for material in order.materials:
+        if material.quantity_standard is None:
+            continue
+        total_quantity += material.quantity_standard
+
+    if total_quantity > Decimal("1.1"):
+        raise ProductionOrderValidationError(
+            "Total BOM quantity cannot exceed 1.1 unless the product route is R_DESHID_GRANEL."
+        )
