@@ -80,6 +80,10 @@
           <dt>Production date</dt>
           <dd>{{ batch.production_date }}</dd>
         </div>
+        <div>
+          <dt>Batch material snapshot total</dt>
+          <dd>{% if batch_material_snapshot_total is not none %}{{ fmt.number_3(batch_material_snapshot_total) }}{% else %}-{% endif %}</dd>
+        </div>
       </dl>
     </section>
 
@@ -131,6 +135,9 @@
               <th>Product name</th>
               <th>Planned qty</th>
               <th>Unit</th>
+              <th>Snapshot status</th>
+              <th>Snapshot total</th>
+              <th>Refreshed at</th>
               <th>Notes</th>
               <th>Actions</th>
             </tr>
@@ -146,10 +153,19 @@
                 </td>
                 <td><input name="planned_qty" value="{{ line.planned_qty }}" form="{{ edit_form_id }}"></td>
                 <td>{{ line.unit_snapshot or "" }}</td>
+                <td>{{ line.material_snapshot_status }}</td>
+                <td>{% if line.material_snapshot_cost_total is not none %}{{ fmt.number_3(line.material_snapshot_cost_total) }}{% else %}-{% endif %}</td>
+                <td>{{ line.material_snapshot_refreshed_at or "" }}</td>
                 <td><input name="notes" value="{{ line.notes or '' }}" form="{{ edit_form_id }}"></td>
                 <td>
                     <form id="{{ edit_form_id }}" method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/edit"></form>
                     <button type="submit" form="{{ edit_form_id }}">Save</button>
+                    <a class="button secondary" href="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials">Material Snapshot</a>
+                    {% if batch.status == "draft" %}
+                      <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials/refresh">
+                        <button type="submit">Refresh Material Snapshot</button>
+                      </form>
+                    {% endif %}
                     <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/delete" onsubmit="return confirm('Delete this line?');">
                       <button type="submit">Delete</button>
                     </form>

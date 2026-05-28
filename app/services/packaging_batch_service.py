@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import AppSequence, PackagingBatch, PackagingBatchLine, Product, Route, User
 from app.schemas import ProcessType
+from app.services.packaging_batch_material_service import invalidate_packaging_batch_line_material_snapshot
 
 
 class PackagingBatchValidationError(Exception):
@@ -45,6 +46,7 @@ def get_packaging_batch(db: Session, batch_id: int) -> PackagingBatch:
             joinedload(PackagingBatch.created_by_user),
             joinedload(PackagingBatch.updated_by_user),
             joinedload(PackagingBatch.lines).joinedload(PackagingBatchLine.product),
+            joinedload(PackagingBatch.lines).joinedload(PackagingBatchLine.materials),
         )
         .filter(PackagingBatch.id == batch_id)
         .one_or_none()
@@ -140,6 +142,9 @@ def add_packaging_batch_real_line(
         product_name_snapshot=product.name,
         unit_snapshot=(product.unit or "").strip() or None,
         planned_qty=_parse_positive_decimal(planned_qty, "Planned quantity"),
+        material_snapshot_cost_total=None,
+        material_snapshot_status="pending",
+        material_snapshot_refreshed_at=None,
         notes=_normalize_optional_text(notes),
     )
     db.add(line)
@@ -159,9 +164,11 @@ def update_packaging_batch_line(
     batch = get_packaging_batch(db, batch_id)
     _ensure_draft(batch)
     line = _get_batch_line(batch, line_id)
-
+    original_planned_qty = line.planned_qty
     line.planned_qty = _parse_positive_decimal(planned_qty, "Planned quantity")
     line.notes = _normalize_optional_text(notes)
+    if line.planned_qty != original_planned_qty:
+        invalidate_packaging_batch_line_material_snapshot(db, line, status="pending")
     db.commit()
     db.refresh(line)
     return line

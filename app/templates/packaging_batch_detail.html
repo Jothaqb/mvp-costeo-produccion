@@ -40,6 +40,10 @@
         <dt>Updated by</dt>
         <dd>{{ batch.updated_by_user.username if batch.updated_by_user else "" }}</dd>
       </div>
+      <div>
+        <dt>Batch material snapshot total</dt>
+        <dd>{{ fmt.number_3(batch_material_snapshot_total) }}</dd>
+      </div>
     </dl>
 
     <div class="actions">
@@ -61,7 +65,11 @@
             <th>Product name</th>
             <th>Planned qty</th>
             <th>Unit</th>
+            <th>Snapshot status</th>
+            <th>Snapshot total</th>
+            <th>Refreshed at</th>
             <th>Notes</th>
+            <th>Snapshot</th>
           </tr>
         </thead>
         <tbody>
@@ -72,7 +80,18 @@
               <td>{{ line.product_name_snapshot }}</td>
               <td>{{ fmt.number_3(line.planned_qty) }}</td>
               <td>{{ line.unit_snapshot or "" }}</td>
+              <td>{{ line.material_snapshot_status }}</td>
+              <td>{% if line.material_snapshot_cost_total is not none %}{{ fmt.number_3(line.material_snapshot_cost_total) }}{% else %}-{% endif %}</td>
+              <td>{{ line.material_snapshot_refreshed_at or "" }}</td>
               <td>{{ line.notes or "" }}</td>
+              <td>
+                <a class="button secondary" href="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials">Material Snapshot</a>
+                {% if batch.status == "draft" and can(request, "production_order.edit") %}
+                  <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials/refresh">
+                    <button type="submit">Refresh Material Snapshot</button>
+                  </form>
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>

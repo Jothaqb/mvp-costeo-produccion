@@ -2,7 +2,7 @@ from collections.abc import Generator
 import os
 import re
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 
@@ -1652,18 +1652,30 @@ def _ensure_b2c_sales_orders_channel_constraint_removed(connection) -> None:
 
 
 def ensure_packaging_batch_tables() -> None:
-    from app.models import PackagingBatch, PackagingBatchLine
+    from app.models import PackagingBatch, PackagingBatchLine, PackagingBatchLineMaterial
 
     PackagingBatch.__table__.create(bind=engine, checkfirst=True)
     PackagingBatchLine.__table__.create(bind=engine, checkfirst=True)
+    PackagingBatchLineMaterial.__table__.create(bind=engine, checkfirst=True)
+
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "packaging_batch_lines",
+            {
+                "material_snapshot_cost_total": "NUMERIC(12, 4)",
+                "material_snapshot_status": "VARCHAR(50) NOT NULL DEFAULT 'pending'",
+                "material_snapshot_refreshed_at": "TIMESTAMP",
+            },
+        )
 
 
 def _ensure_columns(connection, table_name: str, column_definitions: dict[str, str]) -> None:
-    columns = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
-    if not columns:
+    inspector = inspect(connection)
+    if not inspector.has_table(table_name):
         return
 
-    column_names = {column[1] for column in columns}
+    column_names = {column["name"] for column in inspector.get_columns(table_name)}
     for column_name, column_type in column_definitions.items():
         if column_name not in column_names:
             connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")

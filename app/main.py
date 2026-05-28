@@ -350,6 +350,11 @@ from app.services.packaging_batch_service import (
     update_packaging_batch_header,
     update_packaging_batch_line,
 )
+from app.services.packaging_batch_material_service import (
+    PackagingBatchMaterialValidationError,
+    get_packaging_batch_line_with_materials,
+    refresh_packaging_batch_line_material_snapshot,
+)
 
 
 Base.metadata.create_all(bind=engine)
@@ -2680,6 +2685,16 @@ def _packaging_batch_form_context(
     }
     if form_values:
         values.update(form_values)
+    batch_material_snapshot_total = None
+    if batch is not None:
+        batch_material_snapshot_total = sum(
+            (
+                line.material_snapshot_cost_total
+                for line in batch.lines
+                if line.material_snapshot_status == "ready" and line.material_snapshot_cost_total is not None
+            ),
+            Decimal("0"),
+        )
     return {
         "title": title,
         "batch": batch,
@@ -2690,6 +2705,7 @@ def _packaging_batch_form_context(
         "packaging_type_options": PACKAGING_TYPE_OPTIONS,
         "packaging_type_label": packaging_type_label,
         "is_edit_mode": batch is not None,
+        "batch_material_snapshot_total": batch_material_snapshot_total,
     }
 
 
@@ -2702,9 +2718,38 @@ def _packaging_batch_detail_context(
     message: str | None = None,
 ) -> dict[str, object]:
     batch = get_packaging_batch(db, batch_id)
+    batch_material_snapshot_total = sum(
+        (
+            line.material_snapshot_cost_total
+            for line in batch.lines
+            if line.material_snapshot_status == "ready" and line.material_snapshot_cost_total is not None
+        ),
+        Decimal("0"),
+    )
     return {
         "title": batch.internal_batch_number,
         "batch": batch,
+        "error": error,
+        "message": message,
+        "packaging_type_label": packaging_type_label,
+        "batch_material_snapshot_total": batch_material_snapshot_total,
+    }
+
+
+def _packaging_batch_line_materials_context(
+    request: Request,
+    db: Session,
+    *,
+    batch_id: int,
+    line_id: int,
+    error: str | None = None,
+    message: str | None = None,
+) -> dict[str, object]:
+    batch, line = get_packaging_batch_line_with_materials(db, batch_id=batch_id, line_id=line_id)
+    return {
+        "title": f"{batch.internal_batch_number} - Material Snapshot",
+        "batch": batch,
+        "line": line,
         "error": error,
         "message": message,
         "packaging_type_label": packaging_type_label,
@@ -8334,6 +8379,64 @@ def delete_packaging_batch_line_route(
                 batch=batch,
                 error=str(exc),
             ),
+            status_code=400,
+        )
+
+
+@app.get("/packaging-batches/{batch_id}/lines/{line_id}/materials", response_class=HTMLResponse)
+def packaging_batch_line_materials(
+    batch_id: int,
+    line_id: int,
+    request: Request,
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "production_order.view")
+    try:
+        context = _packaging_batch_line_materials_context(
+            request,
+            db,
+            batch_id=batch_id,
+            line_id=line_id,
+            message=message,
+        )
+    except PackagingBatchMaterialValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return templates.TemplateResponse(
+        request=request,
+        name="packaging_batch_line_materials.html",
+        context=context,
+    )
+
+
+@app.post("/packaging-batches/{batch_id}/lines/{line_id}/materials/refresh")
+def refresh_packaging_batch_line_materials_route(
+    batch_id: int,
+    line_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "production_order.edit")
+    try:
+        refresh_packaging_batch_line_material_snapshot(db, batch_id=batch_id, line_id=line_id)
+        return _redirect(
+            f"/packaging-batches/{batch_id}/lines/{line_id}/materials?message=Material%20Snapshot%20refreshed."
+        )
+    except PackagingBatchMaterialValidationError as exc:
+        try:
+            context = _packaging_batch_line_materials_context(
+                request,
+                db,
+                batch_id=batch_id,
+                line_id=line_id,
+                error=str(exc),
+            )
+        except PackagingBatchMaterialValidationError as context_exc:
+            raise HTTPException(status_code=404, detail=str(context_exc)) from context_exc
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_line_materials.html",
+            context=context,
             status_code=400,
         )
 

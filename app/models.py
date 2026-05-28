@@ -1233,6 +1233,10 @@ class PackagingBatchLine(Base):
     __table_args__ = (
         UniqueConstraint("packaging_batch_id", "line_number", name="uq_packaging_batch_lines_number"),
         UniqueConstraint("packaging_batch_id", "product_id", name="uq_packaging_batch_lines_product"),
+        CheckConstraint(
+            "material_snapshot_status IN ('pending', 'ready', 'error')",
+            name="ck_packaging_batch_lines_material_snapshot_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
@@ -1244,6 +1248,9 @@ class PackagingBatchLine(Base):
     product_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
     unit_snapshot: Mapped[str | None] = mapped_column(String(50), nullable=True)
     planned_qty: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    material_snapshot_cost_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    material_snapshot_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+    material_snapshot_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1255,3 +1262,36 @@ class PackagingBatchLine(Base):
 
     packaging_batch: Mapped[PackagingBatch] = relationship(back_populates="lines")
     product: Mapped["Product | None"] = relationship()
+    materials: Mapped[list["PackagingBatchLineMaterial"]] = relationship(
+        back_populates="packaging_batch_line",
+        cascade="all, delete-orphan",
+        order_by="PackagingBatchLineMaterial.id",
+    )
+
+
+class PackagingBatchLineMaterial(Base):
+    __tablename__ = "packaging_batch_line_materials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    packaging_batch_line_id: Mapped[int] = mapped_column(
+        ForeignKey("packaging_batch_lines.id"),
+        index=True,
+        nullable=False,
+    )
+    component_sku: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    component_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    quantity_standard: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    required_quantity: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    unit_cost_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    line_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    component_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    include_in_real_cost: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    packaging_batch_line: Mapped[PackagingBatchLine] = relationship(back_populates="materials")

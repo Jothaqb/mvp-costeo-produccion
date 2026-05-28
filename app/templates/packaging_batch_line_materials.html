@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ batch.internal_batch_number }} - Material Snapshot</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+
+    <dl class="summary">
+      <div>
+        <dt>Line</dt>
+        <dd>{{ line.line_number }}</dd>
+      </div>
+      <div>
+        <dt>SKU</dt>
+        <dd>{{ line.product_sku_snapshot }}</dd>
+      </div>
+      <div>
+        <dt>Product name</dt>
+        <dd>{{ line.product_name_snapshot }}</dd>
+      </div>
+      <div>
+        <dt>Planned qty</dt>
+        <dd>{{ fmt.number_3(line.planned_qty) }}</dd>
+      </div>
+      <div>
+        <dt>Unit</dt>
+        <dd>{{ line.unit_snapshot or "" }}</dd>
+      </div>
+      <div>
+        <dt>Snapshot status</dt>
+        <dd>{{ line.material_snapshot_status }}</dd>
+      </div>
+      <div>
+        <dt>Snapshot total</dt>
+        <dd>{% if line.material_snapshot_cost_total is not none %}{{ fmt.number_3(line.material_snapshot_cost_total) }}{% else %}-{% endif %}</dd>
+      </div>
+      <div>
+        <dt>Refreshed at</dt>
+        <dd>{{ line.material_snapshot_refreshed_at or "" }}</dd>
+      </div>
+    </dl>
+
+    <div class="actions">
+      <a role="button" href="/packaging-batches/{{ batch.id }}">Back to batch</a>
+      {% if batch.status == "draft" and can(request, "production_order.edit") %}
+        <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials/refresh">
+          <button type="submit">Refresh Material Snapshot</button>
+        </form>
+      {% endif %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Components</h2>
+    {% if line.materials %}
+      <table>
+        <thead>
+          <tr>
+            <th>Component SKU</th>
+            <th>Component name</th>
+            <th>Quantity standard</th>
+            <th>Required quantity</th>
+            <th>Unit cost snapshot</th>
+            <th>Line cost</th>
+            <th>Component type</th>
+            <th>Include in real cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for material in line.materials %}
+            <tr>
+              <td>{{ material.component_sku or "" }}</td>
+              <td>{{ material.component_name or "" }}</td>
+              <td>{% if material.quantity_standard is not none %}{{ fmt.number_3(material.quantity_standard) }}{% else %}-{% endif %}</td>
+              <td>{% if material.required_quantity is not none %}{{ fmt.number_3(material.required_quantity) }}{% else %}-{% endif %}</td>
+              <td>{% if material.unit_cost_snapshot is not none %}{{ fmt.money_crc(material.unit_cost_snapshot) }}{% else %}-{% endif %}</td>
+              <td>{% if material.line_cost is not none %}{{ fmt.money_crc(material.line_cost) }}{% else %}-{% endif %}</td>
+              <td>{{ material.component_type }}</td>
+              <td>{{ "Yes" if material.include_in_real_cost else "No" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% elif line.material_snapshot_status == "error" %}
+      <p>Material Snapshot is in error. Review the message above and refresh again after correcting the BOM or product setup.</p>
+    {% else %}
+      <p>Material Snapshot is pending for this line.</p>
+    {% endif %}
+  </section>
+{% endblock %}
