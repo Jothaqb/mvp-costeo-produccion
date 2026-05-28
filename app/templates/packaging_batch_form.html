@@ -1,0 +1,220 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Production</p>
+    <h1>{{ title }}</h1>
+    <p class="lead">Create the packaging batch header first, then manage product lines while the batch stays in draft.</p>
+  </section>
+
+  <section>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <form method="post" action="{% if batch %}/packaging-batches/{{ batch.id }}/edit{% else %}/packaging-batches{% endif %}">
+      <label for="production_date">Production date</label>
+      <input id="production_date" name="production_date" type="date" value="{{ form_values.production_date }}" required>
+
+      <label for="packaging_type">Packaging type</label>
+      <select id="packaging_type" name="packaging_type" required>
+        <option value="">Select packaging type</option>
+        {% for value, label in packaging_type_options %}
+          <option value="{{ value }}" {% if form_values.packaging_type == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="route_id">Route</label>
+      <select id="route_id" name="route_id" required>
+        <option value="">Select route</option>
+        {% for route in route_options %}
+          <option
+            value="{{ route.id }}"
+            data-packaging-type="{{ route.packaging_type }}"
+            {% if form_values.route_id == route.id|string %}selected{% endif %}
+          >
+            {{ route.label }}
+          </option>
+        {% endfor %}
+      </select>
+
+      <label for="notes">Notes</label>
+      <textarea id="notes" name="notes">{{ form_values.notes }}</textarea>
+
+      <div class="inline-actions">
+        <button type="submit">{% if batch %}Save draft header{% else %}Create draft{% endif %}</button>
+        {% if batch %}
+          <a class="button secondary" href="/packaging-batches/{{ batch.id }}">View detail</a>
+          <a class="button secondary" href="/packaging-batches/{{ batch.id }}/print" target="_blank">Print</a>
+        {% else %}
+          <a class="button secondary" href="/production-orders">Cancel</a>
+        {% endif %}
+      </div>
+    </form>
+  </section>
+
+  {% if batch %}
+    <section>
+      <h2>Batch Summary</h2>
+      <dl class="summary">
+        <div>
+          <dt>Batch number</dt>
+          <dd>{{ batch.internal_batch_number }}</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>{{ batch.status }}</dd>
+        </div>
+        <div>
+          <dt>Packaging type</dt>
+          <dd>{{ packaging_type_label(batch.packaging_type) }}</dd>
+        </div>
+        <div>
+          <dt>Route</dt>
+          <dd>{{ batch.route_name_snapshot }} v{{ batch.route_version_snapshot }}</dd>
+        </div>
+        <div>
+          <dt>Process</dt>
+          <dd>{{ batch.process_type }}</dd>
+        </div>
+        <div>
+          <dt>Production date</dt>
+          <dd>{{ batch.production_date }}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Add Product Line</h2>
+      <form method="post" action="/packaging-batches/{{ batch.id }}/lines">
+        <label for="product_lookup">Product</label>
+        <input
+          id="product_lookup"
+          name="product_lookup"
+          list="manufactured-product-options"
+          placeholder="Type SKU or description"
+          autocomplete="off"
+          required
+        >
+        <datalist id="manufactured-product-options">
+          {% for product in product_options %}
+            <option
+              value="{{ product.lookup_label }}"
+              data-product-id="{{ product.id }}"
+              data-sku="{{ product.sku }}"
+              data-name="{{ product.name }}"
+            ></option>
+          {% endfor %}
+        </datalist>
+        <input id="product_id" name="product_id" type="hidden" value="">
+        <p id="selected-product-summary" class="muted-inline"></p>
+
+        <label for="real_planned_qty">Planned quantity</label>
+        <input id="real_planned_qty" name="planned_qty" required>
+
+        <label for="real_notes">Notes</label>
+        <textarea id="real_notes" name="notes"></textarea>
+
+        <div class="inline-actions">
+          <button type="submit">Add line</button>
+        </div>
+      </form>
+    </section>
+
+    <section>
+      <h2>Draft Lines</h2>
+      {% if batch.lines %}
+        <table>
+          <thead>
+            <tr>
+              <th>Line</th>
+              <th>SKU</th>
+              <th>Product name</th>
+              <th>Planned qty</th>
+              <th>Unit</th>
+              <th>Notes</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for line in batch.lines %}
+              {% set edit_form_id = "line-edit-" ~ line.id %}
+              <tr>
+                <td>{{ line.line_number }}</td>
+                <td>{{ line.product_sku_snapshot or "" }}</td>
+                <td>
+                  {{ line.product_name_snapshot }}
+                </td>
+                <td><input name="planned_qty" value="{{ line.planned_qty }}" form="{{ edit_form_id }}"></td>
+                <td>{{ line.unit_snapshot or "" }}</td>
+                <td><input name="notes" value="{{ line.notes or '' }}" form="{{ edit_form_id }}"></td>
+                <td>
+                    <form id="{{ edit_form_id }}" method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/edit"></form>
+                    <button type="submit" form="{{ edit_form_id }}">Save</button>
+                    <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/delete" onsubmit="return confirm('Delete this line?');">
+                      <button type="submit">Delete</button>
+                    </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p>No lines yet. Save the draft header and start adding product lines.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <script>
+    const packagingTypeSelect = document.getElementById("packaging_type");
+    const routeSelect = document.getElementById("route_id");
+    const routeOptions = routeSelect ? Array.from(routeSelect.querySelectorAll("option[data-packaging-type]")) : [];
+    const productLookupInput = document.getElementById("product_lookup");
+    const productIdInput = document.getElementById("product_id");
+    const productSummary = document.getElementById("selected-product-summary");
+    const productOptions = Array.from(document.querySelectorAll("#manufactured-product-options option"));
+
+    function syncRouteOptions() {
+      if (!packagingTypeSelect || !routeSelect) {
+        return;
+      }
+      const selectedType = packagingTypeSelect.value;
+      let selectedStillVisible = false;
+      routeOptions.forEach((option) => {
+        const visible = !selectedType || option.dataset.packagingType === selectedType;
+        option.hidden = !visible;
+        option.disabled = !visible;
+        if (visible && option.value === routeSelect.value) {
+          selectedStillVisible = true;
+        }
+      });
+      if (!selectedStillVisible) {
+        routeSelect.value = "";
+      }
+    }
+
+    function syncProductSelection() {
+      if (!productLookupInput || !productIdInput || !productSummary) {
+        return;
+      }
+      const value = (productLookupInput.value || "").trim();
+      const match = productOptions.find((option) => option.value === value);
+      if (!match) {
+        productIdInput.value = "";
+        productSummary.textContent = "";
+        return;
+      }
+      productIdInput.value = match.dataset.productId || "";
+      productSummary.textContent = "Selected: " + (match.dataset.sku || "") + " - " + (match.dataset.name || "");
+    }
+
+    if (packagingTypeSelect) {
+      packagingTypeSelect.addEventListener("change", syncRouteOptions);
+      syncRouteOptions();
+    }
+    if (productLookupInput) {
+      productLookupInput.addEventListener("change", syncProductSelection);
+      productLookupInput.addEventListener("input", syncProductSelection);
+      syncProductSelection();
+    }
+  </script>
+{% endblock %}

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ batch.internal_batch_number }} - Packaging Batch</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      color: #111;
+      font-family: Arial, sans-serif;
+      font-size: 12px;
+      line-height: 1.35;
+      margin: 24px;
+    }
+    h1, h2 { margin: 0 0 10px; }
+    h1 { font-size: 22px; text-transform: uppercase; }
+    h2 { border-bottom: 1px solid #111; font-size: 15px; margin-top: 22px; padding-bottom: 4px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #333; padding: 6px; text-align: left; vertical-align: top; }
+    th { background: #eee; font-weight: 700; }
+    .grid { display: grid; gap: 8px 18px; grid-template-columns: 1fr 1fr; }
+    .field { align-items: end; display: grid; gap: 8px; grid-template-columns: max-content 1fr; min-height: 24px; }
+    .label { font-weight: 700; }
+    .write-area { border: 1px solid #333; height: 110px; width: 100%; }
+    .signatures { display: grid; gap: 18px; grid-template-columns: 1fr 1fr 1fr; margin-top: 30px; }
+    .signature-line { border-top: 1px solid #111; padding-top: 6px; text-align: center; }
+    .no-print { margin-bottom: 16px; }
+    @media print {
+      body { margin: 12mm; }
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print">
+    <button type="button" onclick="window.print()">Print</button>
+  </div>
+
+  <h1>Batch Envasado</h1>
+
+  <section class="grid">
+    <div class="field">
+      <span class="label">Batch number</span>
+      <span>{{ batch.internal_batch_number }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Printed at</span>
+      <span>{{ printed_at }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Production date</span>
+      <span>{{ batch.production_date }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Status</span>
+      <span>{{ batch.status }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Packaging type</span>
+      <span>{{ packaging_type_label(batch.packaging_type) }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Route</span>
+      <span>{{ batch.route_name_snapshot }} v{{ batch.route_version_snapshot }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Process</span>
+      <span>{{ batch.process_type }}</span>
+    </div>
+    <div class="field">
+      <span class="label">Notes</span>
+      <span>{{ batch.notes or "" }}</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Lines</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Line</th>
+          <th>SKU</th>
+          <th>Product name</th>
+          <th>Planned qty</th>
+          <th>Unit</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for line in batch.lines %}
+          <tr>
+            <td>{{ line.line_number }}</td>
+            <td>{{ line.product_sku_snapshot or "" }}</td>
+            <td>{{ line.product_name_snapshot }}</td>
+            <td>{{ "{:,.3f}".format(line.planned_qty) }}</td>
+            <td>{{ line.unit_snapshot or "" }}</td>
+            <td>{{ line.notes or "" }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Observaciones del operario</h2>
+    <div class="write-area"></div>
+  </section>
+
+  <section>
+    <h2>Firma / responsable</h2>
+    <div class="signatures">
+      <div class="signature-line">Operario</div>
+      <div class="signature-line">Responsable</div>
+      <div class="signature-line">Fecha</div>
+    </div>
+  </section>
+</body>
+</html>

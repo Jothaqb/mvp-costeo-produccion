@@ -215,6 +215,16 @@ class User(Base):
         back_populates="reversed_by_user",
         foreign_keys="ProductionOrder.reversed_by_user_id",
     )
+    packaging_batches_created: Mapped[list["PackagingBatch"]] = relationship(
+        "PackagingBatch",
+        back_populates="created_by_user",
+        foreign_keys="PackagingBatch.created_by_user_id",
+    )
+    packaging_batches_updated: Mapped[list["PackagingBatch"]] = relationship(
+        "PackagingBatch",
+        back_populates="updated_by_user",
+        foreign_keys="PackagingBatch.updated_by_user_id",
+    )
 
 
 class Role(Base):
@@ -1165,3 +1175,83 @@ class ProductionOrderActivity(Base):
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     production_order: Mapped[ProductionOrder] = relationship(back_populates="activities")
+
+
+class PackagingBatch(Base):
+    __tablename__ = "packaging_batches"
+    __table_args__ = (
+        CheckConstraint(
+            "packaging_type IN ('jar', 'doypack')",
+            name="ck_packaging_batches_packaging_type",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'in_process', 'closed')",
+            name="ck_packaging_batches_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    internal_batch_number: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    production_date: Mapped[date] = mapped_column(Date, nullable=False)
+    packaging_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    route_id: Mapped[int] = mapped_column(ForeignKey("routes.id"), index=True, nullable=False)
+    route_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    route_version_snapshot: Mapped[str] = mapped_column(String(50), nullable=False)
+    process_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="draft", index=True, nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    route: Mapped[Route] = relationship()
+    created_by_user: Mapped["User | None"] = relationship(
+        "User",
+        back_populates="packaging_batches_created",
+        foreign_keys=[created_by_user_id],
+    )
+    updated_by_user: Mapped["User | None"] = relationship(
+        "User",
+        back_populates="packaging_batches_updated",
+        foreign_keys=[updated_by_user_id],
+    )
+    lines: Mapped[list["PackagingBatchLine"]] = relationship(
+        back_populates="packaging_batch",
+        cascade="all, delete-orphan",
+        order_by="PackagingBatchLine.line_number",
+    )
+
+
+class PackagingBatchLine(Base):
+    __tablename__ = "packaging_batch_lines"
+    __table_args__ = (
+        UniqueConstraint("packaging_batch_id", "line_number", name="uq_packaging_batch_lines_number"),
+        UniqueConstraint("packaging_batch_id", "product_id", name="uq_packaging_batch_lines_product"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    packaging_batch_id: Mapped[int] = mapped_column(ForeignKey("packaging_batches.id"), index=True, nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), nullable=False)
+    is_manual_line: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    product_sku_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
+    product_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    unit_snapshot: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    planned_qty: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    packaging_batch: Mapped[PackagingBatch] = relationship(back_populates="lines")
+    product: Mapped["Product | None"] = relationship()

@@ -32,6 +32,7 @@ from app.database import (
     ensure_inventory_adjustment_tables,
     ensure_inventory_ledger_tables,
     ensure_master_data_tables,
+    ensure_packaging_batch_tables,
     ensure_password_reset_tables,
     ensure_product_bom_tables,
     ensure_product_default_route_column,
@@ -78,6 +79,8 @@ from app.models import (
     ProductBomHeader,
     ProductBomLine,
     ProductCategory,
+    PackagingBatch,
+    PackagingBatchLine,
     ProductionOrder,
     ProductionOrderActivity,
     ProductionOrderMaterial,
@@ -333,6 +336,20 @@ from app.services.production_order_service import (
     update_order_bom,
     update_yield_capture,
 )
+from app.services.packaging_batch_service import (
+    DOYPACK_ROUTE_CODES,
+    JAR_ROUTE_CODES,
+    PACKAGING_TYPE_OPTIONS,
+    PackagingBatchValidationError,
+    add_packaging_batch_real_line,
+    create_packaging_batch,
+    delete_packaging_batch_line,
+    get_packaging_batch,
+    list_packaging_routes,
+    packaging_type_label,
+    update_packaging_batch_header,
+    update_packaging_batch_line,
+)
 
 
 Base.metadata.create_all(bind=engine)
@@ -359,6 +376,7 @@ ensure_b2b_loyverse_mapping_tables()
 ensure_b2c_customer_tables()
 ensure_channel_master_tables()
 ensure_inventory_adjustment_tables()
+ensure_packaging_batch_tables()
 ensure_auth_tables()
 ensure_password_reset_tables()
 ensure_audit_tables()
@@ -2584,6 +2602,115 @@ def _manufactured_product_options(db: Session) -> list[dict[str, object]]:
         }
         for product in products
     ]
+
+
+def _packaging_route_type_for_code(route_code: str) -> str | None:
+    if route_code in JAR_ROUTE_CODES:
+        return "jar"
+    if route_code in DOYPACK_ROUTE_CODES:
+        return "doypack"
+    return None
+
+
+def _packaging_route_options(db: Session) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for route in list_packaging_routes(db):
+        packaging_type = _packaging_route_type_for_code(route.code)
+        if packaging_type is None:
+            continue
+        rows.append(
+            {
+                "id": route.id,
+                "code": route.code,
+                "name": route.name,
+                "version": route.version,
+                "process_type": route.process_type,
+                "packaging_type": packaging_type,
+                "label": f"{route.code} - {route.name} v{route.version}",
+            }
+        )
+    return rows
+
+
+def _production_order_form_response(
+    request: Request,
+    db: Session,
+    *,
+    title: str,
+    error: str | None = None,
+    selected_product_id: int | None = None,
+    prefill_planned_qty: str = "",
+) -> HTMLResponse:
+    selected_product = None
+    if selected_product_id is not None:
+        selected_product = (
+            db.query(Product)
+            .filter(Product.id == selected_product_id, Product.is_manufactured.is_(True), Product.active.is_(True))
+            .one_or_none()
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_form.html",
+        context={
+            "title": title,
+            "product_options": _manufactured_product_options(db),
+            "selected_product": selected_product,
+            "error": error,
+            "selected_product_id": selected_product_id,
+            "prefill_planned_qty": prefill_planned_qty.strip(),
+        },
+    )
+
+
+def _packaging_batch_form_context(
+    request: Request,
+    db: Session,
+    *,
+    title: str,
+    batch: PackagingBatch | None = None,
+    error: str | None = None,
+    form_values: dict[str, str] | None = None,
+) -> dict[str, object]:
+    route_options = _packaging_route_options(db)
+    values = {
+        "production_date": batch.production_date.isoformat() if batch is not None else "",
+        "packaging_type": batch.packaging_type if batch is not None else "",
+        "route_id": str(batch.route_id) if batch is not None else "",
+        "notes": (batch.notes or "") if batch is not None else "",
+    }
+    if form_values:
+        values.update(form_values)
+    return {
+        "title": title,
+        "batch": batch,
+        "error": error,
+        "form_values": values,
+        "route_options": route_options,
+        "product_options": _manufactured_product_options(db),
+        "packaging_type_options": PACKAGING_TYPE_OPTIONS,
+        "packaging_type_label": packaging_type_label,
+        "is_edit_mode": batch is not None,
+    }
+
+
+def _packaging_batch_detail_context(
+    request: Request,
+    db: Session,
+    *,
+    batch_id: int,
+    error: str | None = None,
+    message: str | None = None,
+) -> dict[str, object]:
+    batch = get_packaging_batch(db, batch_id)
+    return {
+        "title": batch.internal_batch_number,
+        "batch": batch,
+        "error": error,
+        "message": message,
+        "packaging_type_label": packaging_type_label,
+    }
+
+
 def _production_order_detail_response(
     order_id: int,
     request: Request,
@@ -5546,7 +5673,7 @@ def create_production_order_from_planning(
             f"{quote('Selected product is not available for manufactured planning.')}"
         )
 
-    return _redirect(f"/production-orders/new?product_id={product.id}&planned_qty={quote(str(quantity))}")
+    return _redirect(f"/production-orders/new/individual?product_id={product.id}&planned_qty={quote(str(quantity))}")
 
 
 
@@ -7904,7 +8031,19 @@ async def import_production_orders(request: Request, file: UploadFile = File(...
 
 
 @app.get("/production-orders/new", response_class=HTMLResponse)
-def new_production_order(
+def new_production_order_selector(
+    request: Request,
+) -> HTMLResponse:
+    require_permission(request, "production_order.create")
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_new_select.html",
+        context={"title": "New Production Order"},
+    )
+
+
+@app.get("/production-orders/new/individual", response_class=HTMLResponse)
+def new_individual_production_order(
     request: Request,
     q: str = Query(""),
     product_id: int | None = Query(default=None),
@@ -7912,26 +8051,12 @@ def new_production_order(
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     require_permission(request, "production_order.create")
-    selected_product_id = product_id
-    selected_product = None
-    if selected_product_id is not None:
-        selected_product = (
-            db.query(Product)
-            .filter(Product.id == selected_product_id, Product.is_manufactured.is_(True), Product.active.is_(True))
-            .one_or_none()
-        )
-    product_options = _manufactured_product_options(db)
-    return templates.TemplateResponse(
-        request=request,
-        name="production_order_form.html",
-        context={
-            "title": "New Production Order",
-            "product_options": product_options,
-            "selected_product": selected_product,
-            "error": None,
-            "selected_product_id": selected_product_id,
-            "prefill_planned_qty": planned_qty.strip(),
-        },
+    return _production_order_form_response(
+        request,
+        db,
+        title="New Production Order",
+        selected_product_id=product_id,
+        prefill_planned_qty=planned_qty,
     )
 
 
@@ -7945,12 +8070,6 @@ def create_production_order_route(
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "production_order.create")
-    product_options = _manufactured_product_options(db)
-    selected_product = (
-        db.query(Product)
-        .filter(Product.id == product_id, Product.is_manufactured.is_(True), Product.active.is_(True))
-        .one_or_none()
-    )
     try:
         planned_qty_value = parse_optional_decimal(planned_qty, "Planned quantity")
         order = create_production_order(
@@ -7962,18 +8081,284 @@ def create_production_order_route(
         )
         return _redirect(f"/production-orders/{order.id}")
     except ProductionOrderValidationError as exc:
+        return _production_order_form_response(
+            request,
+            db,
+            title="New Production Order",
+            error=str(exc),
+            selected_product_id=product_id,
+            prefill_planned_qty=planned_qty,
+        )
+
+
+@app.get("/packaging-batches/new", response_class=HTMLResponse)
+def new_packaging_batch(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "production_order.create")
+    return templates.TemplateResponse(
+        request=request,
+        name="packaging_batch_form.html",
+        context=_packaging_batch_form_context(
+            request,
+            db,
+            title="New Packaging Batch",
+        ),
+    )
+
+
+@app.post("/packaging-batches")
+def create_packaging_batch_route(
+    request: Request,
+    production_date: date = Form(...),
+    packaging_type: str = Form(""),
+    route_id: int = Form(...),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "production_order.create")
+    try:
+        batch = create_packaging_batch(
+            db,
+            production_date=production_date,
+            packaging_type=packaging_type,
+            route_id=route_id,
+            notes=notes,
+            current_user=current_user,
+        )
+        return _redirect(f"/packaging-batches/{batch.id}/edit")
+    except PackagingBatchValidationError as exc:
         return templates.TemplateResponse(
             request=request,
-            name="production_order_form.html",
-            context={
-                "title": "New Production Order",
-                "product_options": product_options,
-                "selected_product": selected_product,
-                "error": str(exc),
-                "selected_product_id": product_id,
-                "prefill_planned_qty": planned_qty,
-            },
+            name="packaging_batch_form.html",
+            context=_packaging_batch_form_context(
+                request,
+                db,
+                title="New Packaging Batch",
+                error=str(exc),
+                form_values={
+                    "production_date": production_date.isoformat() if production_date else "",
+                    "packaging_type": packaging_type,
+                    "route_id": str(route_id) if route_id else "",
+                    "notes": notes,
+                },
+            ),
+            status_code=400,
         )
+
+
+@app.get("/packaging-batches/{batch_id}", response_class=HTMLResponse)
+def packaging_batch_detail(
+    batch_id: int,
+    request: Request,
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "production_order.view")
+    try:
+        context = _packaging_batch_detail_context(
+            request,
+            db,
+            batch_id=batch_id,
+            message=message,
+        )
+    except PackagingBatchValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return templates.TemplateResponse(
+        request=request,
+        name="packaging_batch_detail.html",
+        context=context,
+    )
+
+
+@app.get("/packaging-batches/{batch_id}/edit", response_class=HTMLResponse)
+def edit_packaging_batch_form(
+    batch_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "production_order.edit")
+    try:
+        batch = get_packaging_batch(db, batch_id)
+    except PackagingBatchValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return templates.TemplateResponse(
+        request=request,
+        name="packaging_batch_form.html",
+        context=_packaging_batch_form_context(
+            request,
+            db,
+            title=f"{batch.internal_batch_number} - Edit",
+            batch=batch,
+        ),
+    )
+
+
+@app.post("/packaging-batches/{batch_id}/edit")
+def edit_packaging_batch_route(
+    batch_id: int,
+    request: Request,
+    production_date: date = Form(...),
+    packaging_type: str = Form(""),
+    route_id: int = Form(...),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "production_order.edit")
+    try:
+        batch = update_packaging_batch_header(
+            db,
+            batch_id=batch_id,
+            production_date=production_date,
+            packaging_type=packaging_type,
+            route_id=route_id,
+            notes=notes,
+            current_user=current_user,
+        )
+        return _redirect(f"/packaging-batches/{batch.id}/edit")
+    except PackagingBatchValidationError as exc:
+        batch = get_packaging_batch(db, batch_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_form.html",
+            context=_packaging_batch_form_context(
+                request,
+                db,
+                title=f"{batch.internal_batch_number} - Edit",
+                batch=batch,
+                error=str(exc),
+                form_values={
+                    "production_date": production_date.isoformat() if production_date else "",
+                    "packaging_type": packaging_type,
+                    "route_id": str(route_id) if route_id else "",
+                    "notes": notes,
+                },
+            ),
+            status_code=400,
+        )
+
+
+@app.post("/packaging-batches/{batch_id}/lines")
+def add_packaging_batch_line_route(
+    batch_id: int,
+    request: Request,
+    product_id: str = Form(""),
+    planned_qty: str = Form(""),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "production_order.edit")
+    try:
+        if not str(product_id or "").strip():
+            raise PackagingBatchValidationError("Product is required.")
+        add_packaging_batch_real_line(
+            db,
+            batch_id=batch_id,
+            product_id=int(str(product_id).strip()),
+            planned_qty=planned_qty,
+            notes=notes,
+        )
+        return _redirect(f"/packaging-batches/{batch_id}/edit")
+    except (PackagingBatchValidationError, ValueError) as exc:
+        batch = get_packaging_batch(db, batch_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_form.html",
+            context=_packaging_batch_form_context(
+                request,
+                db,
+                title=f"{batch.internal_batch_number} - Edit",
+                batch=batch,
+                error=str(exc),
+            ),
+            status_code=400,
+        )
+
+
+@app.post("/packaging-batches/{batch_id}/lines/{line_id}/edit")
+def edit_packaging_batch_line_route(
+    batch_id: int,
+    line_id: int,
+    request: Request,
+    planned_qty: str = Form(""),
+    notes: str = Form(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "production_order.edit")
+    try:
+        update_packaging_batch_line(
+            db,
+            batch_id=batch_id,
+            line_id=line_id,
+            planned_qty=planned_qty,
+            notes=notes,
+        )
+        return _redirect(f"/packaging-batches/{batch_id}/edit")
+    except PackagingBatchValidationError as exc:
+        batch = get_packaging_batch(db, batch_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_form.html",
+            context=_packaging_batch_form_context(
+                request,
+                db,
+                title=f"{batch.internal_batch_number} - Edit",
+                batch=batch,
+                error=str(exc),
+            ),
+            status_code=400,
+        )
+
+
+@app.post("/packaging-batches/{batch_id}/lines/{line_id}/delete")
+def delete_packaging_batch_line_route(
+    batch_id: int,
+    line_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "production_order.edit")
+    try:
+        delete_packaging_batch_line(db, batch_id=batch_id, line_id=line_id)
+        return _redirect(f"/packaging-batches/{batch_id}/edit")
+    except PackagingBatchValidationError as exc:
+        batch = get_packaging_batch(db, batch_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_form.html",
+            context=_packaging_batch_form_context(
+                request,
+                db,
+                title=f"{batch.internal_batch_number} - Edit",
+                batch=batch,
+                error=str(exc),
+            ),
+            status_code=400,
+        )
+
+
+@app.get("/packaging-batches/{batch_id}/print", response_class=HTMLResponse)
+def print_packaging_batch(
+    batch_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "production_order.view")
+    try:
+        batch = get_packaging_batch(db, batch_id)
+    except PackagingBatchValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return templates.TemplateResponse(
+        request=request,
+        name="packaging_batch_print.html",
+        context={
+            "title": f"{batch.internal_batch_number} - Packaging Batch",
+            "batch": batch,
+            "packaging_type_label": packaging_type_label,
+            "printed_at": datetime.now(),
+        },
+    )
 
 
 @app.get("/production-orders/{order_id}", response_class=HTMLResponse)

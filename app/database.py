@@ -1651,6 +1651,13 @@ def _ensure_b2c_sales_orders_channel_constraint_removed(connection) -> None:
     )
 
 
+def ensure_packaging_batch_tables() -> None:
+    from app.models import PackagingBatch, PackagingBatchLine
+
+    PackagingBatch.__table__.create(bind=engine, checkfirst=True)
+    PackagingBatchLine.__table__.create(bind=engine, checkfirst=True)
+
+
 def _ensure_columns(connection, table_name: str, column_definitions: dict[str, str]) -> None:
     columns = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
     if not columns:

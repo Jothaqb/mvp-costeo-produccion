@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ batch.internal_batch_number }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+
+    <dl class="summary">
+      <div>
+        <dt>Status</dt>
+        <dd>{{ batch.status }}</dd>
+      </div>
+      <div>
+        <dt>Packaging type</dt>
+        <dd>{{ packaging_type_label(batch.packaging_type) }}</dd>
+      </div>
+      <div>
+        <dt>Route</dt>
+        <dd>{{ batch.route_name_snapshot }} v{{ batch.route_version_snapshot }}</dd>
+      </div>
+      <div>
+        <dt>Process</dt>
+        <dd>{{ batch.process_type }}</dd>
+      </div>
+      <div>
+        <dt>Production date</dt>
+        <dd>{{ batch.production_date }}</dd>
+      </div>
+      <div>
+        <dt>Notes</dt>
+        <dd>{{ batch.notes or "" }}</dd>
+      </div>
+      <div>
+        <dt>Created by</dt>
+        <dd>{{ batch.created_by_user.username if batch.created_by_user else "" }}</dd>
+      </div>
+      <div>
+        <dt>Updated by</dt>
+        <dd>{{ batch.updated_by_user.username if batch.updated_by_user else "" }}</dd>
+      </div>
+    </dl>
+
+    <div class="actions">
+      <a role="button" href="/packaging-batches/{{ batch.id }}/print" target="_blank" aria-label="Print packaging batch" title="Print packaging batch">&#128424;</a>
+      {% if batch.status == "draft" and can(request, "production_order.edit") %}
+        <a role="button" href="/packaging-batches/{{ batch.id }}/edit">Edit draft</a>
+      {% endif %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Lines</h2>
+    {% if batch.lines %}
+      <table>
+        <thead>
+          <tr>
+            <th>Line</th>
+            <th>SKU</th>
+            <th>Product name</th>
+            <th>Planned qty</th>
+            <th>Unit</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in batch.lines %}
+            <tr>
+              <td>{{ line.line_number }}</td>
+              <td>{{ line.product_sku_snapshot or "" }}</td>
+              <td>{{ line.product_name_snapshot }}</td>
+              <td>{{ fmt.number_3(line.planned_qty) }}</td>
+              <td>{{ line.unit_snapshot or "" }}</td>
+              <td>{{ line.notes or "" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No lines have been added yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}
