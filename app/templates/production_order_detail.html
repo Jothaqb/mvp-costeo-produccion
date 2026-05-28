@@ -79,9 +79,23 @@
         <dt>Variance percent</dt>
         <dd>{{ order.variance_percent if order.variance_percent is not none else "" }}</dd>
       </div>
+      {% if order.status == "reversed" %}
+        <div>
+          <dt>Reversed at</dt>
+          <dd>{{ order.reversed_at or "" }}</dd>
+        </div>
+        <div>
+          <dt>Reversed by</dt>
+          <dd>{{ order.reversed_by_user.username if order.reversed_by_user else "" }}</dd>
+        </div>
+        <div>
+          <dt>Reversal reason</dt>
+          <dd>{{ order.reversal_reason or "" }}</dd>
+        </div>
+      {% endif %}
     </dl>
 
-    {% if not is_closed %}
+    {% if not is_locked %}
       <div class="actions">
         <a role="button" href="/production-orders/{{ order.id }}/print" target="_blank" aria-label="Print worksheet" title="Print worksheet">&#128424;</a>
         {% if can_edit_bom %}
@@ -108,6 +122,13 @@
           </form>
         {% endif %}
       </div>
+    {% elif can_reverse_closed_order %}
+      <div class="actions">
+        <a role="button" href="/production-orders/{{ order.id }}/reverse">Reverse closed order</a>
+      </div>
+      <p>Closed orders are read-only.</p>
+    {% elif order.status == "reversed" %}
+      <p>Reversed orders are read-only.</p>
     {% else %}
       <p>Closed orders are read-only.</p>
     {% endif %}
@@ -115,7 +136,7 @@
 
   <section>
     <h2>Yield Capture</h2>
-    {% if not is_closed and can(request, "production_order.edit") %}
+    {% if not is_locked and can(request, "production_order.edit") %}
       <form method="post" action="/production-orders/{{ order.id }}/yield">
         <label for="input_qty">Input quantity</label>
         <input id="input_qty" name="input_qty" value="{{ order.input_qty if order.input_qty is not none else '' }}">
@@ -125,14 +146,14 @@
 
         <button type="submit">Save yield</button>
       </form>
-    {% elif not is_closed %}
+    {% elif not is_locked %}
       <p>You can review current yield values above.</p>
     {% endif %}
   </section>
 
   <section>
     <h2>Activity Time Capture</h2>
-    {% if not is_closed and can(request, "production_order.edit") %}
+    {% if not is_locked and can(request, "production_order.edit") %}
       <form method="post" action="/production-orders/{{ order.id }}/activities">
         <table>
           <thead>

@@ -21,3 +21,4 @@ class ProductionOrderStatus(str, Enum):
     DRAFT = "draft"
     IN_PROGRESS = "in_progress"
     CLOSED = "closed"
+    REVERSED = "reversed"

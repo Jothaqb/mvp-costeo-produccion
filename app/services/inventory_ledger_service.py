@@ -15,6 +15,8 @@ ALLOWED_TRANSACTION_TYPES = {
     "po_receipt",
     "production_receipt",
     "production_component_consumption",
+    "production_component_return",
+    "production_receipt_reversal",
     "b2b_invoice_sale",
     "b2c_sale",
     "manual_adjustment",
@@ -221,6 +223,71 @@ def post_outgoing_movement(
         total_cost=cogs,
         running_quantity=new_quantity,
         running_average_cost=current_average_cost.quantize(DECIMAL_QUANT),
+        running_inventory_value=new_inventory_value,
+        notes=(notes or "").strip() or None,
+    )
+    db.add(transaction)
+    db.flush()
+    _sync_balance_from_transaction(balance, transaction)
+    db.flush()
+    return InventoryPostingResult(transaction=transaction, balance=balance, warnings=warnings)
+
+
+def post_outgoing_movement_with_unit_cost(
+    db: Session,
+    *,
+    product_id: int,
+    transaction_type: str,
+    outgoing_qty: Decimal | str,
+    outgoing_unit_cost: Decimal | str,
+    transaction_date: datetime | None = None,
+    source_type: str | None = None,
+    source_id: int | None = None,
+    source_line_id: int | None = None,
+    notes: str | None = None,
+) -> InventoryPostingResult:
+    transaction_type = _normalize_transaction_type(transaction_type)
+    outgoing_qty = _normalize_decimal(outgoing_qty, "Outgoing quantity")
+    if outgoing_qty <= ZERO:
+        raise InventoryLedgerValidationError("Outgoing quantity must be greater than 0.")
+
+    outgoing_unit_cost = _normalize_decimal(outgoing_unit_cost, "Outgoing unit cost")
+    if outgoing_unit_cost < ZERO:
+        raise InventoryLedgerValidationError("Outgoing unit cost cannot be negative.")
+
+    product = db.query(Product).filter(Product.id == product_id).one()
+    balance = get_or_create_inventory_balance(db, product_id)
+    transaction_date = transaction_date or datetime.utcnow()
+
+    current_qty = _normalize_decimal(balance.on_hand_qty, "Current quantity")
+    current_inventory_value = _normalize_decimal(balance.inventory_value, "Current inventory value")
+    new_quantity = (current_qty - outgoing_qty).quantize(DECIMAL_QUANT)
+    total_cost = (outgoing_qty * outgoing_unit_cost).quantize(DECIMAL_QUANT)
+    new_inventory_value = (current_inventory_value - total_cost).quantize(DECIMAL_QUANT)
+    if new_quantity == ZERO:
+        new_average_cost = ZERO
+    else:
+        new_average_cost = (new_inventory_value / new_quantity).quantize(DECIMAL_QUANT)
+
+    warnings: list[str] = []
+    if new_quantity < ZERO:
+        warnings.append(
+            f"Movement leaves product {product.sku} with negative on-hand quantity {new_quantity}."
+        )
+
+    transaction = InventoryTransaction(
+        product_id=product.id,
+        transaction_date=transaction_date,
+        transaction_type=transaction_type,
+        source_type=(source_type or "").strip() or None,
+        source_id=source_id,
+        source_line_id=source_line_id,
+        quantity_in=ZERO,
+        quantity_out=outgoing_qty.quantize(DECIMAL_QUANT),
+        unit_cost=outgoing_unit_cost,
+        total_cost=total_cost,
+        running_quantity=new_quantity,
+        running_average_cost=new_average_cost,
         running_inventory_value=new_inventory_value,
         notes=(notes or "").strip() or None,
     )

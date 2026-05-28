@@ -210,6 +210,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    reversed_production_orders: Mapped[list["ProductionOrder"]] = relationship(
+        "ProductionOrder",
+        back_populates="reversed_by_user",
+        foreign_keys="ProductionOrder.reversed_by_user_id",
+    )
 
 
 class Role(Base):
@@ -1055,7 +1060,7 @@ class ProductionOrder(Base):
     __tablename__ = "production_orders"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft', 'in_progress', 'closed')",
+            "status IN ('draft', 'in_progress', 'closed', 'reversed')",
             name="ck_production_orders_status",
         ),
     )
@@ -1103,9 +1108,13 @@ class ProductionOrder(Base):
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reversed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reversal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     product: Mapped[Product] = relationship()
     route: Mapped[Route] = relationship()
+    reversed_by_user: Mapped["User | None"] = relationship("User", foreign_keys=[reversed_by_user_id])
     materials: Mapped[list["ProductionOrderMaterial"]] = relationship(
         back_populates="production_order",
         cascade="all, delete-orphan",

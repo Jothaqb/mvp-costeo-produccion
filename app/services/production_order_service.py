@@ -21,8 +21,15 @@ from app.models import (
     ProductionOrderMaterial,
     Route,
     RouteActivity,
+    User,
 )
 from app.schemas import ProductionOrderStatus
+from app.services.audit_service import (
+    safe_log_audit_event,
+    snapshot_production_order_activities_for_audit,
+    snapshot_production_order_bom_for_audit,
+    snapshot_production_order_for_audit,
+)
 from app.services.costing_service import (
     INPUT_SCALED_PROCESS_TYPES,
     CostingValidationError,
@@ -33,6 +40,7 @@ from app.services.inventory_ledger_service import (
     get_or_create_inventory_balance,
     post_incoming_movement,
     post_outgoing_movement,
+    post_outgoing_movement_with_unit_cost,
 )
 
 
@@ -46,19 +54,39 @@ LOT_SEQUENCE_START = 1
 ZERO = Decimal("0")
 ONE = Decimal("1")
 LEDGER_PRODUCTION_SOURCE_TYPE = "production_order"
+LEDGER_PRODUCTION_REVERSAL_SOURCE_TYPE = "production_order_reversal"
 LEDGER_COMPONENT_CONSUMPTION_TYPE = "production_component_consumption"
+LEDGER_COMPONENT_RETURN_TYPE = "production_component_return"
 LEDGER_PRODUCTION_RECEIPT_TYPE = "production_receipt"
+LEDGER_PRODUCTION_RECEIPT_REVERSAL_TYPE = "production_receipt_reversal"
 ROUTE_CODE_BOM_TOTAL_EXEMPT = "R_DESHID_GRANEL"
 LEDGER_PRODUCTION_RECEIPT_NOTE = (
     "Ledger production receipt cost calculated from ledger component consumption + "
     "labor/overhead/machine. ProductionOrder.real_unit_cost remains unchanged."
 )
+PRODUCTION_ORDER_REVERSAL_ADMIN_ROLE_CODE = "admin"
 
 
 @dataclass(frozen=True)
 class ProductionOrderClosePostingResult:
     order: ProductionOrder
     warnings: list[str]
+
+
+@dataclass(frozen=True)
+class ProductionOrderOriginalTransactions:
+    component_transactions: list[InventoryTransaction]
+    receipt_transaction: InventoryTransaction
+
+    @property
+    def all_transactions(self) -> list[InventoryTransaction]:
+        return [*self.component_transactions, self.receipt_transaction]
+
+
+@dataclass(frozen=True)
+class ProductionOrderReversalPlan:
+    original_transactions: ProductionOrderOriginalTransactions
+    reversal_timestamp: datetime
 
 
 def parse_optional_decimal(value: str | Decimal | None, field_name: str) -> Decimal | None:
@@ -370,8 +398,405 @@ def close_order_with_inventory_posting(db: Session, order_id: int) -> Production
     return ProductionOrderClosePostingResult(order=order, warnings=warnings)
 
 
+def reverse_closed_production_order(
+    db: Session,
+    order_id: int,
+    reversal_reason: str,
+    reversed_by_user_id: int,
+) -> ProductionOrder:
+    normalized_reason = (reversal_reason or "").strip()
+    acting_user = _get_reversal_admin_user(db, reversed_by_user_id)
+    order = get_order(db, order_id)
+
+    try:
+        plan = _build_reversal_plan(db, order, normalized_reason)
+        old_values = _build_production_order_reversal_audit_payload(
+            order,
+            plan.original_transactions,
+            reversal_transactions=None,
+            reversal_reason=normalized_reason,
+        )
+        reversal_transactions = _post_production_order_reversal(db, order, plan)
+        order.status = ProductionOrderStatus.REVERSED.value
+        order.reversed_at = plan.reversal_timestamp
+        order.reversed_by_user_id = acting_user.id
+        order.reversal_reason = normalized_reason
+        db.commit()
+    except ProductionOrderValidationError as exc:
+        db.rollback()
+        _log_production_order_reversal_blocked(
+            order=order,
+            user=acting_user,
+            reversal_reason=normalized_reason,
+            message=str(exc),
+        )
+        raise
+    except InventoryLedgerValidationError as exc:
+        db.rollback()
+        message = str(exc)
+        _log_production_order_reversal_blocked(
+            order=order,
+            user=acting_user,
+            reversal_reason=normalized_reason,
+            message=message,
+        )
+        raise ProductionOrderValidationError(message) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(order)
+    new_values = _build_production_order_reversal_audit_payload(
+        order,
+        plan.original_transactions,
+        reversal_transactions=reversal_transactions,
+        reversal_reason=normalized_reason,
+    )
+    safe_log_audit_event(
+        module="production_orders",
+        action="production_order_reversed",
+        entity_type="production_order",
+        entity_id=order.id,
+        entity_label=order.internal_order_number,
+        old_values=old_values,
+        new_values=new_values,
+        notes=normalized_reason,
+        user=acting_user,
+    )
+    return order
+
+
 def get_order(db: Session, order_id: int) -> ProductionOrder:
     return db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+
+
+def _get_reversal_admin_user(db: Session, user_id: int) -> User:
+    user = (
+        db.query(User)
+        .options(joinedload(User.roles))
+        .filter(User.id == user_id)
+        .one_or_none()
+    )
+    if user is None or not user.is_active:
+        raise ProductionOrderValidationError("Only active admin users can reverse closed production orders.")
+    if not any(
+        role.active and (role.code or "").strip().lower() == PRODUCTION_ORDER_REVERSAL_ADMIN_ROLE_CODE
+        for role in user.roles
+    ):
+        raise ProductionOrderValidationError("Only admin users can reverse closed production orders.")
+    return user
+
+
+def _build_reversal_plan(
+    db: Session,
+    order: ProductionOrder,
+    reversal_reason: str,
+) -> ProductionOrderReversalPlan:
+    _ensure_order_can_be_reversed(order, reversal_reason)
+    _ensure_no_existing_reversal_transactions(db, order)
+    original_transactions = _get_original_production_transactions(db, order)
+    _ensure_sufficient_finished_good_stock_for_reversal(db, order, original_transactions.receipt_transaction)
+    _ensure_no_conflicting_transactions_after_close(db, original_transactions)
+    return ProductionOrderReversalPlan(
+        original_transactions=original_transactions,
+        reversal_timestamp=datetime.utcnow(),
+    )
+
+
+def _ensure_order_can_be_reversed(order: ProductionOrder, reversal_reason: str) -> None:
+    if order.status == ProductionOrderStatus.REVERSED.value:
+        raise ProductionOrderValidationError("Production order has already been reversed.")
+    if order.status != ProductionOrderStatus.CLOSED.value:
+        raise ProductionOrderValidationError("Only closed production orders can be reversed.")
+    if not reversal_reason:
+        raise ProductionOrderValidationError("Reversal reason is required.")
+
+
+def _ensure_no_existing_reversal_transactions(db: Session, order: ProductionOrder) -> None:
+    existing_transaction = (
+        db.query(InventoryTransaction.id)
+        .filter(
+            InventoryTransaction.source_type == LEDGER_PRODUCTION_REVERSAL_SOURCE_TYPE,
+            InventoryTransaction.source_id == order.id,
+        )
+        .first()
+    )
+    if existing_transaction is not None:
+        raise ProductionOrderValidationError(
+            f"Production order {order.internal_order_number} already has reversal inventory transactions."
+        )
+
+
+def _get_original_production_transactions(
+    db: Session,
+    order: ProductionOrder,
+) -> ProductionOrderOriginalTransactions:
+    transactions = (
+        db.query(InventoryTransaction)
+        .options(joinedload(InventoryTransaction.product))
+        .filter(
+            InventoryTransaction.source_type == LEDGER_PRODUCTION_SOURCE_TYPE,
+            InventoryTransaction.source_id == order.id,
+            InventoryTransaction.transaction_type.in_(
+                [LEDGER_COMPONENT_CONSUMPTION_TYPE, LEDGER_PRODUCTION_RECEIPT_TYPE]
+            ),
+        )
+        .order_by(InventoryTransaction.id)
+        .all()
+    )
+
+    component_transactions = [
+        transaction
+        for transaction in transactions
+        if transaction.transaction_type == LEDGER_COMPONENT_CONSUMPTION_TYPE
+    ]
+    receipt_transactions = [
+        transaction
+        for transaction in transactions
+        if transaction.transaction_type == LEDGER_PRODUCTION_RECEIPT_TYPE
+    ]
+
+    if not component_transactions:
+        raise ProductionOrderValidationError(
+            f"Production order {order.internal_order_number} has no component consumption transactions to reverse."
+        )
+    if len(receipt_transactions) != 1:
+        raise ProductionOrderValidationError(
+            f"Production order {order.internal_order_number} must have exactly one production receipt transaction to reverse."
+        )
+
+    receipt_transaction = receipt_transactions[0]
+    if receipt_transaction.product_id != order.product_id:
+        raise ProductionOrderValidationError(
+            f"Production receipt transaction for {order.internal_order_number} does not match the finished good product."
+        )
+    if receipt_transaction.quantity_in is None or receipt_transaction.quantity_in <= ZERO:
+        raise ProductionOrderValidationError(
+            f"Production receipt transaction for {order.internal_order_number} has no valid received quantity."
+        )
+    if receipt_transaction.unit_cost is None:
+        raise ProductionOrderValidationError(
+            f"Production receipt transaction for {order.internal_order_number} has no historical unit cost."
+        )
+
+    expected_component_line_ids: set[int] = set()
+    for material in order.materials:
+        consumed_qty = _calculate_ledger_material_consumption_quantity(order, material)
+        if consumed_qty > ZERO:
+            expected_component_line_ids.add(material.id)
+
+    component_line_ids = {transaction.source_line_id for transaction in component_transactions}
+    if None in component_line_ids:
+        raise ProductionOrderValidationError(
+            f"Production order {order.internal_order_number} has component consumption transactions without source material lines."
+        )
+    missing_component_line_ids = expected_component_line_ids - {int(line_id) for line_id in component_line_ids if line_id is not None}
+    if missing_component_line_ids:
+        raise ProductionOrderValidationError(
+            f"Production order {order.internal_order_number} is missing component consumption transactions for material lines "
+            f"{sorted(missing_component_line_ids)}."
+        )
+
+    for transaction in component_transactions:
+        if transaction.quantity_out is None or transaction.quantity_out <= ZERO:
+            raise ProductionOrderValidationError(
+                f"Component consumption transaction {transaction.id} has no valid consumed quantity."
+            )
+        if transaction.unit_cost is None:
+            raise ProductionOrderValidationError(
+                f"Component consumption transaction {transaction.id} has no historical unit cost."
+            )
+
+    return ProductionOrderOriginalTransactions(
+        component_transactions=component_transactions,
+        receipt_transaction=receipt_transaction,
+    )
+
+
+def _ensure_sufficient_finished_good_stock_for_reversal(
+    db: Session,
+    order: ProductionOrder,
+    receipt_transaction: InventoryTransaction,
+) -> None:
+    balance = get_or_create_inventory_balance(db, order.product_id)
+    current_qty = balance.on_hand_qty if balance.on_hand_qty is not None else ZERO
+    required_qty = receipt_transaction.quantity_in if receipt_transaction.quantity_in is not None else ZERO
+    if current_qty < required_qty:
+        raise ProductionOrderValidationError(
+            f"Cannot reverse {order.internal_order_number} because finished good stock is insufficient. "
+            f"Available: {current_qty}. Required: {required_qty}."
+        )
+
+
+def _ensure_no_conflicting_transactions_after_close(
+    db: Session,
+    original_transactions: ProductionOrderOriginalTransactions,
+) -> None:
+    latest_original_ids_by_product: dict[int, int] = {}
+    original_transaction_ids = {transaction.id for transaction in original_transactions.all_transactions}
+
+    for transaction in original_transactions.all_transactions:
+        current_latest = latest_original_ids_by_product.get(transaction.product_id, 0)
+        if transaction.id > current_latest:
+            latest_original_ids_by_product[transaction.product_id] = transaction.id
+
+    conflicting_transactions: list[InventoryTransaction] = []
+    for product_id, latest_original_id in latest_original_ids_by_product.items():
+        product_transactions = (
+            db.query(InventoryTransaction)
+            .options(joinedload(InventoryTransaction.product))
+            .filter(
+                InventoryTransaction.product_id == product_id,
+                InventoryTransaction.id > latest_original_id,
+            )
+            .order_by(InventoryTransaction.id)
+            .all()
+        )
+        for transaction in product_transactions:
+            if transaction.id not in original_transaction_ids:
+                conflicting_transactions.append(transaction)
+
+    if conflicting_transactions:
+        conflict_descriptions = ", ".join(
+            f"{transaction.product.sku if transaction.product is not None else transaction.product_id}"
+            f" via {transaction.transaction_type}#{transaction.id}"
+            for transaction in conflicting_transactions[:5]
+        )
+        raise ProductionOrderValidationError(
+            "Cannot reverse this production order because later inventory transactions already exist for involved products: "
+            f"{conflict_descriptions}."
+        )
+
+
+def _post_production_order_reversal(
+    db: Session,
+    order: ProductionOrder,
+    plan: ProductionOrderReversalPlan,
+) -> list[InventoryTransaction]:
+    reversal_transactions: list[InventoryTransaction] = []
+    reversal_timestamp = plan.reversal_timestamp
+
+    for component_transaction in sorted(plan.original_transactions.component_transactions, key=lambda item: item.id):
+        result = post_incoming_movement(
+            db,
+            product_id=component_transaction.product_id,
+            transaction_type=LEDGER_COMPONENT_RETURN_TYPE,
+            incoming_qty=component_transaction.quantity_out,
+            incoming_unit_cost=component_transaction.unit_cost,
+            transaction_date=reversal_timestamp,
+            source_type=LEDGER_PRODUCTION_REVERSAL_SOURCE_TYPE,
+            source_id=order.id,
+            source_line_id=component_transaction.source_line_id,
+            notes=(
+                f"Production order {order.internal_order_number} reversal component return "
+                f"for original transaction {component_transaction.id}."
+            ),
+        )
+        reversal_transactions.append(result.transaction)
+
+    receipt_transaction = plan.original_transactions.receipt_transaction
+    receipt_reversal_result = post_outgoing_movement_with_unit_cost(
+        db,
+        product_id=receipt_transaction.product_id,
+        transaction_type=LEDGER_PRODUCTION_RECEIPT_REVERSAL_TYPE,
+        outgoing_qty=receipt_transaction.quantity_in,
+        outgoing_unit_cost=receipt_transaction.unit_cost,
+        transaction_date=reversal_timestamp,
+        source_type=LEDGER_PRODUCTION_REVERSAL_SOURCE_TYPE,
+        source_id=order.id,
+        source_line_id=receipt_transaction.source_line_id,
+        notes=(
+            f"Production order {order.internal_order_number} reversal finished good outgoing "
+            f"for original receipt transaction {receipt_transaction.id}."
+        ),
+    )
+    reversal_transactions.append(receipt_reversal_result.transaction)
+    return reversal_transactions
+
+
+def _build_production_order_reversal_audit_payload(
+    order: ProductionOrder,
+    original_transactions: ProductionOrderOriginalTransactions,
+    *,
+    reversal_transactions: list[InventoryTransaction] | None,
+    reversal_reason: str,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "order": snapshot_production_order_for_audit(order),
+        "materials": snapshot_production_order_bom_for_audit(order),
+        "activities": snapshot_production_order_activities_for_audit(order),
+        "finished_good_reversal_quantity": original_transactions.receipt_transaction.quantity_in,
+        "returned_components": [
+            {
+                "product_id": transaction.product_id,
+                "product_sku": transaction.product.sku if transaction.product is not None else None,
+                "quantity": transaction.quantity_out,
+                "unit_cost": transaction.unit_cost,
+                "original_transaction_id": transaction.id,
+                "source_line_id": transaction.source_line_id,
+            }
+            for transaction in original_transactions.component_transactions
+        ],
+        "original_transactions": [
+            _snapshot_inventory_transaction_for_reversal_audit(transaction)
+            for transaction in original_transactions.all_transactions
+        ],
+        "reversal_reason": reversal_reason,
+    }
+    if reversal_transactions is not None:
+        payload["reversal_transactions"] = [
+            _snapshot_inventory_transaction_for_reversal_audit(transaction)
+            for transaction in reversal_transactions
+        ]
+    return payload
+
+
+def _snapshot_inventory_transaction_for_reversal_audit(
+    transaction: InventoryTransaction,
+) -> dict[str, object]:
+    return {
+        "transaction_id": transaction.id,
+        "product_id": transaction.product_id,
+        "product_sku": transaction.product.sku if transaction.product is not None else None,
+        "transaction_type": transaction.transaction_type,
+        "source_type": transaction.source_type,
+        "source_id": transaction.source_id,
+        "source_line_id": transaction.source_line_id,
+        "transaction_date": transaction.transaction_date,
+        "quantity_in": transaction.quantity_in,
+        "quantity_out": transaction.quantity_out,
+        "unit_cost": transaction.unit_cost,
+        "total_cost": transaction.total_cost,
+        "running_quantity": transaction.running_quantity,
+        "running_average_cost": transaction.running_average_cost,
+        "running_inventory_value": transaction.running_inventory_value,
+        "notes": transaction.notes,
+    }
+
+
+def _log_production_order_reversal_blocked(
+    *,
+    order: ProductionOrder,
+    user: User,
+    reversal_reason: str,
+    message: str,
+) -> None:
+    safe_log_audit_event(
+        module="production_orders",
+        action="production_order_reversal_blocked",
+        entity_type="production_order",
+        entity_id=order.id,
+        entity_label=order.internal_order_number,
+        old_values={
+            "order": snapshot_production_order_for_audit(order),
+            "materials": snapshot_production_order_bom_for_audit(order),
+            "activities": snapshot_production_order_activities_for_audit(order),
+            "attempted_reversal_reason": reversal_reason,
+        },
+        new_values={"blocked_reason": message},
+        notes=message,
+        user=user,
+    )
 
 
 def _generate_internal_order_number(db: Session) -> str:

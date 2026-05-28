@@ -326,6 +326,7 @@ from app.services.production_order_service import (
     delete_open_production_order,
     parse_optional_decimal,
     refresh_order_bom_from_master,
+    reverse_closed_production_order,
     start_order,
     update_activity_capture,
     update_order_bom,
@@ -376,6 +377,7 @@ ALLOWED_LOGO_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 MASTER_DATA_DEACTIVATE_ROLE_CODES = {"admin", "general_approver"}
 PRODUCTION_ORDER_IN_PROGRESS_DELETE_ROLE_CODES = {"admin", "general_approver"}
+PRODUCTION_ORDER_REVERSE_ROLE_CODES = {"admin"}
 AUTH_PUBLIC_EXTRA_PATHS = {
     "/auth/forgot-password",
     "/auth/reset-password",
@@ -2146,11 +2148,70 @@ def _can_delete_in_progress_production_order(request: Request) -> bool:
     return bool(_current_role_codes(request) & PRODUCTION_ORDER_IN_PROGRESS_DELETE_ROLE_CODES)
 
 
+def _can_reverse_closed_production_order(request: Request) -> bool:
+    return bool(_current_role_codes(request) & PRODUCTION_ORDER_REVERSE_ROLE_CODES)
+
+
+def _require_production_order_reversal_admin(request: Request):
+    current_user = require_authenticated_user(request)
+    if not _can_reverse_closed_production_order(request):
+        raise HTTPException(status_code=403, detail="Only admin users can reverse closed production orders.")
+    return current_user
+
+
 def _production_order_delete_audit_snapshot(order: ProductionOrder) -> dict[str, object]:
     return {
         "order": snapshot_production_order_for_audit(order),
         "materials": snapshot_production_order_bom_for_audit(order),
         "activities": snapshot_production_order_activities_for_audit(order),
+    }
+
+
+def _production_order_reverse_context(
+    order_id: int,
+    request: Request,
+    db: Session,
+    *,
+    error: str | None = None,
+    reversal_reason: str = "",
+) -> dict[str, object]:
+    order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    component_transactions = (
+        db.query(InventoryTransaction)
+        .options(joinedload(InventoryTransaction.product))
+        .filter(
+            InventoryTransaction.source_type == "production_order",
+            InventoryTransaction.source_id == order_id,
+            InventoryTransaction.transaction_type == "production_component_consumption",
+        )
+        .order_by(InventoryTransaction.id)
+        .all()
+    )
+    receipt_transaction = (
+        db.query(InventoryTransaction)
+        .options(joinedload(InventoryTransaction.product))
+        .filter(
+            InventoryTransaction.source_type == "production_order",
+            InventoryTransaction.source_id == order_id,
+            InventoryTransaction.transaction_type == "production_receipt",
+        )
+        .one_or_none()
+    )
+    materials_by_id = {
+        material.id: material
+        for material in db.query(ProductionOrderMaterial)
+        .filter(ProductionOrderMaterial.production_order_id == order_id)
+        .order_by(ProductionOrderMaterial.id)
+        .all()
+    }
+    return {
+        "title": "Reverse Production Order",
+        "order": order,
+        "component_transactions": component_transactions,
+        "receipt_transaction": receipt_transaction,
+        "materials_by_id": materials_by_id,
+        "error": error,
+        "reversal_reason": reversal_reason,
     }
 
 
@@ -2569,6 +2630,8 @@ def _production_order_detail_response(
         if order.status == "in_progress"
         else "Are you sure you want to delete this draft production order? This action cannot be undone."
     )
+    is_locked = order.status in {ProductionOrderStatus.CLOSED.value, ProductionOrderStatus.REVERSED.value}
+    can_reverse_closed_order = order.status == ProductionOrderStatus.CLOSED.value and _can_reverse_closed_production_order(request)
     return templates.TemplateResponse(
         request=request,
         name="production_order_detail.html",
@@ -2581,11 +2644,12 @@ def _production_order_detail_response(
             "inventory_readiness": build_production_inventory_readiness(db, order_id),
             "error": error,
             "message": message,
-            "is_closed": order.status == "closed",
+            "is_locked": is_locked,
             "can_edit_bom": can_edit_bom,
             "can_refresh_bom_from_master": can_refresh_bom_from_master,
             "can_delete_order": can_delete_draft or can_delete_in_progress,
             "delete_confirm_message": delete_confirm_message,
+            "can_reverse_closed_order": can_reverse_closed_order,
         },
     )
 
@@ -8014,6 +8078,8 @@ async def update_production_order_activities(
         .filter(ProductionOrder.id == order_id)
         .one()
     )
+    if order_before.status == ProductionOrderStatus.REVERSED.value:
+        return _production_order_detail_response(order_id, request, db, "Reversed orders are read-only.")
     old_snapshot = snapshot_production_order_activities_for_audit(order_before)
     form = await request.form()
     activity_ids = form.getlist("activity_id")
@@ -8062,6 +8128,8 @@ def update_production_order_yield(
     require_permission(request, "production_order.edit")
     try:
         order_before = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+        if order_before.status == ProductionOrderStatus.REVERSED.value:
+            return _production_order_detail_response(order_id, request, db, "Reversed orders are read-only.")
         old_snapshot = snapshot_production_order_for_audit(order_before)
         input_qty_value = parse_optional_decimal(input_qty, "Input quantity")
         output_qty_value = parse_optional_decimal(output_qty, "Output quantity")
@@ -8252,6 +8320,13 @@ def delete_production_order_route(order_id: int, request: Request, db: Session =
         .filter(ProductionOrder.id == order_id)
         .one()
     )
+    if order.status == ProductionOrderStatus.REVERSED.value:
+        return _production_order_detail_response(
+            order_id,
+            request,
+            db,
+            "Reversed orders cannot be deleted.",
+        )
     if order.status == "closed":
         return _production_order_detail_response(
             order_id,
@@ -8283,6 +8358,72 @@ def delete_production_order_route(order_id: int, request: Request, db: Session =
         return _redirect("/production-orders")
     except ProductionOrderValidationError as exc:
         return _production_order_detail_response(order_id, request, db, str(exc))
+
+
+@app.get("/production-orders/{order_id}/reverse", response_class=HTMLResponse)
+def reverse_production_order_form(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    require_permission(request, "production_order.view")
+    _require_production_order_reversal_admin(request)
+    order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    if order.status != ProductionOrderStatus.CLOSED.value:
+        return _production_order_detail_response(
+            order_id,
+            request,
+            db,
+            "Only closed production orders can be reversed.",
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="production_order_reverse.html",
+        context=_production_order_reverse_context(order_id, request, db),
+    )
+
+
+@app.post("/production-orders/{order_id}/reverse")
+async def reverse_production_order_route(order_id: int, request: Request, db: Session = Depends(get_db)) -> Response:
+    require_permission(request, "production_order.view")
+    current_user = _require_production_order_reversal_admin(request)
+    order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    if order.status != ProductionOrderStatus.CLOSED.value:
+        return _production_order_detail_response(
+            order_id,
+            request,
+            db,
+            "Only closed production orders can be reversed.",
+        )
+
+    form = await request.form()
+    reversal_reason = str(form.get("reversal_reason", "")).strip()
+    if not reversal_reason:
+        return templates.TemplateResponse(
+            request=request,
+            name="production_order_reverse.html",
+            context=_production_order_reverse_context(
+                order_id,
+                request,
+                db,
+                error="Reversal reason is required.",
+                reversal_reason=reversal_reason,
+            ),
+        )
+
+    try:
+        reverse_closed_production_order(db, order_id, reversal_reason, current_user.id)
+        return _redirect(
+            f"/production-orders/{order_id}?message={quote('Production order was reversed successfully.')}"
+        )
+    except ProductionOrderValidationError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="production_order_reverse.html",
+            context=_production_order_reverse_context(
+                order_id,
+                request,
+                db,
+                error=str(exc),
+                reversal_reason=reversal_reason,
+            ),
+        )
 
 
 @app.post("/production-orders/{order_id}/start")

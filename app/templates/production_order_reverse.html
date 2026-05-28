@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>Reverse closed production order</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <p>
+      This action will create inverse inventory transactions in Kardex, will not delete historical transactions,
+      and will affect current inventory balances.
+    </p>
+
+    <dl class="summary">
+      <div>
+        <dt>Order</dt>
+        <dd>{{ order.internal_order_number }}</dd>
+      </div>
+      <div>
+        <dt>Status</dt>
+        <dd>{{ order.status }}</dd>
+      </div>
+      <div>
+        <dt>Product</dt>
+        <dd>{{ order.product_sku_snapshot }} - {{ order.product_name_snapshot }}</dd>
+      </div>
+      <div>
+        <dt>Finished good to subtract</dt>
+        <dd>
+          {% if receipt_transaction %}
+            {{ fmt.number_3(receipt_transaction.quantity_in) }} at {{ fmt.money_crc(receipt_transaction.unit_cost) }}
+          {% else %}
+            {{ fmt.number_3(order.output_qty) }}
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>Closed at</dt>
+        <dd>{{ order.closed_at or "" }}</dd>
+      </div>
+    </dl>
+
+    <h2>Components to return</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Component SKU</th>
+          <th>Component name</th>
+          <th>Quantity to return</th>
+          <th>Historical unit cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for transaction in component_transactions %}
+          {% set material = materials_by_id.get(transaction.source_line_id) %}
+          <tr>
+            <td>
+              {% if transaction.product %}
+                {{ transaction.product.sku }}
+              {% elif material %}
+                {{ material.component_sku or "" }}
+              {% endif %}
+            </td>
+            <td>
+              {% if transaction.product %}
+                {{ transaction.product.name }}
+              {% elif material %}
+                {{ material.component_name or "" }}
+              {% endif %}
+            </td>
+            <td>{{ fmt.number_3(transaction.quantity_out) }}</td>
+            <td>{{ fmt.money_crc(transaction.unit_cost) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <form method="post" action="/production-orders/{{ order.id }}/reverse">
+      <label for="reversal_reason">Reversal reason</label>
+      <textarea id="reversal_reason" name="reversal_reason" required>{{ reversal_reason }}</textarea>
+
+      <div class="actions">
+        <button type="submit">Reverse closed order</button>
+        <a role="button" href="/production-orders/{{ order.id }}">Back to order</a>
+      </div>
+    </form>
+  </section>
+{% endblock %}

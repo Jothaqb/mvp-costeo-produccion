@@ -1,5 +1,6 @@
 from collections.abc import Generator
 import os
+import re
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
@@ -698,6 +699,313 @@ def ensure_production_loyverse_inventory_sync_columns() -> None:
         )
 
 
+def ensure_production_order_reversal_columns() -> None:
+    if not _table_exists("production_orders"):
+        return
+
+    if engine.dialect.name == "sqlite":
+        _ensure_production_order_reversal_columns_sqlite()
+        return
+
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE production_orders ADD COLUMN IF NOT EXISTS reversed_at TIMESTAMP")
+            connection.exec_driver_sql(
+                "ALTER TABLE production_orders ADD COLUMN IF NOT EXISTS reversed_by_user_id INTEGER"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE production_orders ADD COLUMN IF NOT EXISTS reversal_reason TEXT"
+            )
+            connection.exec_driver_sql(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = 'fk_production_orders_reversed_by_user_id'
+                    ) THEN
+                        ALTER TABLE production_orders
+                        ADD CONSTRAINT fk_production_orders_reversed_by_user_id
+                        FOREIGN KEY (reversed_by_user_id) REFERENCES users (id);
+                    END IF;
+                END $$;
+                """
+            )
+            existing_constraint = connection.exec_driver_sql(
+                """
+                SELECT pg_get_constraintdef(oid)
+                FROM pg_constraint
+                WHERE conname = 'ck_production_orders_status'
+                """
+            ).fetchone()
+            if existing_constraint is None or "'reversed'" not in (existing_constraint[0] or ""):
+                connection.exec_driver_sql(
+                    "ALTER TABLE production_orders DROP CONSTRAINT IF EXISTS ck_production_orders_status"
+                )
+                connection.exec_driver_sql(
+                    """
+                    ALTER TABLE production_orders
+                    ADD CONSTRAINT ck_production_orders_status
+                    CHECK (status IN ('draft', 'in_progress', 'closed', 'reversed'))
+                    """
+                )
+
+
+def _ensure_production_orders_status_supports_reversed_sqlite(connection) -> None:
+    create_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='production_orders'"
+    ).fetchone()
+    create_sql = (create_sql_row[0] or "") if create_sql_row else ""
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info('production_orders')").fetchall()
+    }
+    foreign_keys = connection.execute("PRAGMA foreign_key_list('production_orders')").fetchall()
+
+    needs_rebuild = False
+    if "'reversed'" not in create_sql:
+        needs_rebuild = True
+    if not {"reversed_at", "reversed_by_user_id", "reversal_reason"}.issubset(columns):
+        needs_rebuild = True
+    if not any(row[3] == "reversed_by_user_id" and row[2] == "users" for row in foreign_keys):
+        needs_rebuild = True
+
+    if not needs_rebuild:
+        return
+
+    index_rows = connection.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='production_orders' ORDER BY name"
+    ).fetchall()
+    original_index_sql = [row[1] for row in index_rows if row[1]]
+    transformed_create_sql = _transform_production_orders_create_sql_for_reversed(
+        create_sql,
+        existing_columns=columns,
+        foreign_keys=foreign_keys,
+    )
+
+    connection.execute(transformed_create_sql)
+    old_columns = [
+        row[1]
+        for row in connection.execute("PRAGMA table_info('production_orders')").fetchall()
+    ]
+    new_columns = [
+        row[1]
+        for row in connection.execute("PRAGMA table_info('production_orders_new')").fetchall()
+    ]
+    common_columns = [column for column in old_columns if column in new_columns]
+    if not common_columns:
+        raise RuntimeError("Production order rebuild could not determine common columns to copy.")
+
+    quoted_columns = ", ".join(f'"{column}"' for column in common_columns)
+    connection.execute(
+        f'INSERT INTO production_orders_new ({quoted_columns}) '
+        f'SELECT {quoted_columns} FROM production_orders'
+    )
+    connection.execute("DROP TABLE production_orders")
+    connection.execute("ALTER TABLE production_orders_new RENAME TO production_orders")
+    for index_sql in original_index_sql:
+        connection.execute(index_sql)
+
+
+def _ensure_production_order_reversal_columns_sqlite() -> None:
+    raw_connection = engine.raw_connection()
+    try:
+        cursor = raw_connection.cursor()
+        raw_connection.commit()
+        foreign_keys_enabled = _sqlite_foreign_keys_enabled(cursor)
+        if foreign_keys_enabled:
+            cursor.execute("PRAGMA foreign_keys=OFF")
+            raw_connection.commit()
+
+        try:
+            _ensure_production_orders_status_supports_reversed_sqlite(cursor)
+            raw_connection.commit()
+        except Exception:
+            raw_connection.rollback()
+            raise
+        finally:
+            if foreign_keys_enabled:
+                cursor.execute("PRAGMA foreign_keys=ON")
+                raw_connection.commit()
+
+        violations = _production_order_reversal_fk_violations(cursor)
+        if violations:
+            raise RuntimeError(
+                f"Production order reversal migration failed scoped foreign key check: {violations[:5]}"
+            )
+    finally:
+        raw_connection.close()
+
+
+def _sqlite_foreign_keys_enabled(cursor) -> bool:
+    row = cursor.execute("PRAGMA foreign_keys").fetchone()
+    return bool(row and row[0])
+
+
+def _production_order_reversal_fk_violations(cursor) -> list[tuple]:
+    violations: list[tuple] = []
+    for table_name in ("production_orders", "production_order_materials", "production_order_activities"):
+        violations.extend(cursor.execute(f"PRAGMA foreign_key_check('{table_name}')").fetchall())
+
+    materials_orphans = cursor.execute(
+        """
+        SELECT material.id, material.production_order_id
+        FROM production_order_materials AS material
+        LEFT JOIN production_orders AS "order"
+            ON "order".id = material.production_order_id
+        WHERE material.production_order_id IS NOT NULL
+          AND "order".id IS NULL
+        ORDER BY material.id
+        LIMIT 20
+        """
+    ).fetchall()
+    if materials_orphans:
+        violations.extend(
+            [
+                ("production_order_materials", orphan_id, "production_orders", production_order_id)
+                for orphan_id, production_order_id in materials_orphans
+            ]
+        )
+
+    activities_orphans = cursor.execute(
+        """
+        SELECT activity.id, activity.production_order_id
+        FROM production_order_activities AS activity
+        LEFT JOIN production_orders AS "order"
+            ON "order".id = activity.production_order_id
+        WHERE activity.production_order_id IS NOT NULL
+          AND "order".id IS NULL
+        ORDER BY activity.id
+        LIMIT 20
+        """
+    ).fetchall()
+    if activities_orphans:
+        violations.extend(
+            [
+                ("production_order_activities", orphan_id, "production_orders", production_order_id)
+                for orphan_id, production_order_id in activities_orphans
+            ]
+        )
+
+    return violations
+
+
+def _transform_production_orders_create_sql_for_reversed(
+    create_sql: str,
+    *,
+    existing_columns: set[str],
+    foreign_keys: list[tuple],
+) -> str:
+    normalized_sql = (create_sql or "").strip()
+    if not normalized_sql:
+        raise RuntimeError("Could not load production_orders CREATE TABLE SQL from sqlite_master.")
+
+    if "CREATE TABLE production_orders" not in normalized_sql:
+        raise RuntimeError("Unexpected production_orders CREATE TABLE SQL; refusing to rebuild.")
+
+    transformed_sql = normalized_sql.replace(
+        "CREATE TABLE production_orders",
+        "CREATE TABLE production_orders_new",
+        1,
+    )
+
+    check_pattern = re.compile(
+        r"CONSTRAINT\s+ck_production_orders_status\s+CHECK\s*\(\s*status\s+IN\s*\([^)]*\)\s*\)",
+        re.IGNORECASE,
+    )
+    replacement_check = (
+        "CONSTRAINT ck_production_orders_status "
+        "CHECK (status IN ('draft', 'in_progress', 'closed', 'reversed'))"
+    )
+    if not check_pattern.search(transformed_sql):
+        raise RuntimeError(
+            "Could not safely transform production_orders status CHECK constraint for reversed status."
+        )
+    transformed_sql = check_pattern.sub(replacement_check, transformed_sql, count=1)
+
+    opening_index = transformed_sql.find("(")
+    closing_index = transformed_sql.rfind(")")
+    if opening_index == -1 or closing_index == -1 or closing_index <= opening_index:
+        raise RuntimeError("Could not safely parse production_orders CREATE TABLE SQL.")
+
+    body = transformed_sql[opening_index + 1 : closing_index]
+    definitions = _split_sqlite_table_definitions(body)
+    if not definitions:
+        raise RuntimeError("Could not safely parse production_orders column definitions.")
+
+    append_definitions: list[str] = []
+    missing_column_definitions = {
+        "reversed_at": "reversed_at DATETIME",
+        "reversed_by_user_id": "reversed_by_user_id INTEGER",
+        "reversal_reason": "reversal_reason TEXT",
+    }
+    for column_name, definition in missing_column_definitions.items():
+        if column_name not in existing_columns:
+            append_definitions.append(definition)
+
+    has_reversed_by_user_fk = any(
+        row[3] == "reversed_by_user_id" and row[2] == "users" for row in foreign_keys
+    )
+    table_constraint_index = _first_sqlite_table_constraint_index(definitions)
+    column_definitions = definitions[:table_constraint_index]
+    table_constraints = definitions[table_constraint_index:]
+
+    if not has_reversed_by_user_fk and not any(
+        definition.strip().upper() == "FOREIGN KEY(REVERSED_BY_USER_ID) REFERENCES USERS (ID)"
+        for definition in table_constraints
+    ):
+        table_constraints.append("FOREIGN KEY(reversed_by_user_id) REFERENCES users (id)")
+
+    if append_definitions:
+        column_definitions.extend(append_definitions)
+
+    rebuilt_body_parts = column_definitions + table_constraints
+    rebuilt_body = ", ".join(rebuilt_body_parts)
+    transformed_sql = f"{transformed_sql[:opening_index + 1]}{rebuilt_body}{transformed_sql[closing_index:]}"
+
+    return transformed_sql
+
+
+def _split_sqlite_table_definitions(body: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_single_quote = False
+    in_double_quote = False
+
+    for char in body:
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+        elif char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+        elif not in_single_quote and not in_double_quote:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth = max(0, depth - 1)
+            elif char == "," and depth == 0:
+                definition = "".join(current).strip()
+                if definition:
+                    parts.append(definition)
+                current = []
+                continue
+        current.append(char)
+
+    trailing = "".join(current).strip()
+    if trailing:
+        parts.append(trailing)
+    return parts
+
+
+def _first_sqlite_table_constraint_index(definitions: list[str]) -> int:
+    for index, definition in enumerate(definitions):
+        normalized = definition.lstrip().upper()
+        if normalized.startswith(("CONSTRAINT ", "FOREIGN KEY", "PRIMARY KEY", "UNIQUE", "CHECK")):
+            return index
+    return len(definitions)
+
+
 def ensure_b2b_sales_followup_columns() -> None:
     if engine.dialect.name != "sqlite":
         return
@@ -1352,3 +1660,18 @@ def _ensure_columns(connection, table_name: str, column_definitions: dict[str, s
     for column_name, column_type in column_definitions.items():
         if column_name not in column_names:
             connection.exec_driver_sql(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
+
+def _table_exists(table_name: str) -> bool:
+    with engine.begin() as connection:
+        if engine.dialect.name == "sqlite":
+            return bool(
+                connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
+            )
+        if engine.dialect.name == "postgresql":
+            row = connection.exec_driver_sql(
+                "SELECT to_regclass(%s)",
+                (table_name,),
+            ).fetchone()
+            return bool(row and row[0])
+    return False
