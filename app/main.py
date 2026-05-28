@@ -38,6 +38,7 @@ from app.database import (
     ensure_product_is_manufactured_column,
     ensure_product_loyverse_mapping_columns,
     ensure_product_planning_columns,
+    ensure_production_order_reversal_columns,
     ensure_purchase_order_tables,
     ensure_production_loyverse_inventory_sync_columns,
     ensure_sprint4_costing_columns,
@@ -349,6 +350,7 @@ ensure_sprint5_comparison_columns()
 ensure_sprint6_loyverse_cost_sync_columns()
 ensure_production_loyverse_inventory_sync_columns()
 ensure_sprint7c_lot_columns_and_tables()
+ensure_production_order_reversal_columns()
 ensure_b2b_sales_followup_columns()
 ensure_b2b_invoice_snapshot_columns()
 ensure_b2c_sales_tables()
