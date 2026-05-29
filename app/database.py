@@ -1652,13 +1652,26 @@ def _ensure_b2c_sales_orders_channel_constraint_removed(connection) -> None:
 
 
 def ensure_packaging_batch_tables() -> None:
-    from app.models import PackagingBatch, PackagingBatchLine, PackagingBatchLineMaterial
+    from app.models import PackagingBatch, PackagingBatchActivity, PackagingBatchLine, PackagingBatchLineMaterial
 
     PackagingBatch.__table__.create(bind=engine, checkfirst=True)
     PackagingBatchLine.__table__.create(bind=engine, checkfirst=True)
     PackagingBatchLineMaterial.__table__.create(bind=engine, checkfirst=True)
+    PackagingBatchActivity.__table__.create(bind=engine, checkfirst=True)
 
     with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "packaging_batches",
+            {
+                "real_labor_cost_total": "NUMERIC(12, 4)",
+                "real_overhead_cost_total": "NUMERIC(12, 4)",
+                "real_machine_cost_total": "NUMERIC(12, 4)",
+                "real_activity_cost_total": "NUMERIC(12, 4)",
+                "activity_cost_status": "VARCHAR(50) NOT NULL DEFAULT 'pending'",
+                "activity_costs_recalculated_at": "TIMESTAMP",
+            },
+        )
         _ensure_columns(
             connection,
             "packaging_batch_lines",

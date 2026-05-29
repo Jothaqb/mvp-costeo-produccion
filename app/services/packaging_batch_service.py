@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import AppSequence, PackagingBatch, PackagingBatchLine, Product, Route, User
 from app.schemas import ProcessType
+from app.services.packaging_batch_activity_service import (
+    ensure_packaging_batch_activities,
+    has_packaging_batch_captured_activity_times,
+)
 from app.services.packaging_batch_material_service import invalidate_packaging_batch_line_material_snapshot
 
 
@@ -45,6 +49,7 @@ def get_packaging_batch(db: Session, batch_id: int) -> PackagingBatch:
             joinedload(PackagingBatch.route),
             joinedload(PackagingBatch.created_by_user),
             joinedload(PackagingBatch.updated_by_user),
+            joinedload(PackagingBatch.activities),
             joinedload(PackagingBatch.lines).joinedload(PackagingBatchLine.product),
             joinedload(PackagingBatch.lines).joinedload(PackagingBatchLine.materials),
         )
@@ -80,6 +85,8 @@ def create_packaging_batch(
         updated_by_user_id=current_user.id if current_user else None,
     )
     db.add(batch)
+    db.flush()
+    ensure_packaging_batch_activities(db, batch)
     db.commit()
     db.refresh(batch)
     return get_packaging_batch(db, batch.id)
@@ -98,6 +105,11 @@ def update_packaging_batch_header(
     batch = get_packaging_batch(db, batch_id)
     _ensure_draft(batch)
     route = _validate_route(db, packaging_type=packaging_type, route_id=route_id)
+    route_changed = batch.route_id != route.id
+    if route_changed and has_packaging_batch_captured_activity_times(batch):
+        raise PackagingBatchValidationError(
+            "Route cannot be changed after Activity Time Capture has recorded minutes."
+        )
     batch.production_date = production_date
     batch.packaging_type = packaging_type
     batch.route_id = route.id
@@ -106,6 +118,7 @@ def update_packaging_batch_header(
     batch.process_type = route.process_type
     batch.notes = _normalize_optional_text(notes)
     batch.updated_by_user_id = current_user.id if current_user else batch.updated_by_user_id
+    ensure_packaging_batch_activities(db, batch, replace_existing=route_changed)
     db.commit()
     db.refresh(batch)
     return get_packaging_batch(db, batch.id)

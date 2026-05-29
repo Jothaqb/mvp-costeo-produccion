@@ -124,6 +124,115 @@
     </section>
 
     <section>
+      <h2>Activity Cost Summary</h2>
+      <dl class="summary">
+        <div>
+          <dt>Total activities</dt>
+          <dd>{{ activity_summary.total_activities }}</dd>
+        </div>
+        <div>
+          <dt>Required activities</dt>
+          <dd>{{ activity_summary.required_activities }}</dd>
+        </div>
+        <div>
+          <dt>Labor minutes</dt>
+          <dd>{{ fmt.number_3(activity_summary.labor_minutes_total) }}</dd>
+        </div>
+        <div>
+          <dt>Machine minutes</dt>
+          <dd>{{ fmt.number_3(activity_summary.machine_minutes_total) }}</dd>
+        </div>
+        <div>
+          <dt>Total labor cost</dt>
+          <dd>{{ fmt.money_crc(activity_summary.total_labor_cost) }}</dd>
+        </div>
+        <div>
+          <dt>Total overhead cost</dt>
+          <dd>{{ fmt.money_crc(activity_summary.total_overhead_cost) }}</dd>
+        </div>
+        <div>
+          <dt>Total machine cost</dt>
+          <dd>{{ fmt.money_crc(activity_summary.total_machine_cost) }}</dd>
+        </div>
+        <div>
+          <dt>Total activity cost</dt>
+          <dd>{{ fmt.money_crc(activity_summary.total_activity_cost) }}</dd>
+        </div>
+        <div>
+          <dt>Activity cost status</dt>
+          <dd>{{ activity_summary.activity_cost_status }}</dd>
+        </div>
+        <div>
+          <dt>Recalculated at</dt>
+          <dd>{{ activity_summary.recalculated_at or "" }}</dd>
+        </div>
+      </dl>
+      {% if not activity_readiness.is_ready and activity_readiness.reasons %}
+        <ul>
+          {% for reason in activity_readiness.reasons %}
+            <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Activity Time Capture</h2>
+      {% if batch.activities %}
+        <form method="post" action="/packaging-batches/{{ batch.id }}/activities">
+          <table>
+            <thead>
+              <tr>
+                <th>Sequence</th>
+                <th>Activity</th>
+                <th>Labor minutes</th>
+                <th>Machine minutes</th>
+                <th>Labor cost</th>
+                <th>Overhead cost</th>
+                <th>Machine cost</th>
+                <th>Total activity cost</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for activity in batch.activities %}
+                <tr>
+                  <td>{{ activity.sequence }}</td>
+                  <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
+                  <td>
+                    <input type="hidden" name="activity_id" value="{{ activity.id }}">
+                    <input
+                      name="labor_minutes_{{ activity.id }}"
+                      value="{{ activity.labor_minutes }}"
+                      {% if not activity.applies_labor_snapshot %}disabled{% endif %}
+                    >
+                  </td>
+                  <td>
+                    <input
+                      name="machine_minutes_{{ activity.id }}"
+                      value="{{ activity.machine_minutes }}"
+                      {% if not activity.applies_machine_snapshot %}disabled{% endif %}
+                    >
+                  </td>
+                  <td>{{ fmt.money_crc(activity.labor_cost) }}</td>
+                  <td>{{ fmt.money_crc(activity.overhead_cost) }}</td>
+                  <td>{{ fmt.money_crc(activity.machine_cost) }}</td>
+                  <td>{{ fmt.money_crc(activity.total_activity_cost) }}</td>
+                  <td><input name="notes_{{ activity.id }}" value="{{ activity.notes or '' }}"></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <div class="inline-actions">
+            <button type="submit">Save Activity Times</button>
+          </div>
+        </form>
+      {% else %}
+        <p>No route activities are currently snapshot into this batch.</p>
+      {% endif %}
+    </section>
+
+    <section>
       <h2>Add Product Line</h2>
       <form method="post" action="/packaging-batches/{{ batch.id }}/lines">
         <label for="product_lookup">Product</label>

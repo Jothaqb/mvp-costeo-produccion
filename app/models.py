@@ -1188,6 +1188,10 @@ class PackagingBatch(Base):
             "status IN ('draft', 'in_process', 'closed')",
             name="ck_packaging_batches_status",
         ),
+        CheckConstraint(
+            "activity_cost_status IN ('pending', 'ready', 'error')",
+            name="ck_packaging_batches_activity_cost_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
@@ -1199,6 +1203,12 @@ class PackagingBatch(Base):
     route_version_snapshot: Mapped[str] = mapped_column(String(50), nullable=False)
     process_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="draft", index=True, nullable=False)
+    real_labor_cost_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    real_overhead_cost_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    real_machine_cost_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    real_activity_cost_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    activity_cost_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+    activity_costs_recalculated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -1225,6 +1235,11 @@ class PackagingBatch(Base):
         back_populates="packaging_batch",
         cascade="all, delete-orphan",
         order_by="PackagingBatchLine.line_number",
+    )
+    activities: Mapped[list["PackagingBatchActivity"]] = relationship(
+        back_populates="packaging_batch",
+        cascade="all, delete-orphan",
+        order_by="PackagingBatchActivity.sequence",
     )
 
 
@@ -1295,3 +1310,43 @@ class PackagingBatchLineMaterial(Base):
     )
 
     packaging_batch_line: Mapped[PackagingBatchLine] = relationship(back_populates="materials")
+
+
+class PackagingBatchActivity(Base):
+    __tablename__ = "packaging_batch_activities"
+    __table_args__ = (
+        UniqueConstraint("packaging_batch_id", "sequence", name="uq_packaging_batch_activities_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    packaging_batch_id: Mapped[int] = mapped_column(ForeignKey("packaging_batches.id"), index=True, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    activity_id_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    activity_code_snapshot: Mapped[str] = mapped_column(String(50), nullable=False)
+    activity_name_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
+    applies_labor_snapshot: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    applies_machine_snapshot: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    visible: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    machine_id_snapshot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    machine_code_snapshot: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    machine_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    labor_minutes: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    machine_minutes: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    labor_rate_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    overhead_rate_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    machine_rate_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    labor_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    overhead_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    machine_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    total_activity_cost: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("0"), nullable=False)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    packaging_batch: Mapped[PackagingBatch] = relationship(back_populates="activities")

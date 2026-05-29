@@ -358,6 +358,12 @@ from app.services.packaging_batch_material_service import (
     get_packaging_batch_material_summary,
     refresh_packaging_batch_line_material_snapshot,
 )
+from app.services.packaging_batch_activity_service import (
+    PackagingBatchActivityValidationError,
+    check_packaging_batch_activity_readiness,
+    get_packaging_batch_activity_summary,
+    update_packaging_batch_activity_times,
+)
 
 
 Base.metadata.create_all(bind=engine)
@@ -2696,9 +2702,13 @@ def _packaging_batch_form_context(
         values.update(form_values)
     material_summary = None
     material_readiness = None
+    activity_summary = None
+    activity_readiness = None
     if batch is not None:
         material_summary = get_packaging_batch_material_summary(batch)
         material_readiness = check_packaging_batch_material_readiness(batch)
+        activity_summary = get_packaging_batch_activity_summary(batch)
+        activity_readiness = check_packaging_batch_activity_readiness(batch)
     return {
         "title": title,
         "batch": batch,
@@ -2711,6 +2721,8 @@ def _packaging_batch_form_context(
         "is_edit_mode": batch is not None,
         "material_summary": material_summary,
         "material_readiness": material_readiness,
+        "activity_summary": activity_summary,
+        "activity_readiness": activity_readiness,
     }
 
 
@@ -2725,6 +2737,8 @@ def _packaging_batch_detail_context(
     batch = get_packaging_batch(db, batch_id)
     material_summary = get_packaging_batch_material_summary(batch)
     material_readiness = check_packaging_batch_material_readiness(batch)
+    activity_summary = get_packaging_batch_activity_summary(batch)
+    activity_readiness = check_packaging_batch_activity_readiness(batch)
     return {
         "title": batch.internal_batch_number,
         "batch": batch,
@@ -2733,6 +2747,8 @@ def _packaging_batch_detail_context(
         "packaging_type_label": packaging_type_label,
         "material_summary": material_summary,
         "material_readiness": material_readiness,
+        "activity_summary": activity_summary,
+        "activity_readiness": activity_readiness,
     }
 
 
@@ -8376,6 +8392,43 @@ def delete_packaging_batch_line_route(
         delete_packaging_batch_line(db, batch_id=batch_id, line_id=line_id)
         return _redirect(f"/packaging-batches/{batch_id}/edit")
     except PackagingBatchValidationError as exc:
+        batch = get_packaging_batch(db, batch_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_form.html",
+            context=_packaging_batch_form_context(
+                request,
+                db,
+                title=f"{batch.internal_batch_number} - Edit",
+                batch=batch,
+                error=str(exc),
+            ),
+            status_code=400,
+        )
+
+
+@app.post("/packaging-batches/{batch_id}/activities")
+async def update_packaging_batch_activities_route(
+    batch_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "production_order.edit")
+    form = await request.form()
+    activity_ids = form.getlist("activity_id")
+    updates = [
+        {
+            "id": activity_id,
+            "labor_minutes": str(form.get(f"labor_minutes_{activity_id}", "")),
+            "machine_minutes": str(form.get(f"machine_minutes_{activity_id}", "")),
+            "notes": str(form.get(f"notes_{activity_id}", "")),
+        }
+        for activity_id in activity_ids
+    ]
+    try:
+        update_packaging_batch_activity_times(db, batch_id, updates)
+        return _redirect(f"/packaging-batches/{batch_id}/edit")
+    except PackagingBatchActivityValidationError as exc:
         batch = get_packaging_batch(db, batch_id)
         return templates.TemplateResponse(
             request=request,
