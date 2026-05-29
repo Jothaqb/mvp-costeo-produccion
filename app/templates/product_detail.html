@@ -48,6 +48,14 @@
   <section>
     <h2>BOM</h2>
     {% if product.is_manufactured %}
+      <dl class="summary">
+        <div><dt>BOM status</dt><dd>{{ bom_status }}</dd></div>
+      </dl>
+      {% if show_inactive_bom_alert %}
+        <p class="error">This product has a BOM, but it is inactive and cannot be used for production until activated.</p>
+      {% elif show_no_active_bom_alert %}
+        <p class="error">Manufactured product does not have an active BOM.</p>
+      {% endif %}
       <p class="muted-inline">
         This Product Master BOM is editable and will be used for future production integration.
         Current Production Order creation remains unchanged in this sprint.

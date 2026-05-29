@@ -189,6 +189,7 @@ from app.services.planning_loyverse_refresh_service import (
     refresh_planning_inventory_and_cost,
 )
 from app.services.product_bom_service import (
+    ensure_active_boms_for_manufactured_products,
     ProductBomValidationError,
     get_product_bom,
     get_or_seed_product_bom,
@@ -352,7 +353,9 @@ from app.services.packaging_batch_service import (
 )
 from app.services.packaging_batch_material_service import (
     PackagingBatchMaterialValidationError,
+    check_packaging_batch_material_readiness,
     get_packaging_batch_line_with_materials,
+    get_packaging_batch_material_summary,
     refresh_packaging_batch_line_material_snapshot,
 )
 
@@ -385,6 +388,12 @@ ensure_packaging_batch_tables()
 ensure_auth_tables()
 ensure_password_reset_tables()
 ensure_audit_tables()
+_bom_alignment_db = SessionLocal()
+try:
+    ensure_active_boms_for_manufactured_products(_bom_alignment_db)
+    _bom_alignment_db.commit()
+finally:
+    _bom_alignment_db.close()
 _auth_seed_db = SessionLocal()
 try:
     ensure_auth_seed_state(_auth_seed_db)
@@ -2685,16 +2694,11 @@ def _packaging_batch_form_context(
     }
     if form_values:
         values.update(form_values)
-    batch_material_snapshot_total = None
+    material_summary = None
+    material_readiness = None
     if batch is not None:
-        batch_material_snapshot_total = sum(
-            (
-                line.material_snapshot_cost_total
-                for line in batch.lines
-                if line.material_snapshot_status == "ready" and line.material_snapshot_cost_total is not None
-            ),
-            Decimal("0"),
-        )
+        material_summary = get_packaging_batch_material_summary(batch)
+        material_readiness = check_packaging_batch_material_readiness(batch)
     return {
         "title": title,
         "batch": batch,
@@ -2705,7 +2709,8 @@ def _packaging_batch_form_context(
         "packaging_type_options": PACKAGING_TYPE_OPTIONS,
         "packaging_type_label": packaging_type_label,
         "is_edit_mode": batch is not None,
-        "batch_material_snapshot_total": batch_material_snapshot_total,
+        "material_summary": material_summary,
+        "material_readiness": material_readiness,
     }
 
 
@@ -2718,21 +2723,16 @@ def _packaging_batch_detail_context(
     message: str | None = None,
 ) -> dict[str, object]:
     batch = get_packaging_batch(db, batch_id)
-    batch_material_snapshot_total = sum(
-        (
-            line.material_snapshot_cost_total
-            for line in batch.lines
-            if line.material_snapshot_status == "ready" and line.material_snapshot_cost_total is not None
-        ),
-        Decimal("0"),
-    )
+    material_summary = get_packaging_batch_material_summary(batch)
+    material_readiness = check_packaging_batch_material_readiness(batch)
     return {
         "title": batch.internal_batch_number,
         "batch": batch,
         "error": error,
         "message": message,
         "packaging_type_label": packaging_type_label,
-        "batch_material_snapshot_total": batch_material_snapshot_total,
+        "material_summary": material_summary,
+        "material_readiness": material_readiness,
     }
 
 
@@ -3729,6 +3729,11 @@ def product_detail(
         bom.lines,
         key=lambda line: (line.line_number, line.id),
     ) if bom is not None else []
+    bom_status = "No BOM"
+    if bom is not None:
+        bom_status = "BOM active" if bom.active else "BOM inactive"
+    show_no_active_bom_alert = product.active and product.is_manufactured and (bom is None or not bom.active)
+    show_inactive_bom_alert = product.active and product.is_manufactured and bom is not None and not bom.active
     return templates.TemplateResponse(
         request=request,
         name="product_detail.html",
@@ -3738,6 +3743,9 @@ def product_detail(
             "balance": balance,
             "bom": bom,
             "bom_lines": bom_lines,
+            "bom_status": bom_status,
+            "show_no_active_bom_alert": show_no_active_bom_alert,
+            "show_inactive_bom_alert": show_inactive_bom_alert,
             "can_deactivate": _can_deactivate_master_data(request) and product.active,
             "error": error,
             "message": message,

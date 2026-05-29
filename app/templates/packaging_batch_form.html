@@ -80,11 +80,47 @@
           <dt>Production date</dt>
           <dd>{{ batch.production_date }}</dd>
         </div>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Material Snapshot Rollup</h2>
+      <dl class="summary">
         <div>
-          <dt>Batch material snapshot total</dt>
-          <dd>{% if batch_material_snapshot_total is not none %}{{ fmt.number_3(batch_material_snapshot_total) }}{% else %}-{% endif %}</dd>
+          <dt>Total lines</dt>
+          <dd>{{ material_summary.total_lines }}</dd>
+        </div>
+        <div>
+          <dt>Snapshot ready</dt>
+          <dd>{{ material_summary.ready_lines }}</dd>
+        </div>
+        <div>
+          <dt>Snapshot pending</dt>
+          <dd>{{ material_summary.pending_lines }}</dd>
+        </div>
+        <div>
+          <dt>Snapshot error</dt>
+          <dd>{{ material_summary.error_lines }}</dd>
+        </div>
+        <div>
+          <dt>Material snapshot total</dt>
+          <dd>{{ fmt.number_3(material_summary.ready_material_snapshot_total) }}</dd>
+        </div>
+        <div>
+          <dt>Readiness status</dt>
+          <dd>{{ material_summary.readiness_label }}</dd>
         </div>
       </dl>
+      {% if material_summary.has_incomplete_snapshots %}
+        <p>Batch material total includes only ready lines.</p>
+      {% endif %}
+      {% if not material_readiness.is_ready and material_readiness.reasons %}
+        <ul>
+          {% for reason in material_readiness.reasons %}
+            <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
     </section>
 
     <section>

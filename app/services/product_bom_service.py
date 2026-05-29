@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
@@ -8,10 +9,47 @@ from app.models import ImportBatch, ImportedBomHeader, ImportedBomLine, Product,
 
 ZERO = Decimal("0")
 ROUTE_CODE_BOM_TOTAL_EXEMPT = "R_DESHID_GRANEL"
+logger = logging.getLogger(__name__)
 
 
 class ProductBomValidationError(Exception):
     pass
+
+
+def ensure_active_boms_for_manufactured_products(db: Session) -> int:
+    headers = (
+        db.query(ProductBomHeader)
+        .options(
+            joinedload(ProductBomHeader.product),
+            joinedload(ProductBomHeader.lines),
+        )
+        .join(Product, Product.id == ProductBomHeader.product_id)
+        .filter(
+            Product.active.is_(True),
+            Product.is_manufactured.is_(True),
+            ProductBomHeader.active.is_(False),
+        )
+        .all()
+    )
+
+    activated_count = 0
+    for header in headers:
+        if not header.lines:
+            continue
+        header.active = True
+        header.updated_at = datetime.utcnow()
+        activated_count += 1
+
+    if activated_count:
+        logger.info(
+            "Activated %s ProductBomHeader rows for active manufactured products with BOM lines.",
+            activated_count,
+        )
+    else:
+        logger.info("No inactive ProductBomHeader rows required activation.")
+
+    db.flush()
+    return activated_count
 
 
 def get_product_bom(db: Session, product_id: int) -> ProductBomHeader | None:

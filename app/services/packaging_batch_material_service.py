@@ -22,6 +22,67 @@ class PackagingBatchMaterialValidationError(Exception):
     pass
 
 
+def get_packaging_batch_material_summary(batch: PackagingBatch) -> dict[str, object]:
+    total_lines = len(batch.lines)
+    ready_lines = 0
+    pending_lines = 0
+    error_lines = 0
+    ready_material_snapshot_total = ZERO
+
+    for line in batch.lines:
+        status = (line.material_snapshot_status or "pending").strip().lower()
+        if status == "ready":
+            ready_lines += 1
+            if line.material_snapshot_cost_total is not None:
+                ready_material_snapshot_total += line.material_snapshot_cost_total
+        elif status == "error":
+            error_lines += 1
+        else:
+            pending_lines += 1
+
+    if total_lines == 0:
+        readiness_label = "Pending material snapshots"
+    elif error_lines > 0:
+        readiness_label = "Snapshot errors"
+    elif pending_lines > 0:
+        readiness_label = "Pending material snapshots"
+    else:
+        readiness_label = "Ready for next step"
+
+    return {
+        "total_lines": total_lines,
+        "ready_lines": ready_lines,
+        "pending_lines": pending_lines,
+        "error_lines": error_lines,
+        "ready_material_snapshot_total": ready_material_snapshot_total,
+        "has_incomplete_snapshots": pending_lines > 0 or error_lines > 0 or total_lines == 0,
+        "readiness_label": readiness_label,
+    }
+
+
+def check_packaging_batch_material_readiness(batch: PackagingBatch) -> dict[str, object]:
+    reasons: list[str] = []
+
+    if not batch.lines:
+        reasons.append("Batch has no lines")
+
+    for line in batch.lines:
+        if line.product_id is None:
+            reasons.append(f"Line {line.line_number} has no product")
+            continue
+
+        status = (line.material_snapshot_status or "pending").strip().lower()
+        if status == "error":
+            reasons.append(f"Line {line.line_number} has snapshot error")
+        elif status != "ready":
+            reasons.append(f"Line {line.line_number} has pending Material Snapshot")
+
+    return {
+        "is_ready": len(reasons) == 0,
+        "reasons": reasons,
+    }
+
+
 def get_packaging_batch_line_with_materials(
     db: Session,
     *,
