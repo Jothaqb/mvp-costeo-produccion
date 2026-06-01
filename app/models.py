@@ -1252,6 +1252,10 @@ class PackagingBatchLine(Base):
             "material_snapshot_status IN ('pending', 'ready', 'error')",
             name="ck_packaging_batch_lines_material_snapshot_status",
         ),
+        CheckConstraint(
+            "cost_distribution_status IN ('pending', 'partial', 'ready', 'error')",
+            name="ck_packaging_batch_lines_cost_distribution_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
@@ -1266,6 +1270,13 @@ class PackagingBatchLine(Base):
     material_snapshot_cost_total: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     material_snapshot_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
     material_snapshot_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    real_labor_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    real_overhead_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    real_machine_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    real_total_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    real_unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    cost_distribution_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+    cost_distributed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

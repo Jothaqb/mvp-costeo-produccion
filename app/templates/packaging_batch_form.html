@@ -177,6 +177,67 @@
     </section>
 
     <section>
+      <h2>Cost Distribution Summary</h2>
+      <dl class="summary">
+        <div>
+          <dt>Total batch qty</dt>
+          <dd>{{ fmt.number_3(cost_distribution_summary.total_batch_qty) }}</dd>
+        </div>
+        <div>
+          <dt>Labor cost per unit</dt>
+          <dd>{% if cost_distribution_summary.labor_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.labor_cost_per_unit) }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Overhead cost per unit</dt>
+          <dd>{% if cost_distribution_summary.overhead_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.overhead_cost_per_unit) }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Machine cost per unit</dt>
+          <dd>{% if cost_distribution_summary.machine_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.machine_cost_per_unit) }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Distribution status</dt>
+          <dd>{{ cost_distribution_summary.distribution_status }}</dd>
+        </div>
+        <div>
+          <dt>Distributed at</dt>
+          <dd>{{ cost_distribution_summary.distributed_at or "" }}</dd>
+        </div>
+        <div>
+          <dt>Ready lines</dt>
+          <dd>{{ cost_distribution_summary.ready_lines }}</dd>
+        </div>
+        <div>
+          <dt>Partial lines</dt>
+          <dd>{{ cost_distribution_summary.partial_lines }}</dd>
+        </div>
+        <div>
+          <dt>Pending lines</dt>
+          <dd>{{ cost_distribution_summary.pending_lines }}</dd>
+        </div>
+        <div>
+          <dt>Error lines</dt>
+          <dd>{{ cost_distribution_summary.error_lines }}</dd>
+        </div>
+      </dl>
+      {% if cost_distribution_summary.distributed_at and cost_distribution_summary.has_incomplete_total_costs %}
+        <p>Activity costs distributed. Total cost incomplete until Material Snapshot is ready.</p>
+      {% endif %}
+      {% if not cost_distribution_readiness.is_ready and cost_distribution_readiness.reasons %}
+        <ul>
+          {% for reason in cost_distribution_readiness.reasons %}
+            <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if batch.status == "draft" and can(request, "production_order.edit") and activity_summary.activity_cost_status == "ready" and cost_distribution_summary.total_batch_qty > 0 %}
+        <form method="post" action="/packaging-batches/{{ batch.id }}/costs/distribute">
+          <button type="submit">Distribute Activity Costs</button>
+        </form>
+      {% endif %}
+    </section>
+
+    <section>
       <h2>Activity Time Capture</h2>
       {% if batch.activities %}
         <form method="post" action="/packaging-batches/{{ batch.id }}/activities">
@@ -282,6 +343,12 @@
               <th>Unit</th>
               <th>Snapshot status</th>
               <th>Snapshot total</th>
+              <th>Labor cost</th>
+              <th>Overhead cost</th>
+              <th>Machine cost</th>
+              <th>Total cost</th>
+              <th>Unit cost</th>
+              <th>Distribution status</th>
               <th>Refreshed at</th>
               <th>Notes</th>
               <th>Actions</th>
@@ -300,6 +367,12 @@
                 <td>{{ line.unit_snapshot or "" }}</td>
                 <td>{{ line.material_snapshot_status }}</td>
                 <td>{% if line.material_snapshot_cost_total is not none %}{{ fmt.number_3(line.material_snapshot_cost_total) }}{% else %}-{% endif %}</td>
+                <td>{% if line.real_labor_cost is not none %}{{ fmt.money_crc(line.real_labor_cost) }}{% else %}-{% endif %}</td>
+                <td>{% if line.real_overhead_cost is not none %}{{ fmt.money_crc(line.real_overhead_cost) }}{% else %}-{% endif %}</td>
+                <td>{% if line.real_machine_cost is not none %}{{ fmt.money_crc(line.real_machine_cost) }}{% else %}-{% endif %}</td>
+                <td>{% if line.real_total_cost is not none %}{{ fmt.money_crc(line.real_total_cost) }}{% else %}-{% endif %}</td>
+                <td>{% if line.real_unit_cost is not none %}{{ fmt.money_crc(line.real_unit_cost) }}{% else %}-{% endif %}</td>
+                <td>{{ line.cost_distribution_status }}</td>
                 <td>{{ line.material_snapshot_refreshed_at or "" }}</td>
                 <td><input name="notes" value="{{ line.notes or '' }}" form="{{ edit_form_id }}"></td>
                 <td>

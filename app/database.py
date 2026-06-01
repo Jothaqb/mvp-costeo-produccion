@@ -1679,6 +1679,13 @@ def ensure_packaging_batch_tables() -> None:
                 "material_snapshot_cost_total": "NUMERIC(12, 4)",
                 "material_snapshot_status": "VARCHAR(50) NOT NULL DEFAULT 'pending'",
                 "material_snapshot_refreshed_at": "TIMESTAMP",
+                "real_labor_cost": "NUMERIC(12, 4)",
+                "real_overhead_cost": "NUMERIC(12, 4)",
+                "real_machine_cost": "NUMERIC(12, 4)",
+                "real_total_cost": "NUMERIC(12, 4)",
+                "real_unit_cost": "NUMERIC(12, 4)",
+                "cost_distribution_status": "VARCHAR(50) NOT NULL DEFAULT 'pending'",
+                "cost_distributed_at": "TIMESTAMP",
             },
         )
 

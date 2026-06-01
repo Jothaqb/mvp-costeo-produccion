@@ -364,6 +364,12 @@ from app.services.packaging_batch_activity_service import (
     get_packaging_batch_activity_summary,
     update_packaging_batch_activity_times,
 )
+from app.services.packaging_batch_costing_service import (
+    PackagingBatchCostingValidationError,
+    check_packaging_batch_cost_distribution_readiness,
+    distribute_packaging_batch_activity_costs,
+    get_packaging_batch_cost_distribution_summary,
+)
 
 
 Base.metadata.create_all(bind=engine)
@@ -2704,11 +2710,15 @@ def _packaging_batch_form_context(
     material_readiness = None
     activity_summary = None
     activity_readiness = None
+    cost_distribution_summary = None
+    cost_distribution_readiness = None
     if batch is not None:
         material_summary = get_packaging_batch_material_summary(batch)
         material_readiness = check_packaging_batch_material_readiness(batch)
         activity_summary = get_packaging_batch_activity_summary(batch)
         activity_readiness = check_packaging_batch_activity_readiness(batch)
+        cost_distribution_summary = get_packaging_batch_cost_distribution_summary(batch)
+        cost_distribution_readiness = check_packaging_batch_cost_distribution_readiness(batch)
     return {
         "title": title,
         "batch": batch,
@@ -2723,6 +2733,8 @@ def _packaging_batch_form_context(
         "material_readiness": material_readiness,
         "activity_summary": activity_summary,
         "activity_readiness": activity_readiness,
+        "cost_distribution_summary": cost_distribution_summary,
+        "cost_distribution_readiness": cost_distribution_readiness,
     }
 
 
@@ -2739,6 +2751,8 @@ def _packaging_batch_detail_context(
     material_readiness = check_packaging_batch_material_readiness(batch)
     activity_summary = get_packaging_batch_activity_summary(batch)
     activity_readiness = check_packaging_batch_activity_readiness(batch)
+    cost_distribution_summary = get_packaging_batch_cost_distribution_summary(batch)
+    cost_distribution_readiness = check_packaging_batch_cost_distribution_readiness(batch)
     return {
         "title": batch.internal_batch_number,
         "batch": batch,
@@ -2749,6 +2763,8 @@ def _packaging_batch_detail_context(
         "material_readiness": material_readiness,
         "activity_summary": activity_summary,
         "activity_readiness": activity_readiness,
+        "cost_distribution_summary": cost_distribution_summary,
+        "cost_distribution_readiness": cost_distribution_readiness,
     }
 
 
@@ -8429,6 +8445,32 @@ async def update_packaging_batch_activities_route(
         update_packaging_batch_activity_times(db, batch_id, updates)
         return _redirect(f"/packaging-batches/{batch_id}/edit")
     except PackagingBatchActivityValidationError as exc:
+        batch = get_packaging_batch(db, batch_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_form.html",
+            context=_packaging_batch_form_context(
+                request,
+                db,
+                title=f"{batch.internal_batch_number} - Edit",
+                batch=batch,
+                error=str(exc),
+            ),
+            status_code=400,
+        )
+
+
+@app.post("/packaging-batches/{batch_id}/costs/distribute")
+def distribute_packaging_batch_costs_route(
+    batch_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "production_order.edit")
+    try:
+        distribute_packaging_batch_activity_costs(db, batch_id)
+        return _redirect(f"/packaging-batches/{batch_id}/edit")
+    except PackagingBatchCostingValidationError as exc:
         batch = get_packaging_batch(db, batch_id)
         return templates.TemplateResponse(
             request=request,

@@ -11,6 +11,7 @@ from app.services.packaging_batch_activity_service import (
     ensure_packaging_batch_activities,
     has_packaging_batch_captured_activity_times,
 )
+from app.services.packaging_batch_costing_service import invalidate_packaging_batch_line_cost_distribution
 from app.services.packaging_batch_material_service import invalidate_packaging_batch_line_material_snapshot
 
 
@@ -119,6 +120,8 @@ def update_packaging_batch_header(
     batch.notes = _normalize_optional_text(notes)
     batch.updated_by_user_id = current_user.id if current_user else batch.updated_by_user_id
     ensure_packaging_batch_activities(db, batch, replace_existing=route_changed)
+    if route_changed:
+        invalidate_packaging_batch_line_cost_distribution(db, batch)
     db.commit()
     db.refresh(batch)
     return get_packaging_batch(db, batch.id)
@@ -161,6 +164,7 @@ def add_packaging_batch_real_line(
         notes=_normalize_optional_text(notes),
     )
     db.add(line)
+    invalidate_packaging_batch_line_cost_distribution(db, batch)
     db.commit()
     db.refresh(line)
     return line
@@ -182,6 +186,7 @@ def update_packaging_batch_line(
     line.notes = _normalize_optional_text(notes)
     if line.planned_qty != original_planned_qty:
         invalidate_packaging_batch_line_material_snapshot(db, line, status="pending")
+        invalidate_packaging_batch_line_cost_distribution(db, batch)
     db.commit()
     db.refresh(line)
     return line
@@ -191,6 +196,7 @@ def delete_packaging_batch_line(db: Session, *, batch_id: int, line_id: int) -> 
     batch = get_packaging_batch(db, batch_id)
     _ensure_draft(batch)
     line = _get_batch_line(batch, line_id)
+    invalidate_packaging_batch_line_cost_distribution(db, batch)
     db.delete(line)
     db.commit()
 

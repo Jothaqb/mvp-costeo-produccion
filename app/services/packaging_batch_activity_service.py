@@ -15,6 +15,7 @@ from app.models import (
     PackagingBatchActivity,
     RouteActivity,
 )
+from app.services.packaging_batch_costing_service import invalidate_packaging_batch_line_cost_distribution
 
 
 ZERO = Decimal("0")
@@ -127,8 +128,10 @@ def update_packaging_batch_activity_times(
 
     try:
         recalculate_packaging_batch_activity_costs(db, batch)
+        invalidate_packaging_batch_line_cost_distribution(db, batch)
         db.commit()
     except PackagingBatchActivityValidationError:
+        invalidate_packaging_batch_line_cost_distribution(db, batch)
         db.commit()
         raise
 

@@ -13,6 +13,7 @@ from app.models import (
     ProductBomHeader,
     ProductBomLine,
 )
+from app.services.packaging_batch_costing_service import invalidate_packaging_batch_line_cost_distribution
 
 
 ZERO = Decimal("0")
@@ -134,9 +135,11 @@ def refresh_packaging_batch_line_material_snapshot(
                 f"Active BOM for product {line.product.sku} has no lines."
             )
         _replace_line_material_snapshot(db, line, bom_header)
+        invalidate_packaging_batch_line_cost_distribution(db, batch)
         db.commit()
     except PackagingBatchMaterialValidationError:
         invalidate_packaging_batch_line_material_snapshot(db, line, status="error")
+        invalidate_packaging_batch_line_cost_distribution(db, batch)
         db.commit()
         raise
 
@@ -155,6 +158,7 @@ def invalidate_packaging_batch_line_material_snapshot(
     line.material_snapshot_cost_total = None
     line.material_snapshot_status = status
     line.material_snapshot_refreshed_at = None
+    invalidate_packaging_batch_line_cost_distribution(db, line.packaging_batch)
     db.flush()
 
 
