@@ -1670,6 +1670,9 @@ def ensure_packaging_batch_tables() -> None:
                 "real_activity_cost_total": "NUMERIC(12, 4)",
                 "activity_cost_status": "VARCHAR(50) NOT NULL DEFAULT 'pending'",
                 "activity_costs_recalculated_at": "TIMESTAMP",
+                "closed_by_user_id": "INTEGER",
+                "closed_at": "TIMESTAMP",
+                "close_notes": "VARCHAR(500)",
             },
         )
         _ensure_columns(

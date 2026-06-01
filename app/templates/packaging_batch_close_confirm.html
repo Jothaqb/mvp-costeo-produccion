@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ batch.internal_batch_number }} - Close Preview</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+
+    <div class="actions">
+      <a class="button secondary" href="/packaging-batches/{{ batch.id }}">Back to batch</a>
+      {% if batch.status == "draft" and can(request, "production_order.edit") %}
+        <a class="button secondary" href="/packaging-batches/{{ batch.id }}/edit">Back to draft edit</a>
+      {% endif %}
+    </div>
+  </section>
+
+  <section>
+    <h2>Close Readiness</h2>
+    <dl class="summary">
+      <div>
+        <dt>Close status</dt>
+        <dd>{{ "ready" if close_readiness.is_ready else "not ready" }}</dd>
+      </div>
+      <div>
+        <dt>Blocking reasons</dt>
+        <dd>{{ close_readiness.reasons|length }}</dd>
+      </div>
+      <div>
+        <dt>Stock warnings</dt>
+        <dd>{{ close_readiness.warning_count }}</dd>
+      </div>
+      <div>
+        <dt>Existing ledger postings</dt>
+        <dd>{{ "Yes" if close_readiness.has_existing_ledger_postings else "No" }}</dd>
+      </div>
+    </dl>
+    {% if close_readiness.reasons %}
+      <ul>
+        {% for reason in close_readiness.reasons %}
+          <li>{{ reason }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Batch Summary</h2>
+    <dl class="summary">
+      <div>
+        <dt>Batch number</dt>
+        <dd>{{ preview.summary.internal_batch_number }}</dd>
+      </div>
+      <div>
+        <dt>Production date</dt>
+        <dd>{{ preview.summary.production_date }}</dd>
+      </div>
+      <div>
+        <dt>Packaging type</dt>
+        <dd>{{ packaging_type_label(preview.summary.packaging_type) }}</dd>
+      </div>
+      <div>
+        <dt>Route</dt>
+        <dd>{{ preview.summary.route }}</dd>
+      </div>
+      <div>
+        <dt>Total lines</dt>
+        <dd>{{ preview.summary.total_lines }}</dd>
+      </div>
+      <div>
+        <dt>Total material cost</dt>
+        <dd>{{ fmt.money_crc(preview.summary.total_material_cost) }}</dd>
+      </div>
+      <div>
+        <dt>Total labor cost</dt>
+        <dd>{{ fmt.money_crc(preview.summary.total_labor_cost) }}</dd>
+      </div>
+      <div>
+        <dt>Total overhead cost</dt>
+        <dd>{{ fmt.money_crc(preview.summary.total_overhead_cost) }}</dd>
+      </div>
+      <div>
+        <dt>Total machine cost</dt>
+        <dd>{{ fmt.money_crc(preview.summary.total_machine_cost) }}</dd>
+      </div>
+      <div>
+        <dt>Total final cost</dt>
+        <dd>{{ fmt.money_crc(preview.summary.total_final_cost) }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Materials to Consume</h2>
+    {% if preview.materials_to_consume %}
+      <table>
+        <thead>
+          <tr>
+            <th>Line</th>
+            <th>Finished good</th>
+            <th>Component SKU</th>
+            <th>Component name</th>
+            <th>Required quantity</th>
+            <th>Unit cost snapshot</th>
+            <th>Line cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for material in preview.materials_to_consume %}
+            <tr>
+              <td>{{ material.line_number }}</td>
+              <td>{{ material.finished_good_sku }} - {{ material.finished_good_name }}</td>
+              <td>{{ material.component_sku or "" }}</td>
+              <td>{{ material.component_name or "" }}</td>
+              <td>{{ fmt.number_3(material.required_quantity) }}</td>
+              <td>{% if material.unit_cost_snapshot is not none %}{{ fmt.money_crc(material.unit_cost_snapshot) }}{% else %}-{% endif %}</td>
+              <td>{% if material.line_cost is not none %}{{ fmt.money_crc(material.line_cost) }}{% else %}-{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No material snapshot lines are available for this batch.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Finished Goods to Receive</h2>
+    {% if preview.finished_goods_to_receive %}
+      <table>
+        <thead>
+          <tr>
+            <th>Line</th>
+            <th>SKU</th>
+            <th>Product name</th>
+            <th>Planned qty</th>
+            <th>Unit cost</th>
+            <th>Total cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for line in preview.finished_goods_to_receive %}
+            <tr>
+              <td>{{ line.line_number }}</td>
+              <td>{{ line.product_sku or "" }}</td>
+              <td>{{ line.product_name }}</td>
+              <td>{{ fmt.number_3(line.planned_qty) }}</td>
+              <td>{% if line.real_unit_cost is not none %}{{ fmt.money_crc(line.real_unit_cost) }}{% else %}-{% endif %}</td>
+              <td>{% if line.real_total_cost is not none %}{{ fmt.money_crc(line.real_total_cost) }}{% else %}-{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No finished-good lines are available for this batch.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Stock Warnings</h2>
+    {% if preview.stock_warnings %}
+      <table>
+        <thead>
+          <tr>
+            <th>Line</th>
+            <th>Finished good</th>
+            <th>Component SKU</th>
+            <th>Component name</th>
+            <th>Current stock</th>
+            <th>Required quantity</th>
+            <th>Deficit</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for warning in preview.stock_warnings %}
+            <tr>
+              <td>{{ warning.line_number }}</td>
+              <td>{{ warning.finished_good_sku }} - {{ warning.finished_good_name }}</td>
+              <td>{{ warning.component_sku or "" }}</td>
+              <td>{{ warning.component_name or "" }}</td>
+              <td>{% if warning.current_stock is not none %}{{ fmt.number_3(warning.current_stock) }}{% else %}-{% endif %}</td>
+              <td>{{ fmt.number_3(warning.required_quantity) }}</td>
+              <td>{% if warning.deficit is not none %}{{ fmt.number_3(warning.deficit) }}{% else %}-{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <ul>
+        {% for warning in preview.stock_warnings %}
+          <li>{{ warning.message }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p>No stock warnings were detected for the current snapshot.</p>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Close Notes</h2>
+    <label for="close_notes">Close notes</label>
+    <textarea id="close_notes" name="close_notes" disabled placeholder="Close notes entry will be enabled in 35AC.4B.">{{ batch.close_notes or "" }}</textarea>
+    <p class="muted-inline">35AC.4A is a preview only. No inventory posting, final close, or status change happens from this screen yet.</p>
+    <div class="inline-actions">
+      <button type="button" disabled>Confirm Close</button>
+    </div>
+  </section>
+{% endblock %}

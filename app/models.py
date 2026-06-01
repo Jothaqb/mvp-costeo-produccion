@@ -225,6 +225,11 @@ class User(Base):
         back_populates="updated_by_user",
         foreign_keys="PackagingBatch.updated_by_user_id",
     )
+    packaging_batches_closed: Mapped[list["PackagingBatch"]] = relationship(
+        "PackagingBatch",
+        back_populates="closed_by_user",
+        foreign_keys="PackagingBatch.closed_by_user_id",
+    )
 
 
 class Role(Base):
@@ -1212,6 +1217,9 @@ class PackagingBatch(Base):
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    closed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    close_notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -1230,6 +1238,11 @@ class PackagingBatch(Base):
         "User",
         back_populates="packaging_batches_updated",
         foreign_keys=[updated_by_user_id],
+    )
+    closed_by_user: Mapped["User | None"] = relationship(
+        "User",
+        back_populates="packaging_batches_closed",
+        foreign_keys=[closed_by_user_id],
     )
     lines: Mapped[list["PackagingBatchLine"]] = relationship(
         back_populates="packaging_batch",

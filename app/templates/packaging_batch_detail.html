@@ -91,6 +91,52 @@
   </section>
 
   <section>
+    <h2>Close Readiness</h2>
+    <dl class="summary">
+      <div>
+        <dt>Close status</dt>
+        <dd>{{ "ready" if close_readiness.is_ready else "not ready" }}</dd>
+      </div>
+      <div>
+        <dt>Blocking reasons</dt>
+        <dd>{{ close_readiness.reasons|length }}</dd>
+      </div>
+      <div>
+        <dt>Stock warnings</dt>
+        <dd>{{ close_readiness.warning_count }}</dd>
+      </div>
+      <div>
+        <dt>Existing ledger postings</dt>
+        <dd>{{ "Yes" if close_readiness.has_existing_ledger_postings else "No" }}</dd>
+      </div>
+    </dl>
+    {% if close_readiness.reasons %}
+      <ul>
+        {% for reason in close_readiness.reasons %}
+          <li>{{ reason }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% if close_stock_warnings %}
+      <ul>
+        {% for warning in close_stock_warnings %}
+          <li>
+            {{ warning.message }}
+            {% if warning.deficit is not none %}
+              (deficit {{ fmt.number_3(warning.deficit) }})
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+    {% if batch.status == "draft" and can(request, "production_order.close") and close_readiness.is_ready %}
+      <div class="actions">
+        <a class="button" href="/packaging-batches/{{ batch.id }}/close">Close Batch</a>
+      </div>
+    {% endif %}
+  </section>
+
+  <section>
     <h2>Activity Cost Summary</h2>
     <dl class="summary">
       <div>

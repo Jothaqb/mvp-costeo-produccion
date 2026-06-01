@@ -370,6 +370,12 @@ from app.services.packaging_batch_costing_service import (
     distribute_packaging_batch_activity_costs,
     get_packaging_batch_cost_distribution_summary,
 )
+from app.services.packaging_batch_close_service import (
+    PackagingBatchCloseValidationError,
+    check_packaging_batch_close_readiness,
+    get_packaging_batch_close_preview,
+    get_packaging_batch_stock_warnings,
+)
 
 
 Base.metadata.create_all(bind=engine)
@@ -2753,6 +2759,8 @@ def _packaging_batch_detail_context(
     activity_readiness = check_packaging_batch_activity_readiness(batch)
     cost_distribution_summary = get_packaging_batch_cost_distribution_summary(batch)
     cost_distribution_readiness = check_packaging_batch_cost_distribution_readiness(batch)
+    close_readiness = check_packaging_batch_close_readiness(db, batch_id)
+    close_stock_warnings = get_packaging_batch_stock_warnings(db, batch_id)
     return {
         "title": batch.internal_batch_number,
         "batch": batch,
@@ -2765,6 +2773,8 @@ def _packaging_batch_detail_context(
         "activity_readiness": activity_readiness,
         "cost_distribution_summary": cost_distribution_summary,
         "cost_distribution_readiness": cost_distribution_readiness,
+        "close_readiness": close_readiness,
+        "close_stock_warnings": close_stock_warnings,
     }
 
 
@@ -2782,6 +2792,28 @@ def _packaging_batch_line_materials_context(
         "title": f"{batch.internal_batch_number} - Material Snapshot",
         "batch": batch,
         "line": line,
+        "error": error,
+        "message": message,
+        "packaging_type_label": packaging_type_label,
+    }
+
+
+def _packaging_batch_close_context(
+    request: Request,
+    db: Session,
+    *,
+    batch_id: int,
+    error: str | None = None,
+    message: str | None = None,
+) -> dict[str, object]:
+    preview = get_packaging_batch_close_preview(db, batch_id)
+    batch = preview["batch"]
+    close_readiness = check_packaging_batch_close_readiness(db, batch_id)
+    return {
+        "title": f"{batch.internal_batch_number} - Close Preview",
+        "batch": batch,
+        "preview": preview,
+        "close_readiness": close_readiness,
         "error": error,
         "message": message,
         "packaging_type_label": packaging_type_label,
@@ -8253,6 +8285,30 @@ def packaging_batch_detail(
     return templates.TemplateResponse(
         request=request,
         name="packaging_batch_detail.html",
+        context=context,
+    )
+
+
+@app.get("/packaging-batches/{batch_id}/close", response_class=HTMLResponse)
+def packaging_batch_close_confirm(
+    batch_id: int,
+    request: Request,
+    message: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "production_order.close")
+    try:
+        context = _packaging_batch_close_context(
+            request,
+            db,
+            batch_id=batch_id,
+            message=message,
+        )
+    except PackagingBatchCloseValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return templates.TemplateResponse(
+        request=request,
+        name="packaging_batch_close_confirm.html",
         context=context,
     )
 
