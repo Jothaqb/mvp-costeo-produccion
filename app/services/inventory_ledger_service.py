@@ -17,6 +17,8 @@ ALLOWED_TRANSACTION_TYPES = {
     "production_component_consumption",
     "production_component_return",
     "production_receipt_reversal",
+    "packaging_batch_component_consumption",
+    "packaging_batch_receipt",
     "b2b_invoice_sale",
     "b2c_sale",
     "manual_adjustment",

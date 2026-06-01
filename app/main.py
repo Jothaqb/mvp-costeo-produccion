@@ -373,7 +373,10 @@ from app.services.packaging_batch_costing_service import (
 from app.services.packaging_batch_close_service import (
     PackagingBatchCloseValidationError,
     check_packaging_batch_close_readiness,
+    close_packaging_batch_with_inventory_posting,
+    get_packaging_batch_for_close,
     get_packaging_batch_close_preview,
+    get_packaging_batch_related_ledger_transactions,
     get_packaging_batch_stock_warnings,
 )
 
@@ -2752,7 +2755,7 @@ def _packaging_batch_detail_context(
     error: str | None = None,
     message: str | None = None,
 ) -> dict[str, object]:
-    batch = get_packaging_batch(db, batch_id)
+    batch = get_packaging_batch_for_close(db, batch_id)
     material_summary = get_packaging_batch_material_summary(batch)
     material_readiness = check_packaging_batch_material_readiness(batch)
     activity_summary = get_packaging_batch_activity_summary(batch)
@@ -2761,6 +2764,7 @@ def _packaging_batch_detail_context(
     cost_distribution_readiness = check_packaging_batch_cost_distribution_readiness(batch)
     close_readiness = check_packaging_batch_close_readiness(db, batch_id)
     close_stock_warnings = get_packaging_batch_stock_warnings(db, batch_id)
+    related_ledger_transactions = get_packaging_batch_related_ledger_transactions(db, batch_id)
     return {
         "title": batch.internal_batch_number,
         "batch": batch,
@@ -2775,6 +2779,7 @@ def _packaging_batch_detail_context(
         "cost_distribution_readiness": cost_distribution_readiness,
         "close_readiness": close_readiness,
         "close_stock_warnings": close_stock_warnings,
+        "related_ledger_transactions": related_ledger_transactions,
     }
 
 
@@ -8280,7 +8285,7 @@ def packaging_batch_detail(
             batch_id=batch_id,
             message=message,
         )
-    except PackagingBatchValidationError as exc:
+    except (PackagingBatchValidationError, PackagingBatchCloseValidationError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return templates.TemplateResponse(
         request=request,
@@ -8313,6 +8318,40 @@ def packaging_batch_close_confirm(
     )
 
 
+@app.post("/packaging-batches/{batch_id}/close")
+async def packaging_batch_close_route(
+    batch_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "production_order.close")
+    form = await request.form()
+    close_notes = str(form.get("close_notes", ""))
+    try:
+        close_result = close_packaging_batch_with_inventory_posting(
+            db,
+            batch_id=batch_id,
+            close_notes=close_notes,
+            current_user_id=current_user.id,
+        )
+        message = "Packaging batch closed successfully."
+        if close_result.warnings:
+            message = f"{message} Inventory warnings were recorded."
+        return _redirect(f"/packaging-batches/{batch_id}?message={quote(message)}")
+    except PackagingBatchCloseValidationError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_close_confirm.html",
+            context=_packaging_batch_close_context(
+                request,
+                db,
+                batch_id=batch_id,
+                error=str(exc),
+            ),
+            status_code=400,
+        )
+
+
 @app.get("/packaging-batches/{batch_id}/edit", response_class=HTMLResponse)
 def edit_packaging_batch_form(
     batch_id: int,
@@ -8324,6 +8363,18 @@ def edit_packaging_batch_form(
         batch = get_packaging_batch(db, batch_id)
     except PackagingBatchValidationError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if batch.status != "draft":
+        return templates.TemplateResponse(
+            request=request,
+            name="packaging_batch_detail.html",
+            context=_packaging_batch_detail_context(
+                request,
+                db,
+                batch_id=batch_id,
+                error="Only draft packaging batches can be edited.",
+            ),
+            status_code=400,
+        )
     return templates.TemplateResponse(
         request=request,
         name="packaging_batch_form.html",

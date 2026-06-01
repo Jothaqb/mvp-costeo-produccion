@@ -197,11 +197,17 @@
 
   <section>
     <h2>Close Notes</h2>
-    <label for="close_notes">Close notes</label>
-    <textarea id="close_notes" name="close_notes" disabled placeholder="Close notes entry will be enabled in 35AC.4B.">{{ batch.close_notes or "" }}</textarea>
-    <p class="muted-inline">35AC.4A is a preview only. No inventory posting, final close, or status change happens from this screen yet.</p>
-    <div class="inline-actions">
-      <button type="button" disabled>Confirm Close</button>
-    </div>
+    <form method="post" action="/packaging-batches/{{ batch.id }}/close">
+      <label for="close_notes">Close notes</label>
+      <textarea id="close_notes" name="close_notes" placeholder="Optional close notes">{{ batch.close_notes or "" }}</textarea>
+      {% if close_readiness.is_ready %}
+        <p class="muted-inline">This confirmation will create inventory postings, update balances, and mark the batch as closed.</p>
+      {% else %}
+        <p class="muted-inline">Close is blocked until all readiness items are complete.</p>
+      {% endif %}
+      <div class="inline-actions">
+        <button type="submit" {% if not close_readiness.is_ready %}disabled{% endif %}>Confirm Close</button>
+      </div>
+    </form>
   </section>
 {% endblock %}

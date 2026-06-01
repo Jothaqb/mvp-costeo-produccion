@@ -40,6 +40,20 @@
         <dt>Updated by</dt>
         <dd>{{ batch.updated_by_user.username if batch.updated_by_user else "" }}</dd>
       </div>
+      {% if batch.status == "closed" %}
+        <div>
+          <dt>Closed at</dt>
+          <dd>{{ batch.closed_at or "" }}</dd>
+        </div>
+        <div>
+          <dt>Closed by</dt>
+          <dd>{{ batch.closed_by_user.username if batch.closed_by_user else "" }}</dd>
+        </div>
+        <div>
+          <dt>Close notes</dt>
+          <dd>{{ batch.close_notes or "" }}</dd>
+        </div>
+      {% endif %}
     </dl>
 
     <div class="actions">
@@ -346,4 +360,44 @@
       <p>No lines have been added yet.</p>
     {% endif %}
   </section>
+
+  {% if batch.status == "closed" %}
+    <section>
+      <h2>Inventory Ledger</h2>
+      {% if related_ledger_transactions %}
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Type</th>
+              <th>Product ID</th>
+              <th>Source line</th>
+              <th>Qty in</th>
+              <th>Qty out</th>
+              <th>Unit cost</th>
+              <th>Total cost</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for transaction in related_ledger_transactions %}
+              <tr>
+                <td>{{ transaction.transaction_date }}</td>
+                <td>{{ transaction.transaction_type }}</td>
+                <td>{{ transaction.product_id }}</td>
+                <td>{{ transaction.source_line_id or "" }}</td>
+                <td>{{ fmt.number_3(transaction.quantity_in) }}</td>
+                <td>{{ fmt.number_3(transaction.quantity_out) }}</td>
+                <td>{% if transaction.unit_cost is not none %}{{ fmt.money_crc(transaction.unit_cost) }}{% else %}-{% endif %}</td>
+                <td>{% if transaction.total_cost is not none %}{{ fmt.money_crc(transaction.total_cost) }}{% else %}-{% endif %}</td>
+                <td>{{ transaction.notes or "" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p>No inventory transactions were found for this closed batch.</p>
+      {% endif %}
+    </section>
+  {% endif %}
 {% endblock %}

@@ -1,16 +1,35 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session, joinedload
 
+from app.models import AuditLog
 from app.models import (
     InventoryBalance,
     InventoryTransaction,
     PackagingBatch,
+    PackagingBatchActivity,
     PackagingBatchLine,
     PackagingBatchLineMaterial,
     Product,
+    User,
+)
+from app.services.audit_service import (
+    serialize_audit_payload,
+    snapshot_inventory_transactions_for_audit,
+    snapshot_packaging_batch_activities_for_audit,
+    snapshot_packaging_batch_for_audit,
+    snapshot_packaging_batch_lines_for_audit,
+    snapshot_packaging_batch_materials_for_audit,
+)
+from app.services.inventory_ledger_service import (
+    InventoryLedgerValidationError,
+    InventoryPostingResult,
+    post_incoming_movement,
+    post_outgoing_movement_with_unit_cost,
 )
 
 
@@ -22,6 +41,13 @@ PACKAGING_BATCH_RECEIPT = "packaging_batch_receipt"
 
 class PackagingBatchCloseValidationError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class PackagingBatchCloseResult:
+    batch: PackagingBatch
+    transactions: list[InventoryTransaction]
+    warnings: list[str]
 
 
 def get_packaging_batch_for_close(db: Session, batch_id: int) -> PackagingBatch:
@@ -88,6 +114,8 @@ def check_packaging_batch_close_readiness(db: Session, batch_id: int) -> dict[st
         reasons.append("Batch route is missing")
 
     for line in batch.lines:
+        if line.product_id is None:
+            reasons.append(f"Line {line.line_number} is missing product")
         if line.planned_qty is None or line.planned_qty <= ZERO:
             reasons.append(f"Line {line.line_number} must have planned quantity greater than zero")
         if (line.material_snapshot_status or "pending").strip().lower() != "ready":
@@ -98,6 +126,28 @@ def check_packaging_batch_close_readiness(db: Session, batch_id: int) -> dict[st
             reasons.append(f"Line {line.line_number} is missing real total cost")
         if line.real_unit_cost is None:
             reasons.append(f"Line {line.line_number} is missing real unit cost")
+        for material in line.materials:
+            component_sku = (material.component_sku or "").strip()
+            if not component_sku:
+                reasons.append(f"Line {line.line_number} has a material snapshot without component SKU")
+                continue
+            component_product = db.query(Product).filter(Product.sku == component_sku).one_or_none()
+            if component_product is None:
+                reasons.append(
+                    f"Line {line.line_number} component {component_sku} could not be resolved to a Product."
+                )
+            if material.required_quantity is None or material.required_quantity <= ZERO:
+                reasons.append(
+                    f"Line {line.line_number} component {component_sku} has invalid required quantity"
+                )
+            if material.unit_cost_snapshot is None:
+                reasons.append(
+                    f"Line {line.line_number} component {component_sku} is missing unit cost snapshot"
+                )
+            if material.line_cost is None:
+                reasons.append(
+                    f"Line {line.line_number} component {component_sku} is missing line cost"
+                )
 
     if (batch.activity_cost_status or "pending").strip().lower() != "ready":
         reasons.append("Activity costs are not ready")
@@ -153,6 +203,7 @@ def get_packaging_batch_close_preview(db: Session, batch_id: int) -> dict[str, o
                     "finished_good_name": line.product_name_snapshot,
                     "component_sku": material.component_sku,
                     "component_name": material.component_name,
+                    "component_product_id": _resolve_component_product_id(db, material.component_sku),
                     "required_quantity": material.required_quantity,
                     "unit_cost_snapshot": material.unit_cost_snapshot,
                     "line_cost": material.line_cost,
@@ -178,6 +229,142 @@ def get_packaging_batch_close_preview(db: Session, batch_id: int) -> dict[str, o
         "finished_goods_to_receive": finished_goods_to_receive,
         "stock_warnings": stock_warnings,
     }
+
+
+def get_packaging_batch_related_ledger_transactions(
+    db: Session,
+    batch_id: int,
+) -> list[InventoryTransaction]:
+    return (
+        db.query(InventoryTransaction)
+        .filter(
+            InventoryTransaction.source_type == PACKAGING_BATCH_SOURCE_TYPE,
+            InventoryTransaction.source_id == batch_id,
+        )
+        .order_by(InventoryTransaction.transaction_date, InventoryTransaction.id)
+        .all()
+    )
+
+
+def close_packaging_batch_with_inventory_posting(
+    db: Session,
+    batch_id: int,
+    close_notes: str | None,
+    current_user_id: int | None,
+) -> PackagingBatchCloseResult:
+    batch = get_packaging_batch_for_close(db, batch_id)
+    readiness = check_packaging_batch_close_readiness(db, batch_id)
+    if not readiness["is_ready"]:
+        reasons = list(readiness.get("reasons", []))
+        raise PackagingBatchCloseValidationError(
+            reasons[0] if reasons else "Packaging batch is not ready to close."
+        )
+
+    ledger_postings = check_packaging_batch_existing_ledger_postings(db, batch_id)
+    if ledger_postings["has_existing_postings"]:
+        raise PackagingBatchCloseValidationError("Packaging batch already has inventory ledger postings.")
+
+    warnings = _build_stock_warnings(db, batch)
+    warning_messages = [warning["message"] for warning in warnings]
+    created_transactions: list[InventoryTransaction] = []
+    previous_snapshot = snapshot_packaging_batch_for_audit(batch)
+
+    try:
+        for line in sorted(batch.lines, key=lambda item: (item.line_number, item.id)):
+            for material in sorted(line.materials, key=lambda item: (str(item.component_sku or ""), item.id)):
+                component_product = _resolve_component_product(db, material.component_sku)
+                if component_product is None:
+                    raise PackagingBatchCloseValidationError(
+                        f"Component {material.component_sku or material.component_name or material.id} could not be resolved to a Product."
+                    )
+                if material.required_quantity is None or material.required_quantity <= ZERO:
+                    raise PackagingBatchCloseValidationError(
+                        f"Component {component_product.sku} has invalid required quantity."
+                    )
+                if material.unit_cost_snapshot is None:
+                    raise PackagingBatchCloseValidationError(
+                        f"Component {component_product.sku} is missing unit cost snapshot."
+                    )
+
+                posting_result = post_outgoing_movement_with_unit_cost(
+                    db,
+                    product_id=component_product.id,
+                    transaction_type=PACKAGING_BATCH_COMPONENT_CONSUMPTION,
+                    outgoing_qty=material.required_quantity,
+                    outgoing_unit_cost=material.unit_cost_snapshot,
+                    transaction_date=datetime.utcnow(),
+                    source_type=PACKAGING_BATCH_SOURCE_TYPE,
+                    source_id=batch.id,
+                    source_line_id=material.id,
+                    notes=(
+                        f"{batch.internal_batch_number} | line {line.line_number} | "
+                        f"{line.product_sku_snapshot} - {line.product_name_snapshot}"
+                    ),
+                )
+                created_transactions.append(posting_result.transaction)
+                warning_messages.extend(posting_result.warnings)
+
+        for line in sorted(batch.lines, key=lambda item: (item.line_number, item.id)):
+            if line.product_id is None:
+                raise PackagingBatchCloseValidationError(f"Line {line.line_number} is missing product.")
+            if line.planned_qty is None or line.planned_qty <= ZERO:
+                raise PackagingBatchCloseValidationError(
+                    f"Line {line.line_number} must have planned quantity greater than zero."
+                )
+            if line.real_unit_cost is None or line.real_total_cost is None:
+                raise PackagingBatchCloseValidationError(
+                    f"Line {line.line_number} is missing final cost data."
+                )
+
+            posting_result = post_incoming_movement(
+                db,
+                product_id=line.product_id,
+                transaction_type=PACKAGING_BATCH_RECEIPT,
+                incoming_qty=line.planned_qty,
+                incoming_unit_cost=line.real_unit_cost,
+                transaction_date=datetime.utcnow(),
+                source_type=PACKAGING_BATCH_SOURCE_TYPE,
+                source_id=batch.id,
+                source_line_id=line.id,
+                notes=(
+                    f"{batch.internal_batch_number} | line {line.line_number} | "
+                    f"{line.product_sku_snapshot} - {line.product_name_snapshot}"
+                ),
+            )
+            created_transactions.append(posting_result.transaction)
+            warning_messages.extend(posting_result.warnings)
+
+        batch.status = "closed"
+        batch.closed_at = datetime.utcnow()
+        batch.closed_by_user_id = current_user_id
+        batch.close_notes = (close_notes or "").strip() or None
+        db.flush()
+
+        _create_packaging_batch_close_audit_entry(
+            db,
+            batch=batch,
+            old_values=previous_snapshot,
+            transactions=created_transactions,
+            stock_warning_messages=warning_messages,
+            close_notes=batch.close_notes,
+            current_user_id=current_user_id,
+        )
+        db.commit()
+        db.refresh(batch)
+        return PackagingBatchCloseResult(
+            batch=batch,
+            transactions=created_transactions,
+            warnings=warning_messages,
+        )
+    except PackagingBatchCloseValidationError:
+        db.rollback()
+        raise
+    except InventoryLedgerValidationError as exc:
+        db.rollback()
+        raise PackagingBatchCloseValidationError(str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
 
 
 def _build_stock_warnings(db: Session, batch: PackagingBatch) -> list[dict[str, object]]:
@@ -249,3 +436,58 @@ def _build_stock_warnings(db: Session, batch: PackagingBatch) -> list[dict[str, 
                 )
 
     return warnings
+
+
+def _resolve_component_product(db: Session, component_sku: str | None) -> Product | None:
+    normalized_sku = (component_sku or "").strip()
+    if not normalized_sku:
+        return None
+    return db.query(Product).filter(Product.sku == normalized_sku).one_or_none()
+
+
+def _resolve_component_product_id(db: Session, component_sku: str | None) -> int | None:
+    product = _resolve_component_product(db, component_sku)
+    return product.id if product is not None else None
+
+
+def _create_packaging_batch_close_audit_entry(
+    db: Session,
+    *,
+    batch: PackagingBatch,
+    old_values: dict[str, object],
+    transactions: list[InventoryTransaction],
+    stock_warning_messages: list[str],
+    close_notes: str | None,
+    current_user_id: int | None,
+) -> None:
+    user = db.query(User).filter(User.id == current_user_id).one_or_none() if current_user_id else None
+    payload = {
+        "batch": snapshot_packaging_batch_for_audit(batch),
+        "lines": snapshot_packaging_batch_lines_for_audit(batch),
+        "materials": snapshot_packaging_batch_materials_for_audit(batch),
+        "activities": snapshot_packaging_batch_activities_for_audit(batch),
+        "inventory_transactions": snapshot_inventory_transactions_for_audit(transactions),
+        "stock_warnings": stock_warning_messages,
+        "close_notes": close_notes,
+        "user": (
+            {
+                "user_id": user.id,
+                "username": user.username,
+            }
+            if user is not None
+            else None
+        ),
+    }
+    audit_entry = AuditLog(
+        user_id=user.id if user is not None else None,
+        username=user.username if user is not None else "system",
+        module="production",
+        action="packaging_batch_closed",
+        entity_type="packaging_batch",
+        entity_id=str(batch.id),
+        entity_label=batch.internal_batch_number,
+        old_values=serialize_audit_payload(old_values),
+        new_values=serialize_audit_payload(payload),
+        notes=(close_notes or "").strip() or None,
+    )
+    db.add(audit_entry)

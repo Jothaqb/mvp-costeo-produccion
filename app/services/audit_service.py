@@ -15,6 +15,11 @@ from app.models import (
     B2BSalesOrder,
     B2CSalesOrder,
     InventoryAdjustment,
+    InventoryTransaction,
+    PackagingBatch,
+    PackagingBatchActivity,
+    PackagingBatchLine,
+    PackagingBatchLineMaterial,
     Product,
     ProductBomHeader,
     ProductionOrder,
@@ -378,6 +383,119 @@ def snapshot_production_order_bom_for_audit(order: ProductionOrder) -> list[dict
             "include_in_real_cost": material.include_in_real_cost,
         }
         for material in sorted(order.materials, key=lambda item: (str(item.component_sku or ""), item.id))
+    ]
+
+
+def snapshot_packaging_batch_for_audit(batch: PackagingBatch) -> dict[str, Any]:
+    return {
+        "packaging_batch_id": batch.id,
+        "internal_batch_number": batch.internal_batch_number,
+        "status": batch.status,
+        "production_date": batch.production_date,
+        "packaging_type": batch.packaging_type,
+        "route_id": batch.route_id,
+        "route_name": batch.route_name_snapshot,
+        "route_version": batch.route_version_snapshot,
+        "process_type": batch.process_type,
+        "real_labor_cost_total": batch.real_labor_cost_total,
+        "real_overhead_cost_total": batch.real_overhead_cost_total,
+        "real_machine_cost_total": batch.real_machine_cost_total,
+        "real_activity_cost_total": batch.real_activity_cost_total,
+        "activity_cost_status": batch.activity_cost_status,
+        "closed_at": batch.closed_at,
+        "closed_by_user_id": batch.closed_by_user_id,
+        "close_notes": batch.close_notes,
+    }
+
+
+def snapshot_packaging_batch_lines_for_audit(batch: PackagingBatch) -> list[dict[str, Any]]:
+    return [
+        {
+            "line_id": line.id,
+            "line_number": line.line_number,
+            "product_id": line.product_id,
+            "product_sku": line.product_sku_snapshot,
+            "product_name": line.product_name_snapshot,
+            "planned_qty": line.planned_qty,
+            "material_snapshot_cost_total": line.material_snapshot_cost_total,
+            "material_snapshot_status": line.material_snapshot_status,
+            "real_labor_cost": line.real_labor_cost,
+            "real_overhead_cost": line.real_overhead_cost,
+            "real_machine_cost": line.real_machine_cost,
+            "real_total_cost": line.real_total_cost,
+            "real_unit_cost": line.real_unit_cost,
+            "cost_distribution_status": line.cost_distribution_status,
+            "cost_distributed_at": line.cost_distributed_at,
+            "notes": line.notes,
+        }
+        for line in sorted(batch.lines, key=lambda item: (item.line_number, item.id))
+    ]
+
+
+def snapshot_packaging_batch_materials_for_audit(batch: PackagingBatch) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in sorted(batch.lines, key=lambda item: (item.line_number, item.id)):
+        for material in sorted(line.materials, key=lambda item: (str(item.component_sku or ""), item.id)):
+            rows.append(
+                {
+                    "line_id": line.id,
+                    "line_number": line.line_number,
+                    "material_id": material.id,
+                    "finished_good_sku": line.product_sku_snapshot,
+                    "component_sku": material.component_sku,
+                    "component_name": material.component_name,
+                    "quantity_standard": material.quantity_standard,
+                    "required_quantity": material.required_quantity,
+                    "unit_cost_snapshot": material.unit_cost_snapshot,
+                    "line_cost": material.line_cost,
+                    "component_type": material.component_type,
+                    "include_in_real_cost": material.include_in_real_cost,
+                }
+            )
+    return rows
+
+
+def snapshot_packaging_batch_activities_for_audit(batch: PackagingBatch) -> list[dict[str, Any]]:
+    return [
+        {
+            "activity_id": activity.id,
+            "sequence": activity.sequence,
+            "activity_code": activity.activity_code_snapshot,
+            "activity_name": activity.activity_name_snapshot,
+            "labor_minutes": activity.labor_minutes,
+            "machine_minutes": activity.machine_minutes,
+            "labor_cost": activity.labor_cost,
+            "overhead_cost": activity.overhead_cost,
+            "machine_cost": activity.machine_cost,
+            "total_activity_cost": activity.total_activity_cost,
+            "notes": activity.notes,
+        }
+        for activity in sorted(batch.activities, key=lambda item: (item.sequence, item.id))
+    ]
+
+
+def snapshot_inventory_transactions_for_audit(
+    transactions: list[InventoryTransaction],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "transaction_id": transaction.id,
+            "product_id": transaction.product_id,
+            "transaction_date": transaction.transaction_date,
+            "transaction_type": transaction.transaction_type,
+            "source_type": transaction.source_type,
+            "source_id": transaction.source_id,
+            "source_line_id": transaction.source_line_id,
+            "quantity_in": transaction.quantity_in,
+            "quantity_out": transaction.quantity_out,
+            "unit_cost": transaction.unit_cost,
+            "total_cost": transaction.total_cost,
+            "running_quantity": transaction.running_quantity,
+            "running_average_cost": transaction.running_average_cost,
+            "running_inventory_value": transaction.running_inventory_value,
+            "notes": transaction.notes,
+        }
+        for transaction in transactions
     ]
 
 
