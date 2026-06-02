@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Production</p>
+    <h1>Packaging Batches</h1>
+    <p class="lead">Review existing packaging batches and open any batch detail.</p>
+  </section>
+
+  <section>
+    <div class="actions">
+      {% if can(request, "production_order.create") %}
+        <a class="button" href="/packaging-batches/new">New Packaging Batch</a>
+      {% endif %}
+      <a class="button secondary" href="/production-orders/new">New Production Order</a>
+    </div>
+  </section>
+
+  <section>
+    <form method="get" action="/packaging-batches" class="filters">
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        <option value="">All</option>
+        {% for option in status_options %}
+          <option value="{{ option }}" {% if filters.status == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="packaging_type">Packaging type</label>
+      <select id="packaging_type" name="packaging_type">
+        <option value="">All</option>
+        {% for value, label in packaging_type_options %}
+          <option value="{{ value }}" {% if filters.packaging_type == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+
+      <button type="submit">Filter</button>
+      <a class="button secondary" href="/packaging-batches">Clear</a>
+    </form>
+  </section>
+
+  <section>
+    {% if rows %}
+      <table>
+        <thead>
+          <tr>
+            <th>Batch number</th>
+            <th>Date</th>
+            <th>Packaging type</th>
+            <th>Status</th>
+            <th>Labor cost per unit</th>
+            <th>Overhead cost per unit</th>
+            <th>Machine cost per unit</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            {% set batch = row.batch %}
+            {% set summary = row.distribution_summary %}
+            <tr>
+              <td>{{ batch.internal_batch_number }}</td>
+              <td>{{ batch.production_date }}</td>
+              <td>{{ packaging_type_label(batch.packaging_type) }}</td>
+              <td>{{ batch.status }}</td>
+              <td>{% if summary.labor_cost_per_unit is not none %}{{ fmt.money_crc(summary.labor_cost_per_unit) }}{% else %}-{% endif %}</td>
+              <td>{% if summary.overhead_cost_per_unit is not none %}{{ fmt.money_crc(summary.overhead_cost_per_unit) }}{% else %}-{% endif %}</td>
+              <td>{% if summary.machine_cost_per_unit is not none %}{{ fmt.money_crc(summary.machine_cost_per_unit) }}{% else %}-{% endif %}</td>
+              <td><a class="table-link" href="/packaging-batches/{{ batch.id }}">Open</a></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No packaging batches match the selected filters.</p>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -27,6 +27,10 @@ PACKAGING_TYPE_OPTIONS = (
     ("jar", "Frascos"),
     ("doypack", "Doypacks"),
 )
+EXPECTED_PACKAGING_ROUTE_CODES = {
+    "jar": "R_ENV_FRASCOS",
+    "doypack": "R_ENV_DOYPACK",
+}
 
 
 def list_packaging_routes(db: Session) -> list[Route]:
@@ -41,6 +45,63 @@ def list_packaging_routes(db: Session) -> list[Route]:
         .order_by(Route.code, Route.name, Route.version)
         .all()
     )
+
+
+def list_packaging_batches(
+    db: Session,
+    *,
+    status: str | None = None,
+    packaging_type: str | None = None,
+) -> list[PackagingBatch]:
+    query = (
+        db.query(PackagingBatch)
+        .options(
+            joinedload(PackagingBatch.created_by_user),
+            joinedload(PackagingBatch.closed_by_user),
+            joinedload(PackagingBatch.lines),
+        )
+        .order_by(PackagingBatch.production_date.desc(), PackagingBatch.id.desc())
+    )
+    normalized_status = (status or "").strip().lower()
+    if normalized_status:
+        query = query.filter(PackagingBatch.status == normalized_status)
+    normalized_packaging_type = (packaging_type or "").strip().lower()
+    if normalized_packaging_type:
+        query = query.filter(PackagingBatch.packaging_type == normalized_packaging_type)
+    return query.all()
+
+
+def get_packaging_route_preview_map(db: Session) -> dict[str, dict[str, str | None]]:
+    preview_map: dict[str, dict[str, str | None]] = {}
+    for packaging_type, route_code in EXPECTED_PACKAGING_ROUTE_CODES.items():
+        route = db.query(Route).filter(Route.code == route_code).one_or_none()
+        if route is None:
+            preview_map[packaging_type] = {
+                "code": route_code,
+                "label": None,
+                "error": f"Expected route {route_code} does not exist.",
+            }
+            continue
+        if not route.active:
+            preview_map[packaging_type] = {
+                "code": route_code,
+                "label": f"{route.code} - {route.name} v{route.version}",
+                "error": f"Expected route {route_code} is inactive.",
+            }
+            continue
+        if route.process_type != ProcessType.PACKAGING.value:
+            preview_map[packaging_type] = {
+                "code": route_code,
+                "label": f"{route.code} - {route.name} v{route.version}",
+                "error": f"Expected route {route_code} must belong to the packaging process.",
+            }
+            continue
+        preview_map[packaging_type] = {
+            "code": route_code,
+            "label": f"{route.code} - {route.name} v{route.version}",
+            "error": None,
+        }
+    return preview_map
 
 
 def get_packaging_batch(db: Session, batch_id: int) -> PackagingBatch:
@@ -67,11 +128,10 @@ def create_packaging_batch(
     *,
     production_date: date,
     packaging_type: str,
-    route_id: int,
     notes: str | None,
     current_user: User | None,
 ) -> PackagingBatch:
-    route = _validate_route(db, packaging_type=packaging_type, route_id=route_id)
+    route = _resolve_packaging_route(db, packaging_type=packaging_type)
     batch = PackagingBatch(
         internal_batch_number=_generate_internal_batch_number(db),
         production_date=production_date,
@@ -99,13 +159,12 @@ def update_packaging_batch_header(
     batch_id: int,
     production_date: date,
     packaging_type: str,
-    route_id: int,
     notes: str | None,
     current_user: User | None,
 ) -> PackagingBatch:
     batch = get_packaging_batch(db, batch_id)
     _ensure_draft(batch)
-    route = _validate_route(db, packaging_type=packaging_type, route_id=route_id)
+    route = _resolve_packaging_route(db, packaging_type=packaging_type)
     route_changed = batch.route_id != route.id
     if route_changed and has_packaging_batch_captured_activity_times(batch):
         raise PackagingBatchValidationError(
@@ -208,22 +267,23 @@ def packaging_type_label(value: str) -> str:
     return value
 
 
-def _validate_route(db: Session, *, packaging_type: str, route_id: int) -> Route:
+def _normalize_packaging_type(packaging_type: str) -> str:
     normalized_packaging_type = (packaging_type or "").strip().lower()
     if normalized_packaging_type not in {value for value, _ in PACKAGING_TYPE_OPTIONS}:
         raise PackagingBatchValidationError("Packaging type is required.")
+    return normalized_packaging_type
 
-    route = db.query(Route).filter(Route.id == route_id).one_or_none()
+
+def _resolve_packaging_route(db: Session, *, packaging_type: str) -> Route:
+    normalized_packaging_type = _normalize_packaging_type(packaging_type)
+    route_code = EXPECTED_PACKAGING_ROUTE_CODES[normalized_packaging_type]
+    route = db.query(Route).filter(Route.code == route_code).one_or_none()
     if route is None:
-        raise PackagingBatchValidationError("Route is required.")
+        raise PackagingBatchValidationError(f"Expected route {route_code} does not exist.")
     if not route.active:
-        raise PackagingBatchValidationError("Route must be active.")
+        raise PackagingBatchValidationError(f"Expected route {route_code} is inactive.")
     if route.process_type != ProcessType.PACKAGING.value:
-        raise PackagingBatchValidationError("Route must belong to the packaging process.")
-
-    allowed_codes = JAR_ROUTE_CODES if normalized_packaging_type == "jar" else DOYPACK_ROUTE_CODES
-    if route.code not in allowed_codes:
-        raise PackagingBatchValidationError("Route is not compatible with the selected packaging type.")
+        raise PackagingBatchValidationError(f"Expected route {route_code} must belong to the packaging process.")
     return route
 
 

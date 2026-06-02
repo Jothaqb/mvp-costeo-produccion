@@ -346,6 +346,8 @@ from app.services.packaging_batch_service import (
     create_packaging_batch,
     delete_packaging_batch_line,
     get_packaging_batch,
+    get_packaging_route_preview_map,
+    list_packaging_batches,
     list_packaging_routes,
     packaging_type_label,
     update_packaging_batch_header,
@@ -2667,6 +2669,16 @@ def _packaging_route_options(db: Session) -> list[dict[str, object]]:
     return rows
 
 
+def _selected_packaging_route_preview(
+    route_preview_map: dict[str, dict[str, str | None]],
+    packaging_type: str,
+) -> dict[str, str | None]:
+    preview = route_preview_map.get((packaging_type or "").strip().lower())
+    if preview is not None:
+        return preview
+    return {"code": None, "label": None, "error": None}
+
+
 def _production_order_form_response(
     request: Request,
     db: Session,
@@ -2706,15 +2718,23 @@ def _packaging_batch_form_context(
     error: str | None = None,
     form_values: dict[str, str] | None = None,
 ) -> dict[str, object]:
-    route_options = _packaging_route_options(db)
+    route_preview_map = get_packaging_route_preview_map(db)
     values = {
         "production_date": batch.production_date.isoformat() if batch is not None else "",
         "packaging_type": batch.packaging_type if batch is not None else "",
-        "route_id": str(batch.route_id) if batch is not None else "",
         "notes": (batch.notes or "") if batch is not None else "",
     }
     if form_values:
         values.update(form_values)
+    selected_route_preview = _selected_packaging_route_preview(route_preview_map, values["packaging_type"])
+    if batch is not None and not selected_route_preview["label"] and batch.route_name_snapshot:
+        selected_route_preview = {
+            "code": None,
+            "label": f"{batch.route.code} - {batch.route_name_snapshot} v{batch.route_version_snapshot}"
+            if batch.route is not None
+            else f"{batch.route_name_snapshot} v{batch.route_version_snapshot}",
+            "error": None,
+        }
     material_summary = None
     material_readiness = None
     activity_summary = None
@@ -2733,7 +2753,8 @@ def _packaging_batch_form_context(
         "batch": batch,
         "error": error,
         "form_values": values,
-        "route_options": route_options,
+        "route_preview_map": route_preview_map,
+        "selected_route_preview": selected_route_preview,
         "product_options": _manufactured_product_options(db),
         "packaging_type_options": PACKAGING_TYPE_OPTIONS,
         "packaging_type_label": packaging_type_label,
@@ -2744,6 +2765,42 @@ def _packaging_batch_form_context(
         "activity_readiness": activity_readiness,
         "cost_distribution_summary": cost_distribution_summary,
         "cost_distribution_readiness": cost_distribution_readiness,
+    }
+
+
+def _packaging_batch_list_context(
+    request: Request,
+    db: Session,
+    *,
+    status: str = "",
+    packaging_type: str = "",
+) -> dict[str, object]:
+    batches = list_packaging_batches(
+        db,
+        status=status,
+        packaging_type=packaging_type,
+    )
+    rows: list[dict[str, object]] = []
+    for batch in batches:
+        distribution_summary = get_packaging_batch_cost_distribution_summary(batch)
+        material_summary = get_packaging_batch_material_summary(batch)
+        rows.append(
+            {
+                "batch": batch,
+                "distribution_summary": distribution_summary,
+                "material_summary": material_summary,
+            }
+        )
+    return {
+        "title": "Packaging Batches",
+        "rows": rows,
+        "filters": {
+            "status": status.strip(),
+            "packaging_type": packaging_type.strip(),
+        },
+        "status_options": ("draft", "in_process", "closed"),
+        "packaging_type_options": PACKAGING_TYPE_OPTIONS,
+        "packaging_type_label": packaging_type_label,
     }
 
 
@@ -8230,12 +8287,32 @@ def new_packaging_batch(
     )
 
 
+@app.get("/packaging-batches", response_class=HTMLResponse)
+def packaging_batches_list(
+    request: Request,
+    status: str = Query(""),
+    packaging_type: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "production_order.view")
+    return templates.TemplateResponse(
+        request=request,
+        name="packaging_batches_list.html",
+        context=_packaging_batch_list_context(
+            request,
+            db,
+            status=status,
+            packaging_type=packaging_type,
+        ),
+    )
+
+
 @app.post("/packaging-batches")
 def create_packaging_batch_route(
     request: Request,
     production_date: date = Form(...),
     packaging_type: str = Form(""),
-    route_id: int = Form(...),
+    route_id: str = Form(""),
     notes: str = Form(""),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -8245,7 +8322,6 @@ def create_packaging_batch_route(
             db,
             production_date=production_date,
             packaging_type=packaging_type,
-            route_id=route_id,
             notes=notes,
             current_user=current_user,
         )
@@ -8262,7 +8338,6 @@ def create_packaging_batch_route(
                 form_values={
                     "production_date": production_date.isoformat() if production_date else "",
                     "packaging_type": packaging_type,
-                    "route_id": str(route_id) if route_id else "",
                     "notes": notes,
                 },
             ),
@@ -8393,7 +8468,7 @@ def edit_packaging_batch_route(
     request: Request,
     production_date: date = Form(...),
     packaging_type: str = Form(""),
-    route_id: int = Form(...),
+    route_id: str = Form(""),
     notes: str = Form(""),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -8404,7 +8479,6 @@ def edit_packaging_batch_route(
             batch_id=batch_id,
             production_date=production_date,
             packaging_type=packaging_type,
-            route_id=route_id,
             notes=notes,
             current_user=current_user,
         )
@@ -8423,7 +8497,6 @@ def edit_packaging_batch_route(
                 form_values={
                     "production_date": production_date.isoformat() if production_date else "",
                     "packaging_type": packaging_type,
-                    "route_id": str(route_id) if route_id else "",
                     "notes": notes,
                 },
             ),

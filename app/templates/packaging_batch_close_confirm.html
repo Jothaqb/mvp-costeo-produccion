@@ -3,12 +3,13 @@
 
 {% block content %}
   <section>
-    <h1>{{ batch.internal_batch_number }} - Close Preview</h1>
+    <h1>{{ batch.internal_batch_number }} - Packaging Batch Close Preview</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     {% if message %}<p class="success">{{ message }}</p>{% endif %}
 
     <div class="actions">
-      <a class="button secondary" href="/packaging-batches/{{ batch.id }}">Back to batch</a>
+      <a class="button secondary" href="/packaging-batches/{{ batch.id }}">Back to Packaging Batch</a>
+      <a class="button secondary" href="/packaging-batches">Packaging Batch History</a>
       {% if batch.status == "draft" and can(request, "production_order.edit") %}
         <a class="button secondary" href="/packaging-batches/{{ batch.id }}/edit">Back to draft edit</a>
       {% endif %}
@@ -20,7 +21,13 @@
     <dl class="summary">
       <div>
         <dt>Close status</dt>
-        <dd>{{ "ready" if close_readiness.is_ready else "not ready" }}</dd>
+        <dd>
+          {% if close_readiness.is_ready %}
+            <span class="status-pill status-green">ready</span>
+          {% else %}
+            <span class="status-pill status-red">not ready</span>
+          {% endif %}
+        </dd>
       </div>
       <div>
         <dt>Blocking reasons</dt>
@@ -35,8 +42,13 @@
         <dd>{{ "Yes" if close_readiness.has_existing_ledger_postings else "No" }}</dd>
       </div>
     </dl>
+    {% if close_readiness.is_ready %}
+      <div class="alert-panel alert-panel-success">
+        <p>Packaging Batch is ready to close.</p>
+      </div>
+    {% endif %}
     {% if close_readiness.reasons %}
-      <ul>
+      <ul class="alert-list alert-list-error">
         {% for reason in close_readiness.reasons %}
           <li>{{ reason }}</li>
         {% endfor %}
@@ -185,7 +197,7 @@
           {% endfor %}
         </tbody>
       </table>
-      <ul>
+      <ul class="alert-list alert-list-warning">
         {% for warning in preview.stock_warnings %}
           <li>{{ warning.message }}</li>
         {% endfor %}

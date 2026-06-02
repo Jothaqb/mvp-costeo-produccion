@@ -57,7 +57,8 @@
     </dl>
 
     <div class="actions">
-      <a role="button" href="/packaging-batches/{{ batch.id }}/print" target="_blank" aria-label="Print packaging batch" title="Print packaging batch">&#128424;</a>
+      <a class="button secondary" href="/packaging-batches">Packaging Batch History</a>
+      <a role="button" href="/packaging-batches/{{ batch.id }}/print" target="_blank" aria-label="Print Packaging Batch" title="Print Packaging Batch">&#128424;</a>
       {% if batch.status == "draft" and can(request, "production_order.edit") %}
         <a role="button" href="/packaging-batches/{{ batch.id }}/edit">Edit draft</a>
       {% endif %}
@@ -89,14 +90,28 @@
       </div>
       <div>
         <dt>Readiness status</dt>
-        <dd>{{ material_summary.readiness_label }}</dd>
+        <dd>
+          {% if material_readiness.is_ready %}
+            <span class="status-pill status-green">{{ material_summary.readiness_label }}</span>
+          {% elif material_summary.error_lines > 0 %}
+            <span class="status-pill status-red">{{ material_summary.readiness_label }}</span>
+          {% else %}
+            <span class="status-pill status-yellow">{{ material_summary.readiness_label }}</span>
+          {% endif %}
+        </dd>
       </div>
     </dl>
     {% if material_summary.has_incomplete_snapshots %}
-      <p>Batch material total includes only ready lines.</p>
+      <div class="alert-panel alert-panel-warning">
+        <p>Batch material total includes only ready lines.</p>
+      </div>
     {% endif %}
-    {% if not material_readiness.is_ready and material_readiness.reasons %}
-      <ul>
+    {% if material_readiness.is_ready %}
+      <div class="alert-panel alert-panel-success">
+        <p>Material Snapshot readiness is complete.</p>
+      </div>
+    {% elif material_readiness.reasons %}
+      <ul class="alert-list alert-list-error">
         {% for reason in material_readiness.reasons %}
           <li>{{ reason }}</li>
         {% endfor %}
@@ -109,7 +124,13 @@
     <dl class="summary">
       <div>
         <dt>Close status</dt>
-        <dd>{{ "ready" if close_readiness.is_ready else "not ready" }}</dd>
+        <dd>
+          {% if close_readiness.is_ready %}
+            <span class="status-pill status-green">ready</span>
+          {% else %}
+            <span class="status-pill status-red">not ready</span>
+          {% endif %}
+        </dd>
       </div>
       <div>
         <dt>Blocking reasons</dt>
@@ -124,15 +145,20 @@
         <dd>{{ "Yes" if close_readiness.has_existing_ledger_postings else "No" }}</dd>
       </div>
     </dl>
+    {% if close_readiness.is_ready %}
+      <div class="alert-panel alert-panel-success">
+        <p>Packaging Batch is ready to close.</p>
+      </div>
+    {% endif %}
     {% if close_readiness.reasons %}
-      <ul>
+      <ul class="alert-list alert-list-error">
         {% for reason in close_readiness.reasons %}
           <li>{{ reason }}</li>
         {% endfor %}
       </ul>
     {% endif %}
     {% if close_stock_warnings %}
-      <ul>
+      <ul class="alert-list alert-list-warning">
         {% for warning in close_stock_warnings %}
           <li>
             {{ warning.message }}
@@ -187,15 +213,27 @@
       </div>
       <div>
         <dt>Activity cost status</dt>
-        <dd>{{ activity_summary.activity_cost_status }}</dd>
+        <dd>
+          {% if activity_readiness.is_ready %}
+            <span class="status-pill status-green">{{ activity_summary.activity_cost_status }}</span>
+          {% elif activity_summary.activity_cost_status == "error" %}
+            <span class="status-pill status-red">{{ activity_summary.activity_cost_status }}</span>
+          {% else %}
+            <span class="status-pill status-yellow">{{ activity_summary.activity_cost_status }}</span>
+          {% endif %}
+        </dd>
       </div>
       <div>
         <dt>Recalculated at</dt>
         <dd>{{ activity_summary.recalculated_at or "" }}</dd>
       </div>
     </dl>
-    {% if not activity_readiness.is_ready and activity_readiness.reasons %}
-      <ul>
+    {% if activity_readiness.is_ready %}
+      <div class="alert-panel alert-panel-success">
+        <p>Activity Time Capture is ready.</p>
+      </div>
+    {% elif activity_readiness.reasons %}
+      <ul class="alert-list alert-list-error">
         {% for reason in activity_readiness.reasons %}
           <li>{{ reason }}</li>
         {% endfor %}
@@ -224,7 +262,15 @@
       </div>
       <div>
         <dt>Distribution status</dt>
-        <dd>{{ cost_distribution_summary.distribution_status }}</dd>
+        <dd>
+          {% if cost_distribution_summary.distribution_status == "ready" %}
+            <span class="status-pill status-green">{{ cost_distribution_summary.distribution_status }}</span>
+          {% elif cost_distribution_summary.distribution_status == "error" %}
+            <span class="status-pill status-red">{{ cost_distribution_summary.distribution_status }}</span>
+          {% else %}
+            <span class="status-pill status-yellow">{{ cost_distribution_summary.distribution_status }}</span>
+          {% endif %}
+        </dd>
       </div>
       <div>
         <dt>Distributed at</dt>
@@ -248,10 +294,16 @@
       </div>
     </dl>
     {% if cost_distribution_summary.distributed_at and cost_distribution_summary.has_incomplete_total_costs %}
-      <p>Activity costs distributed. Total cost incomplete until Material Snapshot is ready.</p>
+      <div class="alert-panel alert-panel-warning">
+        <p>Activity costs distributed. Total cost incomplete until Material Snapshot is ready.</p>
+      </div>
     {% endif %}
-    {% if not cost_distribution_readiness.is_ready and cost_distribution_readiness.reasons %}
-      <ul>
+    {% if cost_distribution_readiness.is_ready %}
+      <div class="alert-panel alert-panel-success">
+        <p>Cost distribution is ready.</p>
+      </div>
+    {% elif cost_distribution_readiness.reasons %}
+      <ul class="alert-list alert-list-error">
         {% for reason in cost_distribution_readiness.reasons %}
           <li>{{ reason }}</li>
         {% endfor %}
@@ -298,7 +350,9 @@
         </tbody>
       </table>
     {% else %}
-      <p>No route activities are currently snapshot into this batch.</p>
+      <div class="alert-panel alert-panel-warning">
+        <p>No route activities are currently snapshot into this Packaging Batch.</p>
+      </div>
     {% endif %}
   </section>
 
@@ -357,7 +411,9 @@
         </tbody>
       </table>
     {% else %}
-      <p>No lines have been added yet.</p>
+      <div class="alert-panel alert-panel-warning">
+        <p>No lines have been added yet.</p>
+      </div>
     {% endif %}
   </section>
 
@@ -396,7 +452,9 @@
           </tbody>
         </table>
       {% else %}
-        <p>No inventory transactions were found for this closed batch.</p>
+        <div class="alert-panel alert-panel-warning">
+          <p>No inventory transactions were found for this closed batch.</p>
+        </div>
       {% endif %}
     </section>
   {% endif %}

@@ -14,7 +14,7 @@
     {% set is_inventory = path == "/inventory" or path.startswith("/inventory/") %}
     {% set is_planning = path == "/planning" or path.startswith("/planning/") %}
     {% set is_production_routes = path == "/production/routes" or path.startswith("/production/routes/") or path == "/activities" or path.startswith("/activities/") or path == "/machines" or path.startswith("/machines/") or path == "/routes" or path.startswith("/routes/") or path == "/product-routes" or path.startswith("/product-routes/") or path == "/rates" or path.startswith("/rates/") %}
-    {% set is_production = path == "/production" or path.startswith("/production/") or path == "/imports" or path.startswith("/imports/") or path == "/production-orders" or path.startswith("/production-orders/") or is_production_routes %}
+    {% set is_production = path == "/production" or path.startswith("/production/") or path == "/imports" or path.startswith("/imports/") or path == "/production-orders" or path.startswith("/production-orders/") or path == "/packaging-batches" or path.startswith("/packaging-batches/") or is_production_routes %}
     {% set branding_company_name = request.state.branding_company_name if request.state is defined and request.state.branding_company_name is defined else "Green Corner" %}
     {% set has_branding_logo = request.state.has_branding_logo if request.state is defined and request.state.has_branding_logo is defined else False %}
     {% set branding_logo_version = request.state.branding_logo_version if request.state is defined and request.state.branding_logo_version is defined else None %}
@@ -50,6 +50,7 @@
               <a class="nav-link" href="/production">Production</a>
               <a class="nav-link" href="/imports/new">Import CSV</a>
               <a class="nav-link" href="/production-orders">Production Orders</a>
+              <a class="nav-link" href="/packaging-batches">Packaging Batches</a>
               <a class="nav-link" href="/production/routes">Production Routes</a>
               {% if is_production_routes %}
                 <a class="nav-link" href="/machines">Resources</a>

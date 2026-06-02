@@ -5,7 +5,7 @@
   <section class="page-hero">
     <p class="eyebrow">Production</p>
     <h1>{{ title }}</h1>
-    <p class="lead">Create the packaging batch header first, then manage product lines while the batch stays in draft.</p>
+    <p class="lead">Create the Packaging Batch header first, then manage product lines while the batch stays in draft.</p>
   </section>
 
   <section>
@@ -23,19 +23,23 @@
         {% endfor %}
       </select>
 
-      <label for="route_id">Route</label>
-      <select id="route_id" name="route_id" required>
-        <option value="">Select route</option>
-        {% for route in route_options %}
-          <option
-            value="{{ route.id }}"
-            data-packaging-type="{{ route.packaging_type }}"
-            {% if form_values.route_id == route.id|string %}selected{% endif %}
-          >
-            {{ route.label }}
-          </option>
-        {% endfor %}
-      </select>
+      <label for="route_preview">Route</label>
+      <input
+        id="route_preview"
+        type="text"
+        value="{{ selected_route_preview.label or '' }}"
+        placeholder="Select packaging type to calculate route"
+        readonly
+      >
+      <p id="route_help" class="muted-inline">
+        {% if selected_route_preview.error %}
+          {{ selected_route_preview.error }}
+        {% elif selected_route_preview.label %}
+          Route is calculated automatically from Packaging type.
+        {% else %}
+          Route will be calculated automatically from Packaging type.
+        {% endif %}
+      </p>
 
       <label for="notes">Notes</label>
       <textarea id="notes" name="notes">{{ form_values.notes }}</textarea>
@@ -44,8 +48,10 @@
         <button type="submit">{% if batch %}Save draft header{% else %}Create draft{% endif %}</button>
         {% if batch %}
           <a class="button secondary" href="/packaging-batches/{{ batch.id }}">View detail</a>
+          <a class="button secondary" href="/packaging-batches">Packaging Batch History</a>
           <a class="button secondary" href="/packaging-batches/{{ batch.id }}/print" target="_blank">Print</a>
         {% else %}
+          <a class="button secondary" href="/packaging-batches">Packaging Batch History</a>
           <a class="button secondary" href="/production-orders">Cancel</a>
         {% endif %}
       </div>
@@ -81,216 +87,6 @@
           <dd>{{ batch.production_date }}</dd>
         </div>
       </dl>
-    </section>
-
-    <section>
-      <h2>Material Snapshot Rollup</h2>
-      <dl class="summary">
-        <div>
-          <dt>Total lines</dt>
-          <dd>{{ material_summary.total_lines }}</dd>
-        </div>
-        <div>
-          <dt>Snapshot ready</dt>
-          <dd>{{ material_summary.ready_lines }}</dd>
-        </div>
-        <div>
-          <dt>Snapshot pending</dt>
-          <dd>{{ material_summary.pending_lines }}</dd>
-        </div>
-        <div>
-          <dt>Snapshot error</dt>
-          <dd>{{ material_summary.error_lines }}</dd>
-        </div>
-        <div>
-          <dt>Material snapshot total</dt>
-          <dd>{{ fmt.number_3(material_summary.ready_material_snapshot_total) }}</dd>
-        </div>
-        <div>
-          <dt>Readiness status</dt>
-          <dd>{{ material_summary.readiness_label }}</dd>
-        </div>
-      </dl>
-      {% if material_summary.has_incomplete_snapshots %}
-        <p>Batch material total includes only ready lines.</p>
-      {% endif %}
-      {% if not material_readiness.is_ready and material_readiness.reasons %}
-        <ul>
-          {% for reason in material_readiness.reasons %}
-            <li>{{ reason }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </section>
-
-    <section>
-      <h2>Activity Cost Summary</h2>
-      <dl class="summary">
-        <div>
-          <dt>Total activities</dt>
-          <dd>{{ activity_summary.total_activities }}</dd>
-        </div>
-        <div>
-          <dt>Required activities</dt>
-          <dd>{{ activity_summary.required_activities }}</dd>
-        </div>
-        <div>
-          <dt>Labor minutes</dt>
-          <dd>{{ fmt.number_3(activity_summary.labor_minutes_total) }}</dd>
-        </div>
-        <div>
-          <dt>Machine minutes</dt>
-          <dd>{{ fmt.number_3(activity_summary.machine_minutes_total) }}</dd>
-        </div>
-        <div>
-          <dt>Total labor cost</dt>
-          <dd>{{ fmt.money_crc(activity_summary.total_labor_cost) }}</dd>
-        </div>
-        <div>
-          <dt>Total overhead cost</dt>
-          <dd>{{ fmt.money_crc(activity_summary.total_overhead_cost) }}</dd>
-        </div>
-        <div>
-          <dt>Total machine cost</dt>
-          <dd>{{ fmt.money_crc(activity_summary.total_machine_cost) }}</dd>
-        </div>
-        <div>
-          <dt>Total activity cost</dt>
-          <dd>{{ fmt.money_crc(activity_summary.total_activity_cost) }}</dd>
-        </div>
-        <div>
-          <dt>Activity cost status</dt>
-          <dd>{{ activity_summary.activity_cost_status }}</dd>
-        </div>
-        <div>
-          <dt>Recalculated at</dt>
-          <dd>{{ activity_summary.recalculated_at or "" }}</dd>
-        </div>
-      </dl>
-      {% if not activity_readiness.is_ready and activity_readiness.reasons %}
-        <ul>
-          {% for reason in activity_readiness.reasons %}
-            <li>{{ reason }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </section>
-
-    <section>
-      <h2>Cost Distribution Summary</h2>
-      <dl class="summary">
-        <div>
-          <dt>Total batch qty</dt>
-          <dd>{{ fmt.number_3(cost_distribution_summary.total_batch_qty) }}</dd>
-        </div>
-        <div>
-          <dt>Labor cost per unit</dt>
-          <dd>{% if cost_distribution_summary.labor_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.labor_cost_per_unit) }}{% else %}-{% endif %}</dd>
-        </div>
-        <div>
-          <dt>Overhead cost per unit</dt>
-          <dd>{% if cost_distribution_summary.overhead_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.overhead_cost_per_unit) }}{% else %}-{% endif %}</dd>
-        </div>
-        <div>
-          <dt>Machine cost per unit</dt>
-          <dd>{% if cost_distribution_summary.machine_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.machine_cost_per_unit) }}{% else %}-{% endif %}</dd>
-        </div>
-        <div>
-          <dt>Distribution status</dt>
-          <dd>{{ cost_distribution_summary.distribution_status }}</dd>
-        </div>
-        <div>
-          <dt>Distributed at</dt>
-          <dd>{{ cost_distribution_summary.distributed_at or "" }}</dd>
-        </div>
-        <div>
-          <dt>Ready lines</dt>
-          <dd>{{ cost_distribution_summary.ready_lines }}</dd>
-        </div>
-        <div>
-          <dt>Partial lines</dt>
-          <dd>{{ cost_distribution_summary.partial_lines }}</dd>
-        </div>
-        <div>
-          <dt>Pending lines</dt>
-          <dd>{{ cost_distribution_summary.pending_lines }}</dd>
-        </div>
-        <div>
-          <dt>Error lines</dt>
-          <dd>{{ cost_distribution_summary.error_lines }}</dd>
-        </div>
-      </dl>
-      {% if cost_distribution_summary.distributed_at and cost_distribution_summary.has_incomplete_total_costs %}
-        <p>Activity costs distributed. Total cost incomplete until Material Snapshot is ready.</p>
-      {% endif %}
-      {% if not cost_distribution_readiness.is_ready and cost_distribution_readiness.reasons %}
-        <ul>
-          {% for reason in cost_distribution_readiness.reasons %}
-            <li>{{ reason }}</li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-      {% if batch.status == "draft" and can(request, "production_order.edit") and activity_summary.activity_cost_status == "ready" and cost_distribution_summary.total_batch_qty > 0 %}
-        <form method="post" action="/packaging-batches/{{ batch.id }}/costs/distribute">
-          <button type="submit">Distribute Activity Costs</button>
-        </form>
-      {% endif %}
-    </section>
-
-    <section>
-      <h2>Activity Time Capture</h2>
-      {% if batch.activities %}
-        <form method="post" action="/packaging-batches/{{ batch.id }}/activities">
-          <table>
-            <thead>
-              <tr>
-                <th>Sequence</th>
-                <th>Activity</th>
-                <th>Labor minutes</th>
-                <th>Machine minutes</th>
-                <th>Labor cost</th>
-                <th>Overhead cost</th>
-                <th>Machine cost</th>
-                <th>Total activity cost</th>
-                <th>Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for activity in batch.activities %}
-                <tr>
-                  <td>{{ activity.sequence }}</td>
-                  <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
-                  <td>
-                    <input type="hidden" name="activity_id" value="{{ activity.id }}">
-                    <input
-                      name="labor_minutes_{{ activity.id }}"
-                      value="{{ activity.labor_minutes }}"
-                      {% if not activity.applies_labor_snapshot %}disabled{% endif %}
-                    >
-                  </td>
-                  <td>
-                    <input
-                      name="machine_minutes_{{ activity.id }}"
-                      value="{{ activity.machine_minutes }}"
-                      {% if not activity.applies_machine_snapshot %}disabled{% endif %}
-                    >
-                  </td>
-                  <td>{{ fmt.money_crc(activity.labor_cost) }}</td>
-                  <td>{{ fmt.money_crc(activity.overhead_cost) }}</td>
-                  <td>{{ fmt.money_crc(activity.machine_cost) }}</td>
-                  <td>{{ fmt.money_crc(activity.total_activity_cost) }}</td>
-                  <td><input name="notes_{{ activity.id }}" value="{{ activity.notes or '' }}"></td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          <div class="inline-actions">
-            <button type="submit">Save Activity Times</button>
-          </div>
-        </form>
-      {% else %}
-        <p>No route activities are currently snapshot into this batch.</p>
-      {% endif %}
     </section>
 
     <section>
@@ -360,9 +156,7 @@
               <tr>
                 <td>{{ line.line_number }}</td>
                 <td>{{ line.product_sku_snapshot or "" }}</td>
-                <td>
-                  {{ line.product_name_snapshot }}
-                </td>
+                <td>{{ line.product_name_snapshot }}</td>
                 <td><input name="planned_qty" value="{{ line.planned_qty }}" form="{{ edit_form_id }}"></td>
                 <td>{{ line.unit_snapshot or "" }}</td>
                 <td>{{ line.material_snapshot_status }}</td>
@@ -376,53 +170,308 @@
                 <td>{{ line.material_snapshot_refreshed_at or "" }}</td>
                 <td><input name="notes" value="{{ line.notes or '' }}" form="{{ edit_form_id }}"></td>
                 <td>
-                    <form id="{{ edit_form_id }}" method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/edit"></form>
-                    <button type="submit" form="{{ edit_form_id }}">Save</button>
-                    <a class="button secondary" href="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials">Material Snapshot</a>
-                    {% if batch.status == "draft" %}
-                      <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials/refresh">
-                        <button type="submit">Refresh Material Snapshot</button>
-                      </form>
-                    {% endif %}
-                    <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/delete" onsubmit="return confirm('Delete this line?');">
-                      <button type="submit">Delete</button>
+                  <form id="{{ edit_form_id }}" method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/edit"></form>
+                  <button type="submit" form="{{ edit_form_id }}">Save</button>
+                  <a class="button secondary" href="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials">Material Snapshot</a>
+                  {% if batch.status == "draft" %}
+                    <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/materials/refresh">
+                      <button type="submit">Refresh Material Snapshot</button>
                     </form>
+                  {% endif %}
+                  <form method="post" action="/packaging-batches/{{ batch.id }}/lines/{{ line.id }}/delete" onsubmit="return confirm('Delete this line?');">
+                    <button type="submit">Delete</button>
+                  </form>
                 </td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       {% else %}
-        <p>No lines yet. Save the draft header and start adding product lines.</p>
+        <div class="alert-panel alert-panel-warning">
+          <p>No lines yet. Save the draft header and start adding product lines.</p>
+        </div>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Activity Time Capture</h2>
+      {% if batch.activities %}
+        <form method="post" action="/packaging-batches/{{ batch.id }}/activities">
+          <table>
+            <thead>
+              <tr>
+                <th>Sequence</th>
+                <th>Activity</th>
+                <th>Labor minutes</th>
+                <th>Machine minutes</th>
+                <th>Labor cost</th>
+                <th>Overhead cost</th>
+                <th>Machine cost</th>
+                <th>Total activity cost</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for activity in batch.activities %}
+                <tr>
+                  <td>{{ activity.sequence }}</td>
+                  <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
+                  <td>
+                    <input type="hidden" name="activity_id" value="{{ activity.id }}">
+                    <input
+                      name="labor_minutes_{{ activity.id }}"
+                      value="{{ activity.labor_minutes }}"
+                      {% if not activity.applies_labor_snapshot %}disabled{% endif %}
+                    >
+                  </td>
+                  <td>
+                    <input
+                      name="machine_minutes_{{ activity.id }}"
+                      value="{{ activity.machine_minutes }}"
+                      {% if not activity.applies_machine_snapshot %}disabled{% endif %}
+                    >
+                  </td>
+                  <td>{{ fmt.money_crc(activity.labor_cost) }}</td>
+                  <td>{{ fmt.money_crc(activity.overhead_cost) }}</td>
+                  <td>{{ fmt.money_crc(activity.machine_cost) }}</td>
+                  <td>{{ fmt.money_crc(activity.total_activity_cost) }}</td>
+                  <td><input name="notes_{{ activity.id }}" value="{{ activity.notes or '' }}"></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <div class="inline-actions">
+            <button type="submit">Save Activity Times</button>
+          </div>
+        </form>
+      {% else %}
+        <div class="alert-panel alert-panel-warning">
+          <p>No route activities are currently snapshot into this Packaging Batch.</p>
+        </div>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Material Snapshot Rollup</h2>
+      <dl class="summary">
+        <div>
+          <dt>Total lines</dt>
+          <dd>{{ material_summary.total_lines }}</dd>
+        </div>
+        <div>
+          <dt>Snapshot ready</dt>
+          <dd>{{ material_summary.ready_lines }}</dd>
+        </div>
+        <div>
+          <dt>Snapshot pending</dt>
+          <dd>{{ material_summary.pending_lines }}</dd>
+        </div>
+        <div>
+          <dt>Snapshot error</dt>
+          <dd>{{ material_summary.error_lines }}</dd>
+        </div>
+        <div>
+          <dt>Material snapshot total</dt>
+          <dd>{{ fmt.number_3(material_summary.ready_material_snapshot_total) }}</dd>
+        </div>
+        <div>
+          <dt>Readiness status</dt>
+          <dd>
+            {% if material_readiness.is_ready %}
+              <span class="status-pill status-green">{{ material_summary.readiness_label }}</span>
+            {% elif material_summary.error_lines > 0 %}
+              <span class="status-pill status-red">{{ material_summary.readiness_label }}</span>
+            {% else %}
+              <span class="status-pill status-yellow">{{ material_summary.readiness_label }}</span>
+            {% endif %}
+          </dd>
+        </div>
+      </dl>
+      {% if material_summary.has_incomplete_snapshots %}
+        <div class="alert-panel alert-panel-warning">
+          <p>Batch material total includes only ready lines.</p>
+        </div>
+      {% endif %}
+      {% if material_readiness.is_ready %}
+        <div class="alert-panel alert-panel-success">
+          <p>Material Snapshot readiness is complete.</p>
+        </div>
+      {% elif material_readiness.reasons %}
+        <ul class="alert-list alert-list-error">
+          {% for reason in material_readiness.reasons %}
+            <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Activity Cost Summary</h2>
+      <dl class="summary">
+        <div>
+          <dt>Total activities</dt>
+          <dd>{{ activity_summary.total_activities }}</dd>
+        </div>
+        <div>
+          <dt>Required activities</dt>
+          <dd>{{ activity_summary.required_activities }}</dd>
+        </div>
+        <div>
+          <dt>Labor minutes</dt>
+          <dd>{{ fmt.number_3(activity_summary.labor_minutes_total) }}</dd>
+        </div>
+        <div>
+          <dt>Machine minutes</dt>
+          <dd>{{ fmt.number_3(activity_summary.machine_minutes_total) }}</dd>
+        </div>
+        <div>
+          <dt>Total labor cost</dt>
+          <dd>{{ fmt.money_crc(activity_summary.total_labor_cost) }}</dd>
+        </div>
+        <div>
+          <dt>Total overhead cost</dt>
+          <dd>{{ fmt.money_crc(activity_summary.total_overhead_cost) }}</dd>
+        </div>
+        <div>
+          <dt>Total machine cost</dt>
+          <dd>{{ fmt.money_crc(activity_summary.total_machine_cost) }}</dd>
+        </div>
+        <div>
+          <dt>Total activity cost</dt>
+          <dd>{{ fmt.money_crc(activity_summary.total_activity_cost) }}</dd>
+        </div>
+        <div>
+          <dt>Activity cost status</dt>
+          <dd>
+            {% if activity_readiness.is_ready %}
+              <span class="status-pill status-green">{{ activity_summary.activity_cost_status }}</span>
+            {% elif activity_summary.activity_cost_status == "error" %}
+              <span class="status-pill status-red">{{ activity_summary.activity_cost_status }}</span>
+            {% else %}
+              <span class="status-pill status-yellow">{{ activity_summary.activity_cost_status }}</span>
+            {% endif %}
+          </dd>
+        </div>
+        <div>
+          <dt>Recalculated at</dt>
+          <dd>{{ activity_summary.recalculated_at or "" }}</dd>
+        </div>
+      </dl>
+      {% if activity_readiness.is_ready %}
+        <div class="alert-panel alert-panel-success">
+          <p>Activity Time Capture is ready.</p>
+        </div>
+      {% elif activity_readiness.reasons %}
+        <ul class="alert-list alert-list-error">
+          {% for reason in activity_readiness.reasons %}
+            <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </section>
+
+    <section>
+      <h2>Cost Distribution Summary</h2>
+      <dl class="summary">
+        <div>
+          <dt>Total batch qty</dt>
+          <dd>{{ fmt.number_3(cost_distribution_summary.total_batch_qty) }}</dd>
+        </div>
+        <div>
+          <dt>Labor cost per unit</dt>
+          <dd>{% if cost_distribution_summary.labor_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.labor_cost_per_unit) }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Overhead cost per unit</dt>
+          <dd>{% if cost_distribution_summary.overhead_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.overhead_cost_per_unit) }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Machine cost per unit</dt>
+          <dd>{% if cost_distribution_summary.machine_cost_per_unit is not none %}{{ fmt.money_crc(cost_distribution_summary.machine_cost_per_unit) }}{% else %}-{% endif %}</dd>
+        </div>
+        <div>
+          <dt>Distribution status</dt>
+          <dd>
+            {% if cost_distribution_summary.distribution_status == "ready" %}
+              <span class="status-pill status-green">{{ cost_distribution_summary.distribution_status }}</span>
+            {% elif cost_distribution_summary.distribution_status == "error" %}
+              <span class="status-pill status-red">{{ cost_distribution_summary.distribution_status }}</span>
+            {% else %}
+              <span class="status-pill status-yellow">{{ cost_distribution_summary.distribution_status }}</span>
+            {% endif %}
+          </dd>
+        </div>
+        <div>
+          <dt>Distributed at</dt>
+          <dd>{{ cost_distribution_summary.distributed_at or "" }}</dd>
+        </div>
+        <div>
+          <dt>Ready lines</dt>
+          <dd>{{ cost_distribution_summary.ready_lines }}</dd>
+        </div>
+        <div>
+          <dt>Partial lines</dt>
+          <dd>{{ cost_distribution_summary.partial_lines }}</dd>
+        </div>
+        <div>
+          <dt>Pending lines</dt>
+          <dd>{{ cost_distribution_summary.pending_lines }}</dd>
+        </div>
+        <div>
+          <dt>Error lines</dt>
+          <dd>{{ cost_distribution_summary.error_lines }}</dd>
+        </div>
+      </dl>
+      {% if cost_distribution_summary.distributed_at and cost_distribution_summary.has_incomplete_total_costs %}
+        <div class="alert-panel alert-panel-warning">
+          <p>Activity costs distributed. Total cost incomplete until Material Snapshot is ready.</p>
+        </div>
+      {% endif %}
+      {% if cost_distribution_readiness.is_ready %}
+        <div class="alert-panel alert-panel-success">
+          <p>Cost distribution is ready.</p>
+        </div>
+      {% elif cost_distribution_readiness.reasons %}
+        <ul class="alert-list alert-list-error">
+          {% for reason in cost_distribution_readiness.reasons %}
+            <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      {% if batch.status == "draft" and can(request, "production_order.edit") and activity_summary.activity_cost_status == "ready" and cost_distribution_summary.total_batch_qty > 0 %}
+        <form method="post" action="/packaging-batches/{{ batch.id }}/costs/distribute">
+          <button type="submit">Distribute Activity Costs</button>
+        </form>
       {% endif %}
     </section>
   {% endif %}
 
   <script>
     const packagingTypeSelect = document.getElementById("packaging_type");
-    const routeSelect = document.getElementById("route_id");
-    const routeOptions = routeSelect ? Array.from(routeSelect.querySelectorAll("option[data-packaging-type]")) : [];
+    const routePreviewInput = document.getElementById("route_preview");
+    const routeHelp = document.getElementById("route_help");
+    const routePreviewMap = {{ route_preview_map | tojson }};
     const productLookupInput = document.getElementById("product_lookup");
     const productIdInput = document.getElementById("product_id");
     const productSummary = document.getElementById("selected-product-summary");
     const productOptions = Array.from(document.querySelectorAll("#manufactured-product-options option"));
 
-    function syncRouteOptions() {
-      if (!packagingTypeSelect || !routeSelect) {
+    function syncRoutePreview() {
+      if (!packagingTypeSelect || !routePreviewInput || !routeHelp) {
         return;
       }
-      const selectedType = packagingTypeSelect.value;
-      let selectedStillVisible = false;
-      routeOptions.forEach((option) => {
-        const visible = !selectedType || option.dataset.packagingType === selectedType;
-        option.hidden = !visible;
-        option.disabled = !visible;
-        if (visible && option.value === routeSelect.value) {
-          selectedStillVisible = true;
-        }
-      });
-      if (!selectedStillVisible) {
-        routeSelect.value = "";
+      const selectedType = (packagingTypeSelect.value || "").trim();
+      const preview = routePreviewMap[selectedType] || {};
+      routePreviewInput.value = preview.label || "";
+      if (preview.error) {
+        routeHelp.textContent = preview.error;
+        routeHelp.className = "error";
+      } else if (preview.label) {
+        routeHelp.textContent = "Route is calculated automatically from Packaging type.";
+        routeHelp.className = "muted-inline";
+      } else {
+        routeHelp.textContent = "Route will be calculated automatically from Packaging type.";
+        routeHelp.className = "muted-inline";
       }
     }
 
@@ -442,8 +491,8 @@
     }
 
     if (packagingTypeSelect) {
-      packagingTypeSelect.addEventListener("change", syncRouteOptions);
-      syncRouteOptions();
+      packagingTypeSelect.addEventListener("change", syncRoutePreview);
+      syncRoutePreview();
     }
     if (productLookupInput) {
       productLookupInput.addEventListener("change", syncProductSelection);
