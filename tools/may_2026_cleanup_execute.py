@@ -628,14 +628,90 @@ def approved_gate_aborts(
     approved_targets: dict[str, object],
     current_state: dict[str, object],
     delete_plan: dict[str, int],
-) -> tuple[list[AbortCondition], list[dict[str, object]]]:
+    args: argparse.Namespace,
+) -> tuple[list[AbortCondition], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     aborts: list[AbortCondition] = []
+    allowed_known_abort_conditions: list[dict[str, object]] = []
+    allowed_known_suspicious_records: list[dict[str, object]] = []
     allowed_known_child_scope_issues: list[dict[str, object]] = []
+
+    def purchase_order_child_issue_allowed() -> bool:
+        if delete_plan.get("purchase_orders", 0) != 0:
+            return False
+        if delete_plan.get("purchase_order_lines", 0) != 0:
+            return False
+        if int(current_state.get("purchase_orders_in_scope", 0)) != 0:
+            return False
+        if int(current_state.get("out_of_window_same_source_count", 0)) != 0:
+            return False
+        if int(current_state.get("orphan_counts", {}).get("purchase_order_lines", 0)) != 0:
+            return False
+        if any(count > 0 for count in current_state.get("orphan_counts", {}).values()):
+            return False
+        if int(current_state.get("source_type_counts", {}).get("purchase_order", 0)) != 0:
+            return False
+        return True
+
+    def approved_c_set_matches_exactly() -> bool:
+        approved_c_from_file = {
+            (row.get("table_name") or "", row.get("document_number") or "")
+            for row in approved.documents_classification
+            if (row.get("classification") or "").strip() == "C"
+        }
+        approved_c_expected = {
+            (table_name, document_number)
+            for table_name, document_numbers in APPROVED_C_DOCUMENTS.items()
+            for document_number in document_numbers
+        }
+        if approved_c_from_file != approved_c_expected:
+            return False
+        if len(approved_targets["approved_c_ids_by_table"].get("production_orders", set())) != len(
+            APPROVED_C_DOCUMENTS["production_orders"]
+        ):
+            return False
+        if len(approved_targets["approved_c_ids_by_table"].get("packaging_batches", set())) != len(
+            APPROVED_C_DOCUMENTS["packaging_batches"]
+        ):
+            return False
+        if delete_plan.get("production_orders", 0) < len(APPROVED_C_DOCUMENTS["production_orders"]):
+            return False
+        if delete_plan.get("packaging_batches", 0) < len(APPROVED_C_DOCUMENTS["packaging_batches"]):
+            return False
+        return True
+
+    def sequence_collision_risk_allowed() -> bool:
+        if args.reset_b2b_sequence:
+            approved_row = approved_targets["sequence_plan"].get("b2b_sales_order")
+            if approved_row is None or not parse_bool_cell(approved_row.get("safe_to_reset")):
+                return False
+        if args.reset_b2c_sequence:
+            approved_row = approved_targets["sequence_plan"].get("b2c_sales_order")
+            if approved_row is None or not parse_bool_cell(approved_row.get("safe_to_reset")):
+                return False
+        return True
 
     for row in approved.abort_conditions:
         if not parse_bool_cell(row.get("blocking")):
             continue
         condition_code = str(row.get("condition_code") or "").strip()
+        if condition_code == "documents_not_classifiable_with_confidence":
+            if approved_c_set_matches_exactly():
+                allowed_known_abort_conditions.append(
+                    {
+                        "condition_code": condition_code,
+                        "detail": "approved_manual_c_transition_documents",
+                    }
+                )
+                continue
+        if condition_code == "sequence_collision_risk":
+            if sequence_collision_risk_allowed():
+                allowed_known_abort_conditions.append(
+                    {
+                        "condition_code": condition_code,
+                        "detail": "no_unsafe_sequence_reset_requested",
+                    }
+                )
+                continue
         if condition_code not in EXPECTED_BLOCKING_ABORT_CODES:
             add_abort(
                 aborts,
@@ -647,6 +723,18 @@ def approved_gate_aborts(
         if not parse_bool_cell(row.get("blocking")):
             continue
         category = str(row.get("category") or "").strip()
+        if category == ALLOWED_KNOWN_CHILD_SCOPE_ISSUE:
+            table_name = str(row.get("table_name") or "").strip()
+            if table_name == "purchase_order_lines" and purchase_order_child_issue_allowed():
+                allowed_known_suspicious_records.append(
+                    {
+                        "category": category,
+                        "detail": "purchase_order_lines_to_purchase_orders_historical_import",
+                        "table_name": table_name,
+                        "record_id": parse_int(row.get("record_id"), "record_id"),
+                    }
+                )
+                continue
         if category not in EXPECTED_BLOCKING_SUSPICIOUS_CATEGORIES:
             add_abort(
                 aborts,
@@ -675,73 +763,22 @@ def approved_gate_aborts(
             child_id = parse_int(row.get("child_id"), "child_id")
             parent_id = parse_int(row.get("parent_id"), "parent_id")
             if table_name == "purchase_order_lines" and parent_table == "purchase_orders":
-                if delete_plan.get("purchase_orders", 0) != 0:
-                    add_abort(
-                        aborts,
-                        "unexpected_blocking_child_record",
-                        "Approved child scope issue cannot be allowed because purchase_orders delete_plan is not zero.",
+                if purchase_order_child_issue_allowed():
+                    allowed_known_child_scope_issues.append(
+                        {
+                            "issue": issue,
+                            "detail": "purchase_order_lines_to_purchase_orders_historical_import",
+                            "table_name": table_name,
+                            "child_id": child_id,
+                            "parent_table": parent_table,
+                            "parent_id": parent_id,
+                        }
                     )
                     continue
-                if delete_plan.get("purchase_order_lines", 0) != 0:
-                    add_abort(
-                        aborts,
-                        "unexpected_blocking_child_record",
-                        "Approved child scope issue cannot be allowed because purchase_order_lines delete_plan is not zero.",
-                    )
-                    continue
-                if int(current_state.get("purchase_orders_in_scope", 0)) != 0:
-                    add_abort(
-                        aborts,
-                        "unexpected_blocking_child_record",
-                        "Approved child scope issue cannot be allowed because purchase_orders_in_scope is not zero.",
-                    )
-                    continue
-                if int(current_state.get("out_of_window_same_source_count", 0)) != 0:
-                    add_abort(
-                        aborts,
-                        "unexpected_blocking_child_record",
-                        "Approved child scope issue cannot be allowed because out_of_window_same_source_count is not zero.",
-                    )
-                    continue
-                purchase_order_orphans = int(
-                    current_state.get("orphan_counts", {}).get("purchase_order_lines", 0)
-                )
-                if purchase_order_orphans != 0:
-                    add_abort(
-                        aborts,
-                        "unexpected_blocking_child_record",
-                        "Approved child scope issue cannot be allowed because purchase_order_lines has real orphans.",
-                    )
-                    continue
-                purchase_order_scope_txns = int(
-                    current_state.get("source_type_counts", {}).get("purchase_order", 0)
-                )
-                if purchase_order_scope_txns != 0:
-                    add_abort(
-                        aborts,
-                        "unexpected_blocking_child_record",
-                        "Approved child scope issue cannot be allowed because purchase_order inventory transactions exist in scope.",
-                    )
-                    continue
-                if any(count > 0 for count in current_state.get("orphan_counts", {}).values()):
-                    add_abort(
-                        aborts,
-                        "unexpected_blocking_child_record",
-                        (
-                            "Approved child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
-                            "cannot be allowed while any real orphan rows are present."
-                        ),
-                    )
-                    continue
-                allowed_known_child_scope_issues.append(
-                    {
-                        "issue": issue,
-                        "detail": "purchase_order_lines_to_purchase_orders_historical_import",
-                        "table_name": table_name,
-                        "child_id": child_id,
-                        "parent_table": parent_table,
-                        "parent_id": parent_id,
-                    }
+                add_abort(
+                    aborts,
+                    "unexpected_blocking_child_record",
+                    "Approved child scope issue cannot be allowed because purchase_order_lines -> purchase_orders conditions are not met.",
                 )
                 continue
             add_abort(
@@ -760,7 +797,12 @@ def approved_gate_aborts(
                 f"Approved dry-run contains blocking child scope issue: {issue}.",
             )
 
-    return aborts, allowed_known_child_scope_issues
+    return (
+        aborts,
+        allowed_known_abort_conditions,
+        allowed_known_suspicious_records,
+        allowed_known_child_scope_issues,
+    )
 
 
 def build_approved_targets(approved: ApprovedDryRunBundle) -> dict[str, object]:
@@ -1157,9 +1199,15 @@ def perform_drift_check(
     approved_targets: dict[str, object],
     current_state: dict[str, object],
     delete_plan: dict[str, int],
-) -> tuple[list[AbortCondition], list[dict[str, object]]]:
-    aborts, allowed_known_child_scope_issues = approved_gate_aborts(
-        approved, approved_targets, current_state, delete_plan
+    args: argparse.Namespace,
+) -> tuple[list[AbortCondition], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    (
+        aborts,
+        allowed_known_abort_conditions,
+        allowed_known_suspicious_records,
+        allowed_known_child_scope_issues,
+    ) = approved_gate_aborts(
+        approved, approved_targets, current_state, delete_plan, args
     )
 
     approved_opening_balance_count = approved.approved_opening_balance_count
@@ -1262,7 +1310,12 @@ def perform_drift_check(
                 f"Sequence '{sequence_name}' drifted from {approved_value} to {current_value}.",
             )
 
-    return aborts, allowed_known_child_scope_issues
+    return (
+        aborts,
+        allowed_known_abort_conditions,
+        allowed_known_suspicious_records,
+        allowed_known_child_scope_issues,
+    )
 
 
 def fetch_document_ids_by_numbers(session: Session, table_name: str, numbers: set[str]) -> dict[str, int]:
@@ -1927,8 +1980,13 @@ def main() -> None:
         target_ids = build_target_ids(pre_session, approved_targets)
         delete_plan = build_delete_plan(target_ids)
         current_state = collect_current_state(pre_session, approved_targets, start_dt, end_dt)
-        drift_aborts, allowed_known_child_scope_issues = perform_drift_check(
-            approved, approved_targets, current_state, delete_plan
+        (
+            drift_aborts,
+            allowed_known_abort_conditions,
+            allowed_known_suspicious_records,
+            allowed_known_child_scope_issues,
+        ) = perform_drift_check(
+            approved, approved_targets, current_state, delete_plan, args
         )
 
         execute_plan_summary = {
@@ -1941,6 +1999,8 @@ def main() -> None:
                 {"code": item.code, "detail": item.detail, "blocking": item.blocking}
                 for item in drift_aborts
             ],
+            "allowed_known_abort_condition": allowed_known_abort_conditions,
+            "allowed_known_suspicious_record": allowed_known_suspicious_records,
             "allowed_known_child_scope_issue": allowed_known_child_scope_issues,
             "ready_to_execute": not drift_aborts,
             "delete_plan": delete_plan,
