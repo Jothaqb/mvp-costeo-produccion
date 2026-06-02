@@ -207,6 +207,7 @@ EXPECTED_BLOCKING_ABORT_CODES = {
 EXPECTED_BLOCKING_SUSPICIOUS_CATEGORIES: set[str] = set()
 EXPECTED_BLOCKING_DEPENDENCY_CATEGORIES: set[str] = set()
 EXPECTED_BLOCKING_CHILD_ISSUES: set[str] = set()
+ALLOWED_KNOWN_CHILD_SCOPE_ISSUE = "MAY_CHILD_OF_OUT_OF_WINDOW_HEADER"
 FORBIDDEN_SEQUENCE_NAMES = {
     "production_order",
     "purchase_order",
@@ -622,8 +623,13 @@ def validate_approved_scope(approved: ApprovedDryRunBundle, start_dt: datetime, 
         )
 
 
-def approved_gate_aborts(approved: ApprovedDryRunBundle) -> list[AbortCondition]:
+def approved_gate_aborts(
+    approved: ApprovedDryRunBundle,
+    approved_targets: dict[str, object],
+    current_state: dict[str, object],
+) -> tuple[list[AbortCondition], list[dict[str, object]]]:
     aborts: list[AbortCondition] = []
+    allowed_known_child_scope_issues: list[dict[str, object]] = []
 
     for row in approved.abort_conditions:
         if not parse_bool_cell(row.get("blocking")):
@@ -662,6 +668,63 @@ def approved_gate_aborts(approved: ApprovedDryRunBundle) -> list[AbortCondition]
         if not parse_bool_cell(row.get("blocking")):
             continue
         issue = str(row.get("issue") or "").strip()
+        if issue == ALLOWED_KNOWN_CHILD_SCOPE_ISSUE:
+            table_name = str(row.get("table_name") or "").strip()
+            parent_table = str(row.get("parent_table") or "").strip()
+            child_id = parse_int(row.get("child_id"), "child_id")
+            parent_id = parse_int(row.get("parent_id"), "parent_id")
+            if table_name in {"inventory_transactions", "inventory_balances"}:
+                add_abort(
+                    aborts,
+                    "unexpected_blocking_child_record",
+                    (
+                        "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
+                        f"cannot reference {table_name}."
+                    ),
+                )
+                continue
+            if parent_table in {"inventory_transactions", "inventory_balances"}:
+                add_abort(
+                    aborts,
+                    "unexpected_blocking_child_record",
+                    (
+                        "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
+                        f"cannot reference parent table {parent_table}."
+                    ),
+                )
+                continue
+            if any(count > 0 for count in current_state.get("orphan_counts", {}).values()):
+                add_abort(
+                    aborts,
+                    "unexpected_blocking_child_record",
+                    (
+                        "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
+                        "cannot be allowed while real orphan rows are present."
+                    ),
+                )
+                continue
+            approved_a_ids = approved_targets["a_ids_by_table"].get(parent_table, set())
+            approved_c_ids = approved_targets["approved_c_ids_by_table"].get(parent_table, set())
+            if parent_id in approved_a_ids or parent_id in approved_c_ids:
+                add_abort(
+                    aborts,
+                    "unexpected_blocking_child_record",
+                    (
+                        "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
+                        "references a parent document that is already targeted as A or C."
+                    ),
+                )
+                continue
+            allowed_known_child_scope_issues.append(
+                {
+                    "issue": issue,
+                    "table_name": table_name,
+                    "child_id": child_id,
+                    "parent_table": parent_table,
+                    "parent_id": parent_id,
+                }
+            )
+            continue
         if issue not in EXPECTED_BLOCKING_CHILD_ISSUES:
             add_abort(
                 aborts,
@@ -669,7 +732,7 @@ def approved_gate_aborts(approved: ApprovedDryRunBundle) -> list[AbortCondition]
                 f"Approved dry-run contains blocking child scope issue: {issue}.",
             )
 
-    return aborts
+    return aborts, allowed_known_child_scope_issues
 
 
 def build_approved_targets(approved: ApprovedDryRunBundle) -> dict[str, object]:
@@ -733,6 +796,14 @@ def build_approved_targets(approved: ApprovedDryRunBundle) -> dict[str, object]:
     return {
         "a_ids_by_table": target_a_ids,
         "approved_c_rows": approved_c_rows,
+        "approved_c_ids_by_table": {
+            table_name: {
+                parse_int(row["document_id"], "document_id")
+                for document_number, row in approved_c_rows.items()
+                if row["table_name"] == table_name
+            }
+            for table_name in APPROVED_C_DOCUMENTS.keys()
+        },
         "inventory_txn_ids": txn_ids,
         "inventory_source_pairs": tx_source_pairs,
         "balances_impacted_product_ids": balances_impacted_product_ids,
@@ -1057,9 +1128,10 @@ def perform_drift_check(
     approved: ApprovedDryRunBundle,
     approved_targets: dict[str, object],
     current_state: dict[str, object],
-) -> list[AbortCondition]:
-    aborts: list[AbortCondition] = []
-    aborts.extend(approved_gate_aborts(approved))
+) -> tuple[list[AbortCondition], list[dict[str, object]]]:
+    aborts, allowed_known_child_scope_issues = approved_gate_aborts(
+        approved, approved_targets, current_state
+    )
 
     approved_opening_balance_count = approved.approved_opening_balance_count
     if approved_opening_balance_count is not None:
@@ -1161,7 +1233,7 @@ def perform_drift_check(
                 f"Sequence '{sequence_name}' drifted from {approved_value} to {current_value}.",
             )
 
-    return aborts
+    return aborts, allowed_known_child_scope_issues
 
 
 def fetch_document_ids_by_numbers(session: Session, table_name: str, numbers: set[str]) -> dict[str, int]:
@@ -1824,7 +1896,9 @@ def main() -> None:
         if not args.execute:
             pre_session.execute(text("SET TRANSACTION READ ONLY"))
         current_state = collect_current_state(pre_session, approved_targets, start_dt, end_dt)
-        drift_aborts = perform_drift_check(approved, approved_targets, current_state)
+        drift_aborts, allowed_known_child_scope_issues = perform_drift_check(
+            approved, approved_targets, current_state
+        )
         target_ids = build_target_ids(pre_session, approved_targets)
         delete_plan = build_delete_plan(target_ids)
 
@@ -1838,6 +1912,7 @@ def main() -> None:
                 {"code": item.code, "detail": item.detail, "blocking": item.blocking}
                 for item in drift_aborts
             ],
+            "allowed_known_child_scope_issue": allowed_known_child_scope_issues,
             "ready_to_execute": bool(args.execute) and not drift_aborts,
             "delete_plan": delete_plan,
             "current_state": {
