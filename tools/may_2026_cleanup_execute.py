@@ -627,6 +627,7 @@ def approved_gate_aborts(
     approved: ApprovedDryRunBundle,
     approved_targets: dict[str, object],
     current_state: dict[str, object],
+    delete_plan: dict[str, int],
 ) -> tuple[list[AbortCondition], list[dict[str, object]]]:
     aborts: list[AbortCondition] = []
     allowed_known_child_scope_issues: list[dict[str, object]] = []
@@ -673,6 +674,76 @@ def approved_gate_aborts(
             parent_table = str(row.get("parent_table") or "").strip()
             child_id = parse_int(row.get("child_id"), "child_id")
             parent_id = parse_int(row.get("parent_id"), "parent_id")
+            if table_name == "purchase_order_lines" and parent_table == "purchase_orders":
+                if delete_plan.get("purchase_orders", 0) != 0:
+                    add_abort(
+                        aborts,
+                        "unexpected_blocking_child_record",
+                        "Approved child scope issue cannot be allowed because purchase_orders delete_plan is not zero.",
+                    )
+                    continue
+                if delete_plan.get("purchase_order_lines", 0) != 0:
+                    add_abort(
+                        aborts,
+                        "unexpected_blocking_child_record",
+                        "Approved child scope issue cannot be allowed because purchase_order_lines delete_plan is not zero.",
+                    )
+                    continue
+                if int(current_state.get("purchase_orders_in_scope", 0)) != 0:
+                    add_abort(
+                        aborts,
+                        "unexpected_blocking_child_record",
+                        "Approved child scope issue cannot be allowed because purchase_orders_in_scope is not zero.",
+                    )
+                    continue
+                if int(current_state.get("out_of_window_same_source_count", 0)) != 0:
+                    add_abort(
+                        aborts,
+                        "unexpected_blocking_child_record",
+                        "Approved child scope issue cannot be allowed because out_of_window_same_source_count is not zero.",
+                    )
+                    continue
+                purchase_order_orphans = int(
+                    current_state.get("orphan_counts", {}).get("purchase_order_lines", 0)
+                )
+                if purchase_order_orphans != 0:
+                    add_abort(
+                        aborts,
+                        "unexpected_blocking_child_record",
+                        "Approved child scope issue cannot be allowed because purchase_order_lines has real orphans.",
+                    )
+                    continue
+                purchase_order_scope_txns = int(
+                    current_state.get("source_type_counts", {}).get("purchase_order", 0)
+                )
+                if purchase_order_scope_txns != 0:
+                    add_abort(
+                        aborts,
+                        "unexpected_blocking_child_record",
+                        "Approved child scope issue cannot be allowed because purchase_order inventory transactions exist in scope.",
+                    )
+                    continue
+                if any(count > 0 for count in current_state.get("orphan_counts", {}).values()):
+                    add_abort(
+                        aborts,
+                        "unexpected_blocking_child_record",
+                        (
+                            "Approved child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
+                            "cannot be allowed while any real orphan rows are present."
+                        ),
+                    )
+                    continue
+                allowed_known_child_scope_issues.append(
+                    {
+                        "issue": issue,
+                        "detail": "purchase_order_lines_to_purchase_orders_historical_import",
+                        "table_name": table_name,
+                        "child_id": child_id,
+                        "parent_table": parent_table,
+                        "parent_id": parent_id,
+                    }
+                )
+                continue
             if table_name in {"inventory_transactions", "inventory_balances"}:
                 add_abort(
                     aborts,
@@ -1128,9 +1199,10 @@ def perform_drift_check(
     approved: ApprovedDryRunBundle,
     approved_targets: dict[str, object],
     current_state: dict[str, object],
+    delete_plan: dict[str, int],
 ) -> tuple[list[AbortCondition], list[dict[str, object]]]:
     aborts, allowed_known_child_scope_issues = approved_gate_aborts(
-        approved, approved_targets, current_state
+        approved, approved_targets, current_state, delete_plan
     )
 
     approved_opening_balance_count = approved.approved_opening_balance_count
@@ -1895,12 +1967,12 @@ def main() -> None:
     try:
         if not args.execute:
             pre_session.execute(text("SET TRANSACTION READ ONLY"))
-        current_state = collect_current_state(pre_session, approved_targets, start_dt, end_dt)
-        drift_aborts, allowed_known_child_scope_issues = perform_drift_check(
-            approved, approved_targets, current_state
-        )
         target_ids = build_target_ids(pre_session, approved_targets)
         delete_plan = build_delete_plan(target_ids)
+        current_state = collect_current_state(pre_session, approved_targets, start_dt, end_dt)
+        drift_aborts, allowed_known_child_scope_issues = perform_drift_check(
+            approved, approved_targets, current_state, delete_plan
+        )
 
         execute_plan_summary = {
             "parameter_source": "environment" if args.use_env else "cli",
