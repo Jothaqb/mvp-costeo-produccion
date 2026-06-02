@@ -483,6 +483,19 @@ def add_abort(
     abort_conditions.append(AbortCondition(code=code, detail=detail, blocking=blocking))
 
 
+def summarize_abort_conditions(aborts: list[AbortCondition]) -> list[dict[str, object]]:
+    grouped: Counter[tuple[str, str, bool]] = Counter(
+        (item.code, item.detail, item.blocking) for item in aborts
+    )
+    return [
+        {"code": code, "detail": detail, "blocking": blocking, "count": count}
+        for (code, detail, blocking), count in sorted(
+            grouped.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1]),
+        )
+    ]
+
+
 def add_log(log_rows: list[dict[str, object]], level: str, message: str) -> None:
     log_rows.append(
         {
@@ -629,28 +642,73 @@ def approved_gate_aborts(
     current_state: dict[str, object],
     delete_plan: dict[str, int],
     args: argparse.Namespace,
-) -> tuple[list[AbortCondition], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[
+    list[AbortCondition],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
     aborts: list[AbortCondition] = []
     allowed_known_abort_conditions: list[dict[str, object]] = []
     allowed_known_suspicious_records: list[dict[str, object]] = []
+    allowed_known_dependencies: list[dict[str, object]] = []
     allowed_known_child_scope_issues: list[dict[str, object]] = []
 
-    def purchase_order_child_issue_allowed() -> bool:
-        if delete_plan.get("purchase_orders", 0) != 0:
-            return False
-        if delete_plan.get("purchase_order_lines", 0) != 0:
-            return False
-        if int(current_state.get("purchase_orders_in_scope", 0)) != 0:
-            return False
+    def no_orphans_present() -> bool:
+        return not any(count > 0 for count in current_state.get("orphan_counts", {}).values())
+
+    def child_scope_issue_allowance(
+        table_name: str,
+        parent_table: str | None = None,
+        parent_id: int | None = None,
+    ) -> str | None:
+        normalized_parent = (parent_table or "").strip()
+        source_type_counts = current_state.get("source_type_counts", {})
         if int(current_state.get("out_of_window_same_source_count", 0)) != 0:
-            return False
-        if int(current_state.get("orphan_counts", {}).get("purchase_order_lines", 0)) != 0:
-            return False
-        if any(count > 0 for count in current_state.get("orphan_counts", {}).values()):
-            return False
-        if int(current_state.get("source_type_counts", {}).get("purchase_order", 0)) != 0:
-            return False
-        return True
+            return None
+        if not no_orphans_present():
+            return None
+        if table_name == "purchase_order_lines":
+            if normalized_parent and normalized_parent != "purchase_orders":
+                return None
+            if delete_plan.get("purchase_orders", 0) != 0:
+                return None
+            if delete_plan.get("purchase_order_lines", 0) != 0:
+                return None
+            if int(current_state.get("purchase_orders_in_scope", 0)) != 0:
+                return None
+            if int(source_type_counts.get("purchase_order", 0)) != 0:
+                return None
+            return "purchase_order_lines_to_purchase_orders_historical_import"
+        if table_name == "b2b_sales_order_lines":
+            if normalized_parent and normalized_parent != "b2b_sales_orders":
+                return None
+            if delete_plan.get("b2b_sales_order_lines", 0) != 319:
+                return None
+            if delete_plan.get("b2b_sales_orders", 0) != 29:
+                return None
+            if int(current_state.get("b2b_orders_in_scope", 0)) != 29:
+                return None
+            if int(source_type_counts.get("b2b_order", 0)) != 319:
+                return None
+            target_b2b_ids = approved_targets["a_ids_by_table"].get("b2b_sales_orders", set())
+            if parent_id is not None and parent_id in target_b2b_ids:
+                return None
+            return "b2b_sales_order_lines_to_b2b_sales_orders_historical_import"
+        if table_name == "b2c_sales_order_lines":
+            if normalized_parent and normalized_parent != "b2c_sales_orders":
+                return None
+            if delete_plan.get("b2c_sales_order_lines", 0) != 0:
+                return None
+            if delete_plan.get("b2c_sales_orders", 0) != 0:
+                return None
+            if int(current_state.get("b2c_orders_in_scope", 0)) != 0:
+                return None
+            if int(source_type_counts.get("b2c_order", 0)) != 0:
+                return None
+            return "b2c_sales_order_lines_to_b2c_sales_orders_historical_import"
+        return None
 
     def approved_c_set_matches_exactly() -> bool:
         approved_c_from_file = {
@@ -690,6 +748,13 @@ def approved_gate_aborts(
                 return False
         return True
 
+    def balance_points_to_may_txn_allowed() -> bool:
+        return (
+            delete_plan.get("inventory_balances", 0) == 714
+            and int(current_state.get("balances_impacted_count", 0)) == 161
+            and int(current_state.get("opening_balance_count", 0)) == 713
+        )
+
     for row in approved.abort_conditions:
         if not parse_bool_cell(row.get("blocking")):
             continue
@@ -725,16 +790,41 @@ def approved_gate_aborts(
         category = str(row.get("category") or "").strip()
         if category == ALLOWED_KNOWN_CHILD_SCOPE_ISSUE:
             table_name = str(row.get("table_name") or "").strip()
-            if table_name == "purchase_order_lines" and purchase_order_child_issue_allowed():
+            allowed_detail = child_scope_issue_allowance(table_name)
+            if allowed_detail is not None:
                 allowed_known_suspicious_records.append(
                     {
                         "category": category,
-                        "detail": "purchase_order_lines_to_purchase_orders_historical_import",
+                        "detail": allowed_detail,
                         "table_name": table_name,
                         "record_id": parse_int(row.get("record_id"), "record_id"),
                     }
                 )
                 continue
+        if category == "DOCUMENT_CLASSIFICATION_C" and approved_c_set_matches_exactly():
+            allowed_known_suspicious_records.append(
+                {
+                    "category": category,
+                    "detail": "approved_manual_c_transition_documents",
+                }
+            )
+            continue
+        if category == "SEQUENCE_COLLISION_RISK" and not args.reset_b2b_sequence and not args.reset_b2c_sequence:
+            allowed_known_suspicious_records.append(
+                {
+                    "category": category,
+                    "detail": "no_sequence_reset_requested",
+                }
+            )
+            continue
+        if category == "BALANCE_POINTS_TO_MAY_TXN" and balance_points_to_may_txn_allowed():
+            allowed_known_suspicious_records.append(
+                {
+                    "category": category,
+                    "detail": "inventory_balances_will_be_fully_cleared",
+                }
+            )
+            continue
         if category not in EXPECTED_BLOCKING_SUSPICIOUS_CATEGORIES:
             add_abort(
                 aborts,
@@ -746,6 +836,19 @@ def approved_gate_aborts(
         if not parse_bool_cell(row.get("blocking")):
             continue
         category = str(row.get("category") or "").strip()
+        if category == ALLOWED_KNOWN_CHILD_SCOPE_ISSUE:
+            table_name = str(row.get("table_name") or "").strip()
+            allowed_detail = child_scope_issue_allowance(table_name)
+            if allowed_detail is not None:
+                allowed_known_dependencies.append(
+                    {
+                        "category": category,
+                        "detail": allowed_detail,
+                        "table_name": table_name,
+                        "record_id": parse_int(row.get("record_id"), "record_id"),
+                    }
+                )
+                continue
         if category not in EXPECTED_BLOCKING_DEPENDENCY_CATEGORIES:
             add_abort(
                 aborts,
@@ -762,23 +865,17 @@ def approved_gate_aborts(
             parent_table = str(row.get("parent_table") or "").strip()
             child_id = parse_int(row.get("child_id"), "child_id")
             parent_id = parse_int(row.get("parent_id"), "parent_id")
-            if table_name == "purchase_order_lines" and parent_table == "purchase_orders":
-                if purchase_order_child_issue_allowed():
-                    allowed_known_child_scope_issues.append(
-                        {
-                            "issue": issue,
-                            "detail": "purchase_order_lines_to_purchase_orders_historical_import",
-                            "table_name": table_name,
-                            "child_id": child_id,
-                            "parent_table": parent_table,
-                            "parent_id": parent_id,
-                        }
-                    )
-                    continue
-                add_abort(
-                    aborts,
-                    "unexpected_blocking_child_record",
-                    "Approved child scope issue cannot be allowed because purchase_order_lines -> purchase_orders conditions are not met.",
+            allowed_detail = child_scope_issue_allowance(table_name, parent_table, parent_id)
+            if allowed_detail is not None:
+                allowed_known_child_scope_issues.append(
+                    {
+                        "issue": issue,
+                        "detail": allowed_detail,
+                        "table_name": table_name,
+                        "child_id": child_id,
+                        "parent_table": parent_table,
+                        "parent_id": parent_id,
+                    }
                 )
                 continue
             add_abort(
@@ -786,7 +883,9 @@ def approved_gate_aborts(
                 "unexpected_blocking_child_record",
                 (
                     "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
-                    f"is only allowed for purchase_order_lines -> purchase_orders, not {table_name} -> {parent_table}."
+                    "is only allowed for purchase_order_lines -> purchase_orders, "
+                    "b2b_sales_order_lines -> b2b_sales_orders, "
+                    f"or b2c_sales_order_lines -> b2c_sales_orders, not {table_name} -> {parent_table}."
                 ),
             )
             continue
@@ -801,6 +900,7 @@ def approved_gate_aborts(
         aborts,
         allowed_known_abort_conditions,
         allowed_known_suspicious_records,
+        allowed_known_dependencies,
         allowed_known_child_scope_issues,
     )
 
@@ -1200,11 +1300,18 @@ def perform_drift_check(
     current_state: dict[str, object],
     delete_plan: dict[str, int],
     args: argparse.Namespace,
-) -> tuple[list[AbortCondition], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[
+    list[AbortCondition],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
     (
         aborts,
         allowed_known_abort_conditions,
         allowed_known_suspicious_records,
+        allowed_known_dependencies,
         allowed_known_child_scope_issues,
     ) = approved_gate_aborts(
         approved, approved_targets, current_state, delete_plan, args
@@ -1314,6 +1421,7 @@ def perform_drift_check(
         aborts,
         allowed_known_abort_conditions,
         allowed_known_suspicious_records,
+        allowed_known_dependencies,
         allowed_known_child_scope_issues,
     )
 
@@ -1984,6 +2092,7 @@ def main() -> None:
             drift_aborts,
             allowed_known_abort_conditions,
             allowed_known_suspicious_records,
+            allowed_known_dependencies,
             allowed_known_child_scope_issues,
         ) = perform_drift_check(
             approved, approved_targets, current_state, delete_plan, args
@@ -1999,8 +2108,10 @@ def main() -> None:
                 {"code": item.code, "detail": item.detail, "blocking": item.blocking}
                 for item in drift_aborts
             ],
+            "drift_aborts_summary": summarize_abort_conditions(drift_aborts),
             "allowed_known_abort_condition": allowed_known_abort_conditions,
             "allowed_known_suspicious_record": allowed_known_suspicious_records,
+            "allowed_known_dependency": allowed_known_dependencies,
             "allowed_known_child_scope_issue": allowed_known_child_scope_issues,
             "ready_to_execute": not drift_aborts,
             "delete_plan": delete_plan,
