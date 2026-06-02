@@ -744,56 +744,13 @@ def approved_gate_aborts(
                     }
                 )
                 continue
-            if table_name in {"inventory_transactions", "inventory_balances"}:
-                add_abort(
-                    aborts,
-                    "unexpected_blocking_child_record",
-                    (
-                        "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
-                        f"cannot reference {table_name}."
-                    ),
-                )
-                continue
-            if parent_table in {"inventory_transactions", "inventory_balances"}:
-                add_abort(
-                    aborts,
-                    "unexpected_blocking_child_record",
-                    (
-                        "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
-                        f"cannot reference parent table {parent_table}."
-                    ),
-                )
-                continue
-            if any(count > 0 for count in current_state.get("orphan_counts", {}).values()):
-                add_abort(
-                    aborts,
-                    "unexpected_blocking_child_record",
-                    (
-                        "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
-                        "cannot be allowed while real orphan rows are present."
-                    ),
-                )
-                continue
-            approved_a_ids = approved_targets["a_ids_by_table"].get(parent_table, set())
-            approved_c_ids = approved_targets["approved_c_ids_by_table"].get(parent_table, set())
-            if parent_id in approved_a_ids or parent_id in approved_c_ids:
-                add_abort(
-                    aborts,
-                    "unexpected_blocking_child_record",
-                    (
-                        "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
-                        "references a parent document that is already targeted as A or C."
-                    ),
-                )
-                continue
-            allowed_known_child_scope_issues.append(
-                {
-                    "issue": issue,
-                    "table_name": table_name,
-                    "child_id": child_id,
-                    "parent_table": parent_table,
-                    "parent_id": parent_id,
-                }
+            add_abort(
+                aborts,
+                "unexpected_blocking_child_record",
+                (
+                    "Approved dry-run child scope issue MAY_CHILD_OF_OUT_OF_WINDOW_HEADER "
+                    f"is only allowed for purchase_order_lines -> purchase_orders, not {table_name} -> {parent_table}."
+                ),
             )
             continue
         if issue not in EXPECTED_BLOCKING_CHILD_ISSUES:
@@ -1985,7 +1942,7 @@ def main() -> None:
                 for item in drift_aborts
             ],
             "allowed_known_child_scope_issue": allowed_known_child_scope_issues,
-            "ready_to_execute": bool(args.execute) and not drift_aborts,
+            "ready_to_execute": not drift_aborts,
             "delete_plan": delete_plan,
             "current_state": {
                 key: value
