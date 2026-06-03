@@ -95,7 +95,7 @@ LOYVERSE_HEADER_CANDIDATES = {
     "parent_sku": ("sku", "item sku", "product sku", "parent sku", "codigo", "codigo sku"),
     "parent_name": ("name", "item name", "product name", "parent name", "nombre", "nombre del producto"),
     "category": ("category", "category name", "categoria", "nombre categoria"),
-    "average_cost": ("average cost", "avg cost", "purchase cost", "standard cost", "cost", "costo", "coste"),
+    "average_cost": ("cost", "average cost", "avg cost", "standard cost", "purchase cost", "costo", "coste"),
     "supplier": ("supplier", "proveedor"),
     "use_production": ("use production", "usar produccion", "produccion", "is composite"),
     "available_for_sale_gc": (

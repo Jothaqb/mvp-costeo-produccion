@@ -58,6 +58,27 @@ def _build_loyverse_header_row() -> list[str]:
     return row
 
 
+def _build_real_csv_header_row() -> list[str]:
+    row = [""] * 26
+    row[0] = "Handle"
+    row[1] = "SKU"
+    row[2] = "Name"
+    row[12] = "Cost"
+    row[13] = "Barcode"
+    row[14] = "SKU of included item"
+    row[15] = "Quantity of included item"
+    row[17] = "Track stock"
+    row[18] = "Use production"
+    row[19] = "Supplier"
+    row[20] = "Purchase cost"
+    row[21] = "Available for sale [Green Corner]"
+    row[22] = "Price [Green Corner]"
+    row[23] = "In stock [Green Corner]"
+    row[24] = "Low stock [Green Corner]"
+    row[25] = "Optimal stock [Green Corner]"
+    return row
+
+
 def _build_loyverse_header_mapped_row(
     *,
     sku: str,
@@ -77,6 +98,36 @@ def _build_loyverse_header_mapped_row(
     row[10] = "yes"
     row[14] = sku
     row[15] = name
+    return row
+
+
+def _build_real_csv_row(
+    *,
+    sku: str,
+    name: str,
+    cost: str = "",
+    purchase_cost: str = "",
+    price: str = "",
+    inventory: str = "",
+    low_stock: str = "",
+    optimal_stock: str = "",
+    included_item_sku: str = "",
+    included_quantity: str = "",
+) -> list[str]:
+    row = [""] * 26
+    row[0] = "handle-value"
+    row[1] = sku
+    row[2] = name
+    row[12] = cost
+    row[14] = included_item_sku
+    row[15] = included_quantity
+    row[18] = "Y"
+    row[20] = purchase_cost
+    row[21] = "Y"
+    row[22] = price
+    row[23] = inventory
+    row[24] = low_stock
+    row[25] = optimal_stock
     return row
 
 
@@ -178,6 +229,59 @@ class GreenCornerImportPrecheckTests(unittest.TestCase):
         self.assertEqual(product.current_inventory_qty, Decimal("1.773"))
         self.assertEqual(product.standard_cost, Decimal("15208"))
         self.assertEqual(product.b2c_price, Decimal("55000"))
+
+    def test_real_csv_header_prefers_cost_over_purchase_cost(self) -> None:
+        header = _build_real_csv_header_row()
+        row = _build_real_csv_row(
+            sku="10488",
+            name="5 Especias Chinas a granel",
+            cost="15208",
+            purchase_cost="",
+            price="55000",
+            inventory="1.773",
+            low_stock="0.5",
+            optimal_stock="1.5",
+            included_item_sku="10487",
+            included_quantity="0.25",
+        )
+        db = _build_db_for_existing_product(None)
+
+        columns, has_header = _resolve_loyverse_column_map([header, row])
+        self.assertTrue(has_header)
+        self.assertEqual(columns.average_cost, 12)
+        self.assertEqual(columns.b2c_price, 22)
+        self.assertEqual(columns.inventory, 23)
+
+        run_green_corner_import_precheck(db, [header, row], columns)
+
+        product = _upsert_product_master_from_loyverse_row(db, row, columns)
+        self.assertIsNotNone(product)
+        self.assertEqual(product.standard_cost, Decimal("15208"))
+        self.assertEqual(product.current_inventory_qty, Decimal("1.773"))
+        self.assertEqual(product.b2c_price, Decimal("55000"))
+
+    def test_real_csv_header_falls_back_to_purchase_cost_when_cost_is_absent(self) -> None:
+        header = _build_real_csv_header_row()
+        header[12] = ""
+        row = _build_real_csv_row(
+            sku="10488",
+            name="5 Especias Chinas a granel",
+            cost="",
+            purchase_cost="15208",
+            price="55000",
+            inventory="1.773",
+        )
+        db = _build_db_for_existing_product(None)
+
+        columns, has_header = _resolve_loyverse_column_map([header, row])
+        self.assertTrue(has_header)
+        self.assertEqual(columns.average_cost, 20)
+
+        run_green_corner_import_precheck(db, [header, row], columns)
+
+        product = _upsert_product_master_from_loyverse_row(db, row, columns)
+        self.assertIsNotNone(product)
+        self.assertEqual(product.standard_cost, Decimal("15208"))
 
     def test_inventory_x1000_correction_is_warning_not_blocking(self) -> None:
         row = _build_loyverse_row(standard_cost="15208", inventory="1.773")
