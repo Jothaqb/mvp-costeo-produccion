@@ -2,6 +2,7 @@ import unittest
 from decimal import Decimal
 from unittest import mock
 
+from app.models import Product
 from app.services.import_service import (
     GreenCornerDecimalParseError,
     GreenCornerImportPrecheckError,
@@ -77,6 +78,15 @@ def _build_loyverse_header_mapped_row(
     row[14] = sku
     row[15] = name
     return row
+
+
+def _build_db_for_existing_product(product: Product | None) -> mock.Mock:
+    query = mock.Mock()
+    query.filter.return_value = query
+    query.one_or_none.return_value = product
+    db = mock.Mock()
+    db.query.return_value = query
+    return db
 
 
 class ParseDecimalStrictGreenCornerTests(unittest.TestCase):
@@ -236,6 +246,88 @@ class GreenCornerImportPrecheckTests(unittest.TestCase):
         db.add.assert_not_called()
         db.flush.assert_not_called()
         db.commit.assert_not_called()
+
+
+class GreenCornerRepeatedSkuUpsertTests(unittest.TestCase):
+    def test_blank_repeated_row_does_not_clear_standard_cost(self) -> None:
+        header = _build_loyverse_header_row()
+        row_with_cost = _build_loyverse_header_mapped_row(
+            sku="10488",
+            name="Producto 10488",
+            average_cost="15208",
+            price="55000",
+            inventory="1.773",
+        )
+        row_blank_cost = _build_loyverse_header_mapped_row(
+            sku="10488",
+            name="Producto 10488",
+            average_cost="",
+            price="55000",
+            inventory="1.773",
+        )
+        columns, has_header = _resolve_loyverse_column_map([header, row_with_cost, row_blank_cost])
+        self.assertTrue(has_header)
+
+        db_create = _build_db_for_existing_product(None)
+        product = _upsert_product_master_from_loyverse_row(db_create, row_with_cost, columns)
+        self.assertIsNotNone(product)
+        self.assertEqual(product.standard_cost, Decimal("15208"))
+
+        db_update = _build_db_for_existing_product(product)
+        updated_product = _upsert_product_master_from_loyverse_row(db_update, row_blank_cost, columns)
+
+        self.assertIs(updated_product, product)
+        self.assertEqual(product.standard_cost, Decimal("15208"))
+        self.assertEqual(product.current_inventory_qty, Decimal("1.773"))
+        self.assertEqual(product.b2c_price, Decimal("55000"))
+
+    def test_existing_standard_cost_is_preserved_when_new_row_cost_is_blank(self) -> None:
+        header = _build_loyverse_header_row()
+        row_blank_cost = _build_loyverse_header_mapped_row(
+            sku="10488",
+            name="Producto 10488",
+            average_cost="",
+            price="55000",
+            inventory="1.773",
+        )
+        columns, has_header = _resolve_loyverse_column_map([header, row_blank_cost])
+        self.assertTrue(has_header)
+
+        product = Product(
+            sku="10488",
+            name="Producto 10488",
+            standard_cost=Decimal("15208"),
+        )
+        db = _build_db_for_existing_product(product)
+
+        updated_product = _upsert_product_master_from_loyverse_row(db, row_blank_cost, columns)
+
+        self.assertIs(updated_product, product)
+        self.assertEqual(product.standard_cost, Decimal("15208"))
+
+    def test_valid_new_cost_still_updates_standard_cost(self) -> None:
+        header = _build_loyverse_header_row()
+        row_new_cost = _build_loyverse_header_mapped_row(
+            sku="10488",
+            name="Producto 10488",
+            average_cost="16000",
+            price="55000",
+            inventory="1.773",
+        )
+        columns, has_header = _resolve_loyverse_column_map([header, row_new_cost])
+        self.assertTrue(has_header)
+
+        product = Product(
+            sku="10488",
+            name="Producto 10488",
+            standard_cost=Decimal("15208"),
+        )
+        db = _build_db_for_existing_product(product)
+
+        updated_product = _upsert_product_master_from_loyverse_row(db, row_new_cost, columns)
+
+        self.assertIs(updated_product, product)
+        self.assertEqual(product.standard_cost, Decimal("16000"))
 
 
 if __name__ == "__main__":

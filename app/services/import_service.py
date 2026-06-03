@@ -799,7 +799,8 @@ def _upsert_product_master_from_loyverse_row(
         db.add(product)
 
     product.name = name
-    product.standard_cost = standard_cost
+    if standard_cost is not None:
+        product.standard_cost = standard_cost
     product.is_manufactured = _is_manufactured_parent_row(row, columns)
     _apply_category_enrichment(db, product, imported_category_name)
     _apply_b2c_price_enrichment(product, imported_b2c_price)
