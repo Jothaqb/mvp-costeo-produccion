@@ -6,6 +6,9 @@ from app.services.import_service import (
     GreenCornerDecimalParseError,
     GreenCornerImportPrecheckError,
     ImportPrecheckIssue,
+    LoyverseColumnMap,
+    _resolve_loyverse_column_map,
+    _upsert_product_master_from_loyverse_row,
     import_loyverse_csv,
     parse_decimal_strict_green_corner,
     run_green_corner_import_precheck,
@@ -32,6 +35,47 @@ def _build_loyverse_row(
     row[22] = inventory
     row[23] = low_stock
     row[24] = optimal_stock
+    return row
+
+
+def _build_loyverse_header_row() -> list[str]:
+    row = [""] * 25
+    row[0] = "Handle"
+    row[4] = "Price [Green Corner]"
+    row[5] = "In stock [Green Corner]"
+    row[6] = "Low stock"
+    row[7] = "Optimal stock"
+    row[8] = "Average cost"
+    row[9] = "Supplier"
+    row[10] = "Available for sale [Green Corner]"
+    row[11] = "Use production"
+    row[12] = "Included item SKU"
+    row[13] = "Included quantity"
+    row[14] = "SKU"
+    row[15] = "Item name"
+    row[16] = "Category"
+    return row
+
+
+def _build_loyverse_header_mapped_row(
+    *,
+    sku: str,
+    name: str,
+    average_cost: str,
+    price: str,
+    inventory: str,
+    low_stock: str = "",
+    optimal_stock: str = "",
+) -> list[str]:
+    row = [""] * 25
+    row[4] = price
+    row[5] = inventory
+    row[6] = low_stock
+    row[7] = optimal_stock
+    row[8] = average_cost
+    row[10] = "yes"
+    row[14] = sku
+    row[15] = name
     return row
 
 
@@ -74,6 +118,35 @@ class GreenCornerImportPrecheckTests(unittest.TestCase):
         self.assertTrue(
             any(issue.risk_type == "ambiguous_decimal_format" for issue in ctx.exception.issues)
         )
+
+    def test_header_mapping_uses_in_stock_not_price_for_inventory(self) -> None:
+        header = _build_loyverse_header_row()
+        row = _build_loyverse_header_mapped_row(
+            sku="10488",
+            name="Producto 10488",
+            average_cost="15208",
+            price="55000",
+            inventory="1.773",
+        )
+        query = mock.Mock()
+        query.filter.return_value = query
+        query.one_or_none.return_value = None
+        db = mock.Mock()
+        db.query.return_value = query
+
+        columns, has_header = _resolve_loyverse_column_map([header, row])
+        self.assertTrue(has_header)
+        self.assertEqual(columns.inventory, 5)
+        self.assertEqual(columns.b2c_price, 4)
+        self.assertEqual(columns.average_cost, 8)
+
+        run_green_corner_import_precheck(db, [header, row], columns)
+
+        product = _upsert_product_master_from_loyverse_row(db, row, columns)
+        self.assertIsNotNone(product)
+        self.assertEqual(product.current_inventory_qty, Decimal("1.773"))
+        self.assertEqual(product.standard_cost, Decimal("15208"))
+        self.assertEqual(product.b2c_price, Decimal("55000"))
 
     def test_import_aborts_before_writes_when_precheck_blocks(self) -> None:
         issue = ImportPrecheckIssue(

@@ -91,6 +91,25 @@ LOYVERSE_OPTIMAL_STOCK_INDEX = 24
 LOYVERSE_BOM_INCLUDED_SKU_INDEX = 14
 LOYVERSE_BOM_QUANTITY_INDEX = 15
 LOYVERSE_USE_PRODUCTION_INDEX = 17
+LOYVERSE_HEADER_CANDIDATES = {
+    "parent_sku": ("sku", "item sku", "product sku", "parent sku", "codigo", "codigo sku"),
+    "parent_name": ("name", "item name", "product name", "parent name", "nombre", "nombre del producto"),
+    "category": ("category", "category name", "categoria", "nombre categoria"),
+    "average_cost": ("average cost", "avg cost", "purchase cost", "standard cost", "cost", "costo", "coste"),
+    "supplier": ("supplier", "proveedor"),
+    "use_production": ("use production", "usar produccion", "produccion", "is composite"),
+    "available_for_sale_gc": (
+        "available for sale [green corner]",
+        "available for sale gc",
+        "available for sale",
+    ),
+    "b2c_price": ("price [green corner]", "b2c price", "price", "precio [green corner]", "precio"),
+    "inventory": ("in stock [green corner]", "in stock", "inventory", "inventario"),
+    "low_stock": ("low stock", "low stock [green corner]", "stock minimo"),
+    "optimal_stock": ("optimal stock", "optimal stock [green corner]", "stock optimo"),
+    "bom_included_sku": ("included item sku", "component sku", "bom sku", "ingredient sku"),
+    "bom_quantity": ("included quantity", "component quantity", "bom quantity", "quantity", "qty", "cantidad"),
+}
 EXCLUDED_BOM_INCLUDED_SKUS = {
     "10371",
     "10669",
@@ -117,6 +136,23 @@ class ImportSummary:
     bom_line_count: int
     component_type_counts: dict[str, int]
     unknown_count: int
+
+
+@dataclass(frozen=True)
+class LoyverseColumnMap:
+    parent_sku: int = LOYVERSE_PARENT_SKU_INDEX
+    parent_name: int = LOYVERSE_PARENT_NAME_INDEX
+    category: int = LOYVERSE_CATEGORY_INDEX
+    average_cost: int = LOYVERSE_AVERAGE_COST_INDEX
+    supplier: int = LOYVERSE_SUPPLIER_INDEX
+    use_production: int = LOYVERSE_USE_PRODUCTION_INDEX
+    available_for_sale_gc: int = LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX
+    b2c_price: int = LOYVERSE_B2C_PRICE_INDEX
+    inventory: int = LOYVERSE_INVENTORY_INDEX
+    low_stock: int = LOYVERSE_LOW_STOCK_INDEX
+    optimal_stock: int = LOYVERSE_OPTIMAL_STOCK_INDEX
+    bom_included_sku: int = LOYVERSE_BOM_INCLUDED_SKU_INDEX
+    bom_quantity: int = LOYVERSE_BOM_QUANTITY_INDEX
 
 
 @dataclass(frozen=True)
@@ -352,27 +388,47 @@ def _append_thousand_jump_issue(
     )
 
 
-def run_green_corner_import_precheck(db: Session, csv_rows: list[list[str]]) -> None:
+def run_green_corner_import_precheck(
+    db: Session,
+    csv_rows: list[list[str]],
+    columns: LoyverseColumnMap | None = None,
+) -> None:
     issues: list[ImportPrecheckIssue] = []
     product_cache: dict[str, Product | None] = {}
     current_parent_sku: str | None = None
+    resolved_columns, has_header_row = _resolve_loyverse_column_map(csv_rows)
+    columns = columns or resolved_columns
+
+    if has_header_row:
+        for field_name in _missing_required_loyverse_headers(csv_rows[0]):
+            issues.append(
+                ImportPrecheckIssue(
+                    row=1,
+                    sku="(header)",
+                    field=field_name,
+                    original_value="",
+                    parsed_value=None,
+                    risk_type="missing_required_loyverse_header",
+                    blocking=True,
+                )
+            )
 
     for row_number, row in enumerate(csv_rows, start=1):
         if row_number == 1 and _looks_like_header_row(row):
             continue
 
-        sku = _cell(row, LOYVERSE_PARENT_SKU_INDEX)
-        if _is_valid_loyverse_product_row(row):
+        sku = _cell(row, columns.parent_sku)
+        if _is_valid_loyverse_product_row(row, columns):
             current_parent_sku = sku
             if sku not in product_cache:
                 product_cache[sku] = db.query(Product).filter(Product.sku == sku).one_or_none()
             existing_product = product_cache[sku]
 
-            standard_cost_raw = _cell(row, LOYVERSE_AVERAGE_COST_INDEX)
-            inventory_raw = _cell(row, LOYVERSE_INVENTORY_INDEX)
-            low_stock_raw = _cell(row, LOYVERSE_LOW_STOCK_INDEX)
-            optimal_stock_raw = _cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX)
-            b2c_price_raw = _cell(row, LOYVERSE_B2C_PRICE_INDEX)
+            standard_cost_raw = _cell(row, columns.average_cost)
+            inventory_raw = _cell(row, columns.inventory)
+            low_stock_raw = _cell(row, columns.low_stock)
+            optimal_stock_raw = _cell(row, columns.optimal_stock)
+            b2c_price_raw = _cell(row, columns.b2c_price)
 
             standard_cost = _parse_green_corner_decimal(
                 standard_cost_raw, row_number=row_number, sku=sku, field_name="standard_cost", issues=issues
@@ -443,8 +499,8 @@ def run_green_corner_import_precheck(db: Session, csv_rows: list[list[str]]) -> 
                         )
                     )
 
-        component_sku = _cell(row, LOYVERSE_BOM_INCLUDED_SKU_INDEX)
-        component_quantity_raw = _cell(row, LOYVERSE_BOM_QUANTITY_INDEX)
+        component_sku = _cell(row, columns.bom_included_sku)
+        component_quantity_raw = _cell(row, columns.bom_quantity)
         if component_sku or component_quantity_raw:
             component_quantity = _parse_green_corner_decimal(
                 component_quantity_raw,
@@ -473,7 +529,8 @@ def run_green_corner_import_precheck(db: Session, csv_rows: list[list[str]]) -> 
 def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSummary:
     text = _decode_csv_content(content)
     csv_rows, detected_delimiter = _parse_csv_rows(text)
-    run_green_corner_import_precheck(db, csv_rows)
+    columns, _has_header = _resolve_loyverse_column_map(csv_rows)
+    run_green_corner_import_precheck(db, csv_rows, columns)
 
     batch = ImportBatch(file_name=file_name)
     db.add(batch)
@@ -489,16 +546,16 @@ def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSu
         if row_number == 1 and _looks_like_header_row(row):
             continue
 
-        product = _upsert_product_master_from_loyverse_row(db, row)
+        product = _upsert_product_master_from_loyverse_row(db, row, columns)
         if product is not None:
             upserted_product_skus.add(product.sku)
             if product.is_manufactured:
-                current_header = _create_parent_records_from_loyverse_row(db, batch, row, product)
+                current_header = _create_parent_records_from_loyverse_row(db, batch, row, product, columns)
                 imported_products.add(current_header.product_sku)
             else:
                 current_header = None
 
-        component = _extract_component_from_loyverse_row(row)
+        component = _extract_component_from_loyverse_row(row, columns)
         if current_header is None or not _has_component_signal(component):
             continue
         if _is_excluded_bom_sku(component["sku"]):
@@ -550,6 +607,50 @@ def _parse_csv_rows(text: str) -> tuple[list[list[str]], str]:
     return rows, delimiter
 
 
+def _normalized_header_map(row: list[str]) -> dict[str, int]:
+    return {
+        normalize_key(cell): index
+        for index, cell in enumerate(row)
+        if normalize_key(cell)
+    }
+
+
+def _resolve_loyverse_column_map(csv_rows: list[list[str]]) -> tuple[LoyverseColumnMap, bool]:
+    if not csv_rows:
+        return LoyverseColumnMap(), False
+    first_row = csv_rows[0]
+    if not _looks_like_header_row(first_row):
+        return LoyverseColumnMap(), False
+
+    header_map = _normalized_header_map(first_row)
+
+    def _resolve(field_name: str, fallback: int) -> int:
+        for candidate in LOYVERSE_HEADER_CANDIDATES[field_name]:
+            match = header_map.get(normalize_key(candidate))
+            if match is not None:
+                return match
+        return fallback
+
+    return (
+        LoyverseColumnMap(
+            parent_sku=_resolve("parent_sku", LOYVERSE_PARENT_SKU_INDEX),
+            parent_name=_resolve("parent_name", LOYVERSE_PARENT_NAME_INDEX),
+            category=_resolve("category", LOYVERSE_CATEGORY_INDEX),
+            average_cost=_resolve("average_cost", LOYVERSE_AVERAGE_COST_INDEX),
+            supplier=_resolve("supplier", LOYVERSE_SUPPLIER_INDEX),
+            use_production=_resolve("use_production", LOYVERSE_USE_PRODUCTION_INDEX),
+            available_for_sale_gc=_resolve("available_for_sale_gc", LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX),
+            b2c_price=_resolve("b2c_price", LOYVERSE_B2C_PRICE_INDEX),
+            inventory=_resolve("inventory", LOYVERSE_INVENTORY_INDEX),
+            low_stock=_resolve("low_stock", LOYVERSE_LOW_STOCK_INDEX),
+            optimal_stock=_resolve("optimal_stock", LOYVERSE_OPTIMAL_STOCK_INDEX),
+            bom_included_sku=_resolve("bom_included_sku", LOYVERSE_BOM_INCLUDED_SKU_INDEX),
+            bom_quantity=_resolve("bom_quantity", LOYVERSE_BOM_QUANTITY_INDEX),
+        ),
+        True,
+    )
+
+
 def _detect_csv_delimiter(text: str) -> str:
     sample_lines = [line for line in text.splitlines() if line.strip()][:20]
     sample = "\n".join(sample_lines)
@@ -585,6 +686,24 @@ def _looks_like_header_row(row: list[str]) -> bool:
     )
 
 
+def _missing_required_loyverse_headers(row: list[str]) -> list[str]:
+    header_map = _normalized_header_map(row)
+    required_fields = (
+        "parent_sku",
+        "parent_name",
+        "average_cost",
+        "inventory",
+        "low_stock",
+        "optimal_stock",
+        "b2c_price",
+    )
+    missing: list[str] = []
+    for field_name in required_fields:
+        if not any(normalize_key(candidate) in header_map for candidate in LOYVERSE_HEADER_CANDIDATES[field_name]):
+            missing.append(field_name)
+    return missing
+
+
 def _has_nonempty_rows(rows: list[list[str]]) -> bool:
     return any(any((cell or "").strip() for cell in row) for row in rows)
 
@@ -593,16 +712,16 @@ def _delimiter_name(delimiter: str) -> str:
     return "semicolon" if delimiter == ";" else "comma"
 
 
-def _is_loyverse_parent_row(row: list[str]) -> bool:
-    return bool(_cell(row, LOYVERSE_PARENT_SKU_INDEX))
+def _is_loyverse_parent_row(row: list[str], columns: LoyverseColumnMap) -> bool:
+    return bool(_cell(row, columns.parent_sku))
 
 
-def _is_valid_loyverse_product_row(row: list[str]) -> bool:
-    return bool(_cell(row, LOYVERSE_PARENT_SKU_INDEX) and _cell(row, LOYVERSE_PARENT_NAME_INDEX))
+def _is_valid_loyverse_product_row(row: list[str], columns: LoyverseColumnMap) -> bool:
+    return bool(_cell(row, columns.parent_sku) and _cell(row, columns.parent_name))
 
 
-def _is_manufactured_parent_row(row: list[str]) -> bool:
-    return normalize_text(_cell(row, LOYVERSE_USE_PRODUCTION_INDEX)) == "y"
+def _is_manufactured_parent_row(row: list[str], columns: LoyverseColumnMap) -> bool:
+    return normalize_text(_cell(row, columns.use_production)) == "y"
 
 
 def _is_excluded_bom_sku(component_sku: str | Decimal | None) -> bool:
@@ -616,11 +735,12 @@ def _create_parent_records_from_loyverse_row(
     batch: ImportBatch,
     row: list[str],
     product: Product,
+    columns: LoyverseColumnMap,
 ) -> ImportedBomHeader:
     sku = product.sku
     name = product.name
-    imported_category_name = _clean_optional_text(_cell(row, LOYVERSE_CATEGORY_INDEX))
-    imported_b2c_price = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_B2C_PRICE_INDEX))
+    imported_category_name = _clean_optional_text(_cell(row, columns.category))
+    imported_b2c_price = parse_decimal_strict_green_corner(_cell(row, columns.b2c_price))
 
     header = ImportedBomHeader(
         import_batch=batch,
@@ -636,15 +756,19 @@ def _create_parent_records_from_loyverse_row(
     return header
 
 
-def _upsert_product_master_from_loyverse_row(db: Session, row: list[str]) -> Product | None:
-    if not _is_valid_loyverse_product_row(row):
+def _upsert_product_master_from_loyverse_row(
+    db: Session,
+    row: list[str],
+    columns: LoyverseColumnMap,
+) -> Product | None:
+    if not _is_valid_loyverse_product_row(row, columns):
         return None
 
-    sku = _cell(row, LOYVERSE_PARENT_SKU_INDEX)
-    name = _cell(row, LOYVERSE_PARENT_NAME_INDEX) or sku
-    standard_cost = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_AVERAGE_COST_INDEX))
-    imported_category_name = _clean_optional_text(_cell(row, LOYVERSE_CATEGORY_INDEX))
-    imported_b2c_price = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_B2C_PRICE_INDEX))
+    sku = _cell(row, columns.parent_sku)
+    name = _cell(row, columns.parent_name) or sku
+    standard_cost = parse_decimal_strict_green_corner(_cell(row, columns.average_cost))
+    imported_category_name = _clean_optional_text(_cell(row, columns.category))
+    imported_b2c_price = parse_decimal_strict_green_corner(_cell(row, columns.b2c_price))
 
     product = db.query(Product).filter(Product.sku == sku).one_or_none()
     if product is None:
@@ -653,22 +777,26 @@ def _upsert_product_master_from_loyverse_row(db: Session, row: list[str]) -> Pro
 
     product.name = name
     product.standard_cost = standard_cost
-    product.is_manufactured = _is_manufactured_parent_row(row)
+    product.is_manufactured = _is_manufactured_parent_row(row, columns)
     _apply_category_enrichment(db, product, imported_category_name)
     _apply_b2c_price_enrichment(product, imported_b2c_price)
-    _apply_planning_snapshot_fields(product, row)
+    _apply_planning_snapshot_fields(product, row, columns)
     return product
 
 
-def _apply_planning_snapshot_fields(product: Product, row: list[str]) -> None:
-    available_for_sale = parse_available_for_sale(_cell(row, LOYVERSE_AVAILABLE_FOR_SALE_GC_INDEX))
+def _apply_planning_snapshot_fields(
+    product: Product,
+    row: list[str],
+    columns: LoyverseColumnMap,
+) -> None:
+    available_for_sale = parse_available_for_sale(_cell(row, columns.available_for_sale_gc))
     product.available_for_sale_gc = available_for_sale
     product.active = available_for_sale
-    product.supplier = _cell(row, LOYVERSE_SUPPLIER_INDEX) or None
-    product.current_inventory_qty = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_INVENTORY_INDEX))
+    product.supplier = _cell(row, columns.supplier) or None
+    product.current_inventory_qty = parse_decimal_strict_green_corner(_cell(row, columns.inventory))
     if not getattr(product, "planning_zones_manual_override", False):
-        product.low_stock_qty = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_LOW_STOCK_INDEX))
-        product.optimal_stock_qty = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX))
+        product.low_stock_qty = parse_decimal_strict_green_corner(_cell(row, columns.low_stock))
+        product.optimal_stock_qty = parse_decimal_strict_green_corner(_cell(row, columns.optimal_stock))
 
 
 def _apply_category_enrichment(db: Session, product: Product, category_name: str | None) -> None:
@@ -707,9 +835,12 @@ def _clean_optional_text(value: str | None) -> str | None:
     cleaned = (value or "").strip()
     return cleaned or None
 
-def _extract_component_from_loyverse_row(row: list[str]) -> dict[str, str | Decimal | None]:
-    component_sku = _cell(row, LOYVERSE_BOM_INCLUDED_SKU_INDEX)
-    quantity = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_BOM_QUANTITY_INDEX))
+def _extract_component_from_loyverse_row(
+    row: list[str],
+    columns: LoyverseColumnMap,
+) -> dict[str, str | Decimal | None]:
+    component_sku = _cell(row, columns.bom_included_sku)
+    quantity = parse_decimal_strict_green_corner(_cell(row, columns.bom_quantity))
     return {
         "sku": component_sku or None,
         "name": None,
