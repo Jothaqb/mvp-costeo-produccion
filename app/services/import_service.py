@@ -375,6 +375,14 @@ def _append_thousand_jump_issue(
 ) -> None:
     if not _is_exact_thousand_jump(previous_value, parsed_value):
         return
+    is_inventory_correction_warning = (
+        field_name == "current_inventory_qty"
+        and parsed_value is not None
+        and previous_value is not None
+        and parsed_value >= Decimal("0")
+        and previous_value > parsed_value
+        and parsed_value * Decimal("1000") == previous_value
+    )
     issues.append(
         ImportPrecheckIssue(
             row=row_number,
@@ -383,7 +391,7 @@ def _append_thousand_jump_issue(
             original_value=original_value,
             parsed_value=None if parsed_value is None else str(parsed_value),
             risk_type="exact_x1000_jump_vs_existing",
-            blocking=True,
+            blocking=not is_inventory_correction_warning,
         )
     )
 

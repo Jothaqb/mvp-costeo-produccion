@@ -103,6 +103,27 @@ class ParseDecimalStrictGreenCornerTests(unittest.TestCase):
 
 
 class GreenCornerImportPrecheckTests(unittest.TestCase):
+    def _build_db_with_existing_product(
+        self,
+        *,
+        current_inventory_qty: Decimal | None = None,
+        standard_cost: Decimal | None = None,
+        low_stock_qty: Decimal | None = None,
+        optimal_stock_qty: Decimal | None = None,
+    ) -> mock.Mock:
+        existing_product = mock.Mock(
+            current_inventory_qty=current_inventory_qty,
+            standard_cost=standard_cost,
+            low_stock_qty=low_stock_qty,
+            optimal_stock_qty=optimal_stock_qty,
+        )
+        query = mock.Mock()
+        query.filter.return_value = query
+        query.one_or_none.return_value = existing_product
+        db = mock.Mock()
+        db.query.return_value = query
+        return db
+
     def test_precheck_flags_ambiguous_decimal_as_blocking(self) -> None:
         row = _build_loyverse_row(inventory="1.250,50")
         query = mock.Mock()
@@ -147,6 +168,52 @@ class GreenCornerImportPrecheckTests(unittest.TestCase):
         self.assertEqual(product.current_inventory_qty, Decimal("1.773"))
         self.assertEqual(product.standard_cost, Decimal("15208"))
         self.assertEqual(product.b2c_price, Decimal("55000"))
+
+    def test_inventory_x1000_correction_is_warning_not_blocking(self) -> None:
+        row = _build_loyverse_row(standard_cost="15208", inventory="1.773")
+        db = self._build_db_with_existing_product(
+            current_inventory_qty=Decimal("1773"),
+            standard_cost=Decimal("15208"),
+        )
+
+        try:
+            run_green_corner_import_precheck(db, [row])
+        except GreenCornerImportPrecheckError as exc:  # pragma: no cover - should not happen
+            self.fail(f"Precheck should not block correction warning, got: {exc.issues}")
+
+    def test_inventory_x1000_growth_stays_blocking(self) -> None:
+        row = _build_loyverse_row(standard_cost="15208", inventory="1773")
+        db = self._build_db_with_existing_product(
+            current_inventory_qty=Decimal("1.773"),
+            standard_cost=Decimal("15208"),
+        )
+
+        with self.assertRaises(GreenCornerImportPrecheckError) as ctx:
+            run_green_corner_import_precheck(db, [row])
+
+        self.assertTrue(
+            any(
+                issue.risk_type == "exact_x1000_jump_vs_existing" and issue.blocking
+                for issue in ctx.exception.issues
+            )
+        )
+
+    def test_inventory_value_overflow_still_blocks_during_x1000_correction(self) -> None:
+        row = _build_loyverse_row(standard_cost="100000", inventory="1000")
+        db = self._build_db_with_existing_product(
+            current_inventory_qty=Decimal("1000000"),
+            standard_cost=Decimal("100000"),
+        )
+
+        with self.assertRaises(GreenCornerImportPrecheckError) as ctx:
+            run_green_corner_import_precheck(db, [row])
+
+        self.assertTrue(
+            any(
+                issue.risk_type == "inventory_value_exceeds_numeric_12_4" and issue.blocking
+                for issue in ctx.exception.issues
+            )
+        )
 
     def test_import_aborts_before_writes_when_precheck_blocks(self) -> None:
         issue = ImportPrecheckIssue(
