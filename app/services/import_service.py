@@ -578,7 +578,11 @@ def _looks_like_header_row(row: list[str]) -> bool:
     parent_sku = normalize_text(_cell(row, LOYVERSE_PARENT_SKU_INDEX))
     parent_name = normalize_text(_cell(row, LOYVERSE_PARENT_NAME_INDEX))
     component_sku = normalize_text(_cell(row, LOYVERSE_BOM_INCLUDED_SKU_INDEX))
-    return "sku" in parent_sku or "name" in parent_name or "included" in component_sku
+    return (
+        parent_sku in {"sku", "product sku", "item sku", "parent sku"}
+        or parent_name in {"name", "product name", "item name", "parent name"}
+        or component_sku in {"included item sku", "component sku", "bom sku", "ingredient sku"}
+    )
 
 
 def _has_nonempty_rows(rows: list[list[str]]) -> bool:
