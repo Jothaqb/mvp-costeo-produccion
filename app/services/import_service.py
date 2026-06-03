@@ -105,6 +105,8 @@ EXCLUDED_BOM_INCLUDED_SKUS = {
     "10629",
     "10628",
 }
+MAX_LEDGER_INVENTORY_VALUE = Decimal("99999999.9999")
+BOM_QUANTITY_SUSPICIOUS_THRESHOLD = Decimal("1000")
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,30 @@ class ImportSummary:
     bom_line_count: int
     component_type_counts: dict[str, int]
     unknown_count: int
+
+
+@dataclass(frozen=True)
+class ImportPrecheckIssue:
+    row: int
+    sku: str
+    field: str
+    original_value: str
+    parsed_value: str | None
+    risk_type: str
+    blocking: bool
+
+
+class GreenCornerDecimalParseError(ValueError):
+    pass
+
+
+class GreenCornerImportPrecheckError(ValueError):
+    def __init__(self, issues: list[ImportPrecheckIssue]):
+        self.issues = issues
+        blocking_count = sum(1 for issue in issues if issue.blocking)
+        super().__init__(
+            f"Green Corner import precheck failed with {blocking_count} blocking issue(s)."
+        )
 
 
 def normalize_key(value: str | None) -> str:
@@ -182,6 +208,61 @@ def parse_decimal(value: str | int | float | Decimal | None) -> Decimal | None:
         return None
 
 
+def detect_ambiguous_decimal_format(value: str | int | float | Decimal | None) -> bool:
+    if value is None or isinstance(value, Decimal):
+        return False
+    text = str(value).strip()
+    if not text:
+        return False
+
+    text = text.replace("\xa0", "").replace(" ", "")
+    text = re.sub(r"[^\d,.\-]", "", text)
+    if not text or text in {"-", ".", ","}:
+        return False
+    if text.count("-") > 1 or ("-" in text and not text.startswith("-")):
+        return True
+
+    unsigned = text[1:] if text.startswith("-") else text
+    if "." in unsigned and "," in unsigned:
+        return True
+    if unsigned.count(".") > 1 or unsigned.count(",") > 1:
+        return True
+    if ".." in unsigned or ",," in unsigned:
+        return True
+    return False
+
+
+def parse_decimal_strict_green_corner(value: str | int | float | Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if detect_ambiguous_decimal_format(text):
+        raise GreenCornerDecimalParseError(f"Ambiguous decimal format: {text}")
+
+    text = text.replace("\xa0", "").replace(" ", "")
+    text = re.sub(r"[^\d,.\-]", "", text)
+    if not text or text in {"-", ".", ","}:
+        return None
+    if text.count("-") > 1 or ("-" in text and not text.startswith("-")):
+        raise GreenCornerDecimalParseError(f"Invalid decimal format: {text}")
+
+    sign = "-" if text.startswith("-") else ""
+    if sign:
+        text = text[1:]
+    text = text.replace(",", ".")
+    if text.count(".") > 1:
+        raise GreenCornerDecimalParseError(f"Ambiguous decimal format: {sign}{text}")
+
+    try:
+        return Decimal(f"{sign}{text}")
+    except InvalidOperation as exc:
+        raise GreenCornerDecimalParseError(f"Invalid decimal format: {value}") from exc
+
+
 def parse_bool(value: str | None) -> bool:
     text = normalize_text(value)
     return text in {"1", "true", "yes", "y", "si", "sí", "x"}
@@ -213,9 +294,186 @@ def should_include_in_real_cost(component_type: ComponentType) -> bool:
     return component_type in {ComponentType.MATERIAL, ComponentType.PACKAGING}
 
 
+def _parse_green_corner_decimal(
+    raw_value: str,
+    *,
+    row_number: int,
+    sku: str,
+    field_name: str,
+    issues: list[ImportPrecheckIssue] | None = None,
+) -> Decimal | None:
+    try:
+        return parse_decimal_strict_green_corner(raw_value)
+    except GreenCornerDecimalParseError:
+        if issues is None:
+            raise
+        issues.append(
+            ImportPrecheckIssue(
+                row=row_number,
+                sku=sku,
+                field=field_name,
+                original_value=raw_value,
+                parsed_value=None,
+                risk_type="ambiguous_decimal_format",
+                blocking=True,
+            )
+        )
+        return None
+
+
+def _is_exact_thousand_jump(previous_value: Decimal | None, new_value: Decimal | None) -> bool:
+    if previous_value in {None, Decimal("0")} or new_value in {None, Decimal("0")}:
+        return False
+    return previous_value * Decimal("1000") == new_value or new_value * Decimal("1000") == previous_value
+
+
+def _append_thousand_jump_issue(
+    issues: list[ImportPrecheckIssue],
+    *,
+    row_number: int,
+    sku: str,
+    field_name: str,
+    original_value: str,
+    parsed_value: Decimal | None,
+    previous_value: Decimal | None,
+) -> None:
+    if not _is_exact_thousand_jump(previous_value, parsed_value):
+        return
+    issues.append(
+        ImportPrecheckIssue(
+            row=row_number,
+            sku=sku,
+            field=field_name,
+            original_value=original_value,
+            parsed_value=None if parsed_value is None else str(parsed_value),
+            risk_type="exact_x1000_jump_vs_existing",
+            blocking=True,
+        )
+    )
+
+
+def run_green_corner_import_precheck(db: Session, csv_rows: list[list[str]]) -> None:
+    issues: list[ImportPrecheckIssue] = []
+    product_cache: dict[str, Product | None] = {}
+    current_parent_sku: str | None = None
+
+    for row_number, row in enumerate(csv_rows, start=1):
+        if row_number == 1 and _looks_like_header_row(row):
+            continue
+
+        sku = _cell(row, LOYVERSE_PARENT_SKU_INDEX)
+        if _is_valid_loyverse_product_row(row):
+            current_parent_sku = sku
+            if sku not in product_cache:
+                product_cache[sku] = db.query(Product).filter(Product.sku == sku).one_or_none()
+            existing_product = product_cache[sku]
+
+            standard_cost_raw = _cell(row, LOYVERSE_AVERAGE_COST_INDEX)
+            inventory_raw = _cell(row, LOYVERSE_INVENTORY_INDEX)
+            low_stock_raw = _cell(row, LOYVERSE_LOW_STOCK_INDEX)
+            optimal_stock_raw = _cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX)
+            b2c_price_raw = _cell(row, LOYVERSE_B2C_PRICE_INDEX)
+
+            standard_cost = _parse_green_corner_decimal(
+                standard_cost_raw, row_number=row_number, sku=sku, field_name="standard_cost", issues=issues
+            )
+            current_inventory_qty = _parse_green_corner_decimal(
+                inventory_raw, row_number=row_number, sku=sku, field_name="current_inventory_qty", issues=issues
+            )
+            low_stock_qty = _parse_green_corner_decimal(
+                low_stock_raw, row_number=row_number, sku=sku, field_name="low_stock_qty", issues=issues
+            )
+            optimal_stock_qty = _parse_green_corner_decimal(
+                optimal_stock_raw, row_number=row_number, sku=sku, field_name="optimal_stock_qty", issues=issues
+            )
+            _parse_green_corner_decimal(
+                b2c_price_raw, row_number=row_number, sku=sku, field_name="b2c_price", issues=issues
+            )
+
+            if existing_product is not None:
+                _append_thousand_jump_issue(
+                    issues,
+                    row_number=row_number,
+                    sku=sku,
+                    field_name="current_inventory_qty",
+                    original_value=inventory_raw,
+                    parsed_value=current_inventory_qty,
+                    previous_value=existing_product.current_inventory_qty,
+                )
+                _append_thousand_jump_issue(
+                    issues,
+                    row_number=row_number,
+                    sku=sku,
+                    field_name="standard_cost",
+                    original_value=standard_cost_raw,
+                    parsed_value=standard_cost,
+                    previous_value=existing_product.standard_cost,
+                )
+                _append_thousand_jump_issue(
+                    issues,
+                    row_number=row_number,
+                    sku=sku,
+                    field_name="low_stock_qty",
+                    original_value=low_stock_raw,
+                    parsed_value=low_stock_qty,
+                    previous_value=existing_product.low_stock_qty,
+                )
+                _append_thousand_jump_issue(
+                    issues,
+                    row_number=row_number,
+                    sku=sku,
+                    field_name="optimal_stock_qty",
+                    original_value=optimal_stock_raw,
+                    parsed_value=optimal_stock_qty,
+                    previous_value=existing_product.optimal_stock_qty,
+                )
+
+            if current_inventory_qty is not None and standard_cost is not None:
+                inventory_value = current_inventory_qty * standard_cost
+                if abs(inventory_value) > MAX_LEDGER_INVENTORY_VALUE:
+                    issues.append(
+                        ImportPrecheckIssue(
+                            row=row_number,
+                            sku=sku,
+                            field="inventory_value",
+                            original_value=f"{inventory_raw} * {standard_cost_raw}",
+                            parsed_value=str(inventory_value),
+                            risk_type="inventory_value_exceeds_numeric_12_4",
+                            blocking=True,
+                        )
+                    )
+
+        component_sku = _cell(row, LOYVERSE_BOM_INCLUDED_SKU_INDEX)
+        component_quantity_raw = _cell(row, LOYVERSE_BOM_QUANTITY_INDEX)
+        if component_sku or component_quantity_raw:
+            component_quantity = _parse_green_corner_decimal(
+                component_quantity_raw,
+                row_number=row_number,
+                sku=current_parent_sku or sku or "(no-parent-sku)",
+                field_name="bom_quantity",
+                issues=issues,
+            )
+            if component_quantity is not None and abs(component_quantity) >= BOM_QUANTITY_SUSPICIOUS_THRESHOLD:
+                issues.append(
+                    ImportPrecheckIssue(
+                        row=row_number,
+                        sku=current_parent_sku or sku or "(no-parent-sku)",
+                        field="bom_quantity",
+                        original_value=component_quantity_raw,
+                        parsed_value=str(component_quantity),
+                        risk_type="suspicious_bom_quantity",
+                        blocking=True,
+                    )
+                )
+
+    if any(issue.blocking for issue in issues):
+        raise GreenCornerImportPrecheckError(issues)
+
+
 def import_loyverse_csv(db: Session, file_name: str, content: bytes) -> ImportSummary:
     text = _decode_csv_content(content)
     csv_rows, detected_delimiter = _parse_csv_rows(text)
+    run_green_corner_import_precheck(db, csv_rows)
 
     batch = ImportBatch(file_name=file_name)
     db.add(batch)
@@ -358,7 +616,7 @@ def _create_parent_records_from_loyverse_row(
     sku = product.sku
     name = product.name
     imported_category_name = _clean_optional_text(_cell(row, LOYVERSE_CATEGORY_INDEX))
-    imported_b2c_price = parse_decimal(_cell(row, LOYVERSE_B2C_PRICE_INDEX))
+    imported_b2c_price = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_B2C_PRICE_INDEX))
 
     header = ImportedBomHeader(
         import_batch=batch,
@@ -380,9 +638,9 @@ def _upsert_product_master_from_loyverse_row(db: Session, row: list[str]) -> Pro
 
     sku = _cell(row, LOYVERSE_PARENT_SKU_INDEX)
     name = _cell(row, LOYVERSE_PARENT_NAME_INDEX) or sku
-    standard_cost = parse_decimal(_cell(row, LOYVERSE_AVERAGE_COST_INDEX))
+    standard_cost = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_AVERAGE_COST_INDEX))
     imported_category_name = _clean_optional_text(_cell(row, LOYVERSE_CATEGORY_INDEX))
-    imported_b2c_price = parse_decimal(_cell(row, LOYVERSE_B2C_PRICE_INDEX))
+    imported_b2c_price = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_B2C_PRICE_INDEX))
 
     product = db.query(Product).filter(Product.sku == sku).one_or_none()
     if product is None:
@@ -403,10 +661,10 @@ def _apply_planning_snapshot_fields(product: Product, row: list[str]) -> None:
     product.available_for_sale_gc = available_for_sale
     product.active = available_for_sale
     product.supplier = _cell(row, LOYVERSE_SUPPLIER_INDEX) or None
-    product.current_inventory_qty = parse_decimal(_cell(row, LOYVERSE_INVENTORY_INDEX))
+    product.current_inventory_qty = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_INVENTORY_INDEX))
     if not getattr(product, "planning_zones_manual_override", False):
-        product.low_stock_qty = parse_decimal(_cell(row, LOYVERSE_LOW_STOCK_INDEX))
-        product.optimal_stock_qty = parse_decimal(_cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX))
+        product.low_stock_qty = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_LOW_STOCK_INDEX))
+        product.optimal_stock_qty = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_OPTIMAL_STOCK_INDEX))
 
 
 def _apply_category_enrichment(db: Session, product: Product, category_name: str | None) -> None:
@@ -447,7 +705,7 @@ def _clean_optional_text(value: str | None) -> str | None:
 
 def _extract_component_from_loyverse_row(row: list[str]) -> dict[str, str | Decimal | None]:
     component_sku = _cell(row, LOYVERSE_BOM_INCLUDED_SKU_INDEX)
-    quantity = parse_decimal(_cell(row, LOYVERSE_BOM_QUANTITY_INDEX))
+    quantity = parse_decimal_strict_green_corner(_cell(row, LOYVERSE_BOM_QUANTITY_INDEX))
     return {
         "sku": component_sku or None,
         "name": None,
@@ -489,7 +747,7 @@ def _create_parent_records(
 ) -> ImportedBomHeader:
     sku = _value(row, PARENT_SKU_KEYS)
     name = _value(row, PARENT_NAME_KEYS)
-    standard_cost = parse_decimal(_value(row, PARENT_COST_KEYS))
+    standard_cost = parse_decimal_strict_green_corner(_value(row, PARENT_COST_KEYS))
 
     product = db.query(Product).filter(Product.sku == sku).one_or_none()
     if product is None:
@@ -518,8 +776,8 @@ def _extract_component(row: dict[str, str]) -> dict[str, str | Decimal | None]:
     return {
         "sku": _value(row, COMPONENT_SKU_KEYS) or None,
         "name": _value(row, COMPONENT_NAME_KEYS) or None,
-        "quantity": parse_decimal(_value(row, COMPONENT_QUANTITY_KEYS)),
-        "cost": parse_decimal(_value(row, COMPONENT_COST_KEYS)),
+        "quantity": parse_decimal_strict_green_corner(_value(row, COMPONENT_QUANTITY_KEYS)),
+        "cost": parse_decimal_strict_green_corner(_value(row, COMPONENT_COST_KEYS)),
     }
 
 

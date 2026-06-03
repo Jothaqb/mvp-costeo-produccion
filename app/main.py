@@ -4,6 +4,7 @@ import os
 from collections import Counter
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from html import escape
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
@@ -154,7 +155,7 @@ from app.services.config_service import (
     validate_route_activity_sequence,
     validate_unique_code,
 )
-from app.services.import_service import import_loyverse_csv
+from app.services.import_service import GreenCornerImportPrecheckError, import_loyverse_csv
 from app.services.inventory_ledger_service import (
     InventoryInitializationResult,
     InventoryLedgerValidationError,
@@ -7548,7 +7549,35 @@ async def create_import(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     content = await file.read()
-    summary = import_loyverse_csv(db, file.filename or "loyverse.csv", content)
+    try:
+        summary = import_loyverse_csv(db, file.filename or "loyverse.csv", content)
+    except GreenCornerImportPrecheckError as exc:
+        db.rollback()
+        issues_html = "".join(
+            (
+                "<tr>"
+                f"<td>{issue.row}</td>"
+                f"<td>{escape(issue.sku)}</td>"
+                f"<td>{escape(issue.field)}</td>"
+                f"<td>{escape(issue.original_value)}</td>"
+                f"<td>{escape(issue.parsed_value or '')}</td>"
+                f"<td>{escape(issue.risk_type)}</td>"
+                f"<td>{'yes' if issue.blocking else 'no'}</td>"
+                "</tr>"
+            )
+            for issue in exc.issues[:200]
+        )
+        html = (
+            "<!doctype html><html><head><title>Import blocked</title></head><body>"
+            "<h1>Import blocked by Green Corner decimal precheck</h1>"
+            "<p>The CSV contains blocking decimal or range issues. No records were written.</p>"
+            "<table border='1' cellpadding='6' cellspacing='0'>"
+            "<thead><tr><th>Row</th><th>SKU</th><th>Field</th><th>Original</th><th>Parsed</th><th>Risk</th><th>Blocking</th></tr></thead>"
+            f"<tbody>{issues_html}</tbody></table>"
+            "<p><a href='/imports/new'>Back to import</a></p>"
+            "</body></html>"
+        )
+        return HTMLResponse(content=html, status_code=400)
     return RedirectResponse(url=f"/imports/{summary.batch_id}", status_code=303)
 
 
