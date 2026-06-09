@@ -16,6 +16,7 @@ from app.models import (
     ProductBomLine,
 )
 from app.services.packaging_batch_costing_service import invalidate_packaging_batch_line_cost_distribution
+from app.services.product_bom_service import get_or_seed_product_bom_in_session
 
 
 ZERO = Decimal("0")
@@ -169,14 +170,14 @@ def sync_packaging_batch_line_material_snapshot(
                 "Product must be manufactured to refresh Material Snapshot."
             )
 
-        bom_header = _get_active_product_bom_header(db, line.product_id)
+        bom_header = _get_usable_product_bom_header(db, product)
         if bom_header is None:
             raise PackagingBatchMaterialValidationError(
-                f"Product {product.sku} does not have an active BOM."
+                f"Product {product.sku} does not have a materialized BOM."
             )
         if not bom_header.lines:
             raise PackagingBatchMaterialValidationError(
-                f"Active BOM for product {product.sku} has no lines."
+                "Product is manufactured but has no BOM lines configured."
             )
 
         _replace_line_material_snapshot(db, line, bom_header)
@@ -260,17 +261,22 @@ def _calculate_required_quantity(
     return line.planned_qty * quantity_standard
 
 
-def _get_active_product_bom_header(db: Session, product_id: int) -> ProductBomHeader | None:
+def _get_usable_product_bom_header(db: Session, product: Product) -> ProductBomHeader | None:
+    bom_header = get_or_seed_product_bom_in_session(db, product)
+    if bom_header is None:
+        return None
+
+    db.refresh(bom_header)
+    if "lines" in bom_header.__dict__:
+        db.expire(bom_header, ["lines"])
+
     return (
         db.query(ProductBomHeader)
         .options(
             joinedload(ProductBomHeader.lines).joinedload(ProductBomLine.component_product),
             joinedload(ProductBomHeader.lines).joinedload(ProductBomLine.source_imported_bom_line),
         )
-        .filter(
-            ProductBomHeader.product_id == product_id,
-            ProductBomHeader.active.is_(True),
-        )
+        .filter(ProductBomHeader.id == bom_header.id)
         .one_or_none()
     )
 

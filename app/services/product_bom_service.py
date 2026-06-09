@@ -64,8 +64,28 @@ def get_product_bom(db: Session, product_id: int) -> ProductBomHeader | None:
     )
 
 
+def _get_product_bom_header_any_status(db: Session, product_id: int) -> ProductBomHeader | None:
+    return (
+        db.query(ProductBomHeader)
+        .options(
+            joinedload(ProductBomHeader.product),
+            joinedload(ProductBomHeader.lines).joinedload(ProductBomLine.component_product),
+        )
+        .filter(ProductBomHeader.product_id == product_id)
+        .one_or_none()
+    )
+
+
 def get_or_seed_product_bom(db: Session, product: Product) -> ProductBomHeader | None:
-    existing = get_product_bom(db, product.id)
+    header = get_or_seed_product_bom_in_session(db, product)
+    if header is None:
+        return None
+    db.commit()
+    return get_product_bom(db, product.id)
+
+
+def get_or_seed_product_bom_in_session(db: Session, product: Product) -> ProductBomHeader | None:
+    existing = _get_product_bom_header_any_status(db, product.id)
     if existing is not None:
         return existing
 
@@ -73,6 +93,14 @@ def get_or_seed_product_bom(db: Session, product: Product) -> ProductBomHeader |
     if imported_header is None:
         return None
 
+    return _seed_product_bom_from_imported_header(db, product, imported_header)
+
+
+def _seed_product_bom_from_imported_header(
+    db: Session,
+    product: Product,
+    imported_header: ImportedBomHeader,
+) -> ProductBomHeader:
     header = ProductBomHeader(
         product_id=product.id,
         name=f"{product.sku} BOM",
@@ -112,9 +140,8 @@ def get_or_seed_product_bom(db: Session, product: Product) -> ProductBomHeader |
                 updated_at=datetime.utcnow(),
             )
         )
-
-    db.commit()
-    return get_product_bom(db, product.id)
+    db.flush()
+    return header
 
 
 def list_bom_component_options(
