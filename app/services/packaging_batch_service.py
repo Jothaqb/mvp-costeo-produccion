@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session, joinedload
@@ -12,11 +13,18 @@ from app.services.packaging_batch_activity_service import (
     has_packaging_batch_captured_activity_times,
 )
 from app.services.packaging_batch_costing_service import invalidate_packaging_batch_line_cost_distribution
-from app.services.packaging_batch_material_service import invalidate_packaging_batch_line_material_snapshot
+from app.services.packaging_batch_material_service import sync_packaging_batch_line_material_snapshot
 
 
 class PackagingBatchValidationError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class PackagingBatchLineSaveResult:
+    line: PackagingBatchLine
+    auto_refresh_attempted: bool = False
+    auto_refresh_error: str | None = None
 
 
 PACKAGING_BATCH_SEQUENCE_NAME = "packaging_batch"
@@ -193,7 +201,7 @@ def add_packaging_batch_real_line(
     product_id: int,
     planned_qty: str | Decimal,
     notes: str | None,
-) -> PackagingBatchLine:
+) -> PackagingBatchLineSaveResult:
     batch = get_packaging_batch(db, batch_id)
     _ensure_draft(batch)
     product = (
@@ -224,9 +232,14 @@ def add_packaging_batch_real_line(
     )
     db.add(line)
     invalidate_packaging_batch_line_cost_distribution(db, batch)
+    auto_refresh_error = sync_packaging_batch_line_material_snapshot(db, line=line).error
     db.commit()
     db.refresh(line)
-    return line
+    return PackagingBatchLineSaveResult(
+        line=line,
+        auto_refresh_attempted=True,
+        auto_refresh_error=auto_refresh_error,
+    )
 
 
 def update_packaging_batch_line(
@@ -236,19 +249,23 @@ def update_packaging_batch_line(
     line_id: int,
     planned_qty: str | Decimal,
     notes: str | None,
-) -> PackagingBatchLine:
+) -> PackagingBatchLineSaveResult:
     batch = get_packaging_batch(db, batch_id)
     _ensure_draft(batch)
     line = _get_batch_line(batch, line_id)
     original_planned_qty = line.planned_qty
     line.planned_qty = _parse_positive_decimal(planned_qty, "Planned quantity")
     line.notes = _normalize_optional_text(notes)
+    auto_refresh_error = None
     if line.planned_qty != original_planned_qty:
-        invalidate_packaging_batch_line_material_snapshot(db, line, status="pending")
-        invalidate_packaging_batch_line_cost_distribution(db, batch)
+        auto_refresh_error = sync_packaging_batch_line_material_snapshot(db, line=line).error
     db.commit()
     db.refresh(line)
-    return line
+    return PackagingBatchLineSaveResult(
+        line=line,
+        auto_refresh_attempted=line.planned_qty != original_planned_qty,
+        auto_refresh_error=auto_refresh_error,
+    )
 
 
 def delete_packaging_batch_line(db: Session, *, batch_id: int, line_id: int) -> None:

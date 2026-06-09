@@ -102,6 +102,40 @@
   </section>
 
   <section>
+    <h2>Ruta / operaciones</h2>
+    {% if batch.activities %}
+      <table>
+        <thead>
+          <tr>
+            <th>Secuencia</th>
+            <th>Operación / Activity</th>
+            <th>Descripción</th>
+            <th>Hora inicio</th>
+            <th>Hora fin</th>
+            <th>Tiempo real</th>
+            <th>Observaciones / firma</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for activity in batch.activities %}
+            <tr>
+              <td>{{ activity.sequence }}</td>
+              <td>{{ activity.activity_code_snapshot }} - {{ activity.activity_name_snapshot }}</td>
+              <td>{{ activity.notes or "" }}</td>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+              <td>&nbsp;</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No route activities are currently snapshot into this Packaging Batch.</p>
+    {% endif %}
+  </section>
+
+  <section>
     <h2>Observaciones del operario</h2>
     <div class="write-area"></div>
   </section>

@@ -10,6 +10,16 @@
 
   <section>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if warning %}
+      <div class="alert-panel alert-panel-warning">
+        <p>{{ warning }}</p>
+      </div>
+    {% endif %}
+    {% if message %}
+      <div class="alert-panel alert-panel-success">
+        <p>{{ message }}</p>
+      </div>
+    {% endif %}
 
     <form method="post" action="{% if batch %}/packaging-batches/{{ batch.id }}/edit{% else %}/packaging-batches{% endif %}">
       <label for="production_date">Production date</label>
@@ -159,7 +169,12 @@
                 <td>{{ line.product_name_snapshot }}</td>
                 <td><input name="planned_qty" value="{{ line.planned_qty }}" form="{{ edit_form_id }}"></td>
                 <td>{{ line.unit_snapshot or "" }}</td>
-                <td>{{ line.material_snapshot_status }}</td>
+                <td>
+                  {{ line.material_snapshot_status }}
+                  {% if line.material_snapshot_status == "error" %}
+                    <div class="muted-inline">Review BOM or product setup, then retry Refresh Material Snapshot.</div>
+                  {% endif %}
+                </td>
                 <td>{% if line.material_snapshot_cost_total is not none %}{{ fmt.number_3(line.material_snapshot_cost_total) }}{% else %}-{% endif %}</td>
                 <td>{% if line.real_labor_cost is not none %}{{ fmt.money_crc(line.real_labor_cost) }}{% else %}-{% endif %}</td>
                 <td>{% if line.real_overhead_cost is not none %}{{ fmt.money_crc(line.real_overhead_cost) }}{% else %}-{% endif %}</td>

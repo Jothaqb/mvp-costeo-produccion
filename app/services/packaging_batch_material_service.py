@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
@@ -10,6 +11,7 @@ from app.models import (
     PackagingBatch,
     PackagingBatchLine,
     PackagingBatchLineMaterial,
+    Product,
     ProductBomHeader,
     ProductBomLine,
 )
@@ -21,6 +23,15 @@ ZERO = Decimal("0")
 
 class PackagingBatchMaterialValidationError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class PackagingBatchMaterialRefreshOutcome:
+    error: str | None = None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.error is None
 
 
 def get_packaging_batch_material_summary(batch: PackagingBatch) -> dict[str, object]:
@@ -115,36 +126,67 @@ def refresh_packaging_batch_line_material_snapshot(
     line_id: int,
 ) -> PackagingBatchLine:
     batch, line = get_packaging_batch_line_with_materials(db, batch_id=batch_id, line_id=line_id)
-    if batch.status != "draft":
-        raise PackagingBatchMaterialValidationError("Material Snapshot can only be refreshed while the batch is draft.")
-    if line.product_id is None or line.product is None:
-        raise PackagingBatchMaterialValidationError("Packaging batch line must have a real product.")
-    if not line.product.active:
-        raise PackagingBatchMaterialValidationError("Product must be active to refresh Material Snapshot.")
-    if not line.product.is_manufactured:
-        raise PackagingBatchMaterialValidationError("Product must be manufactured to refresh Material Snapshot.")
-
-    try:
-        bom_header = _get_active_product_bom_header(db, line.product_id)
-        if bom_header is None:
-            raise PackagingBatchMaterialValidationError(
-                f"Product {line.product.sku} does not have an active BOM."
-            )
-        if not bom_header.lines:
-            raise PackagingBatchMaterialValidationError(
-                f"Active BOM for product {line.product.sku} has no lines."
-            )
-        _replace_line_material_snapshot(db, line, bom_header)
-        invalidate_packaging_batch_line_cost_distribution(db, batch)
-        db.commit()
-    except PackagingBatchMaterialValidationError:
-        invalidate_packaging_batch_line_material_snapshot(db, line, status="error")
-        invalidate_packaging_batch_line_cost_distribution(db, batch)
-        db.commit()
-        raise
+    outcome = sync_packaging_batch_line_material_snapshot(db, line=line)
+    db.commit()
+    if outcome.error:
+        raise PackagingBatchMaterialValidationError(outcome.error)
 
     db.refresh(line)
     return line
+
+
+def sync_packaging_batch_line_material_snapshot(
+    db: Session,
+    *,
+    line: PackagingBatchLine,
+) -> PackagingBatchMaterialRefreshOutcome:
+    if line.id is None:
+        db.flush()
+
+    batch = line.packaging_batch
+    if batch is None and line.packaging_batch_id is not None:
+        batch = db.query(PackagingBatch).filter(PackagingBatch.id == line.packaging_batch_id).one_or_none()
+        line.packaging_batch = batch
+
+    try:
+        if batch is None:
+            raise PackagingBatchMaterialValidationError("Packaging batch line is not attached to a batch.")
+        if batch.status != "draft":
+            raise PackagingBatchMaterialValidationError(
+                "Material Snapshot can only be refreshed while the batch is draft."
+            )
+
+        product = line.product
+        if product is None and line.product_id is not None:
+            product = db.query(Product).filter(Product.id == line.product_id).one_or_none()
+            line.product = product
+        if line.product_id is None or product is None:
+            raise PackagingBatchMaterialValidationError("Packaging batch line must have a real product.")
+        if not product.active:
+            raise PackagingBatchMaterialValidationError("Product must be active to refresh Material Snapshot.")
+        if not product.is_manufactured:
+            raise PackagingBatchMaterialValidationError(
+                "Product must be manufactured to refresh Material Snapshot."
+            )
+
+        bom_header = _get_active_product_bom_header(db, line.product_id)
+        if bom_header is None:
+            raise PackagingBatchMaterialValidationError(
+                f"Product {product.sku} does not have an active BOM."
+            )
+        if not bom_header.lines:
+            raise PackagingBatchMaterialValidationError(
+                f"Active BOM for product {product.sku} has no lines."
+            )
+
+        _replace_line_material_snapshot(db, line, bom_header)
+        invalidate_packaging_batch_line_cost_distribution(db, batch)
+        return PackagingBatchMaterialRefreshOutcome()
+    except PackagingBatchMaterialValidationError as exc:
+        invalidate_packaging_batch_line_material_snapshot(db, line, status="error")
+        if batch is not None:
+            invalidate_packaging_batch_line_cost_distribution(db, batch)
+        return PackagingBatchMaterialRefreshOutcome(error=str(exc))
 
 
 def invalidate_packaging_batch_line_material_snapshot(

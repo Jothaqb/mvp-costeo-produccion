@@ -2717,6 +2717,8 @@ def _packaging_batch_form_context(
     title: str,
     batch: PackagingBatch | None = None,
     error: str | None = None,
+    warning: str | None = None,
+    message: str | None = None,
     form_values: dict[str, str] | None = None,
 ) -> dict[str, object]:
     route_preview_map = get_packaging_route_preview_map(db)
@@ -2753,6 +2755,8 @@ def _packaging_batch_form_context(
         "title": title,
         "batch": batch,
         "error": error,
+        "warning": warning,
+        "message": message,
         "form_values": values,
         "route_preview_map": route_preview_map,
         "selected_route_preview": selected_route_preview,
@@ -8460,6 +8464,8 @@ async def packaging_batch_close_route(
 def edit_packaging_batch_form(
     batch_id: int,
     request: Request,
+    message: str | None = Query(default=None),
+    warning: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     require_permission(request, "production_order.edit")
@@ -8487,6 +8493,8 @@ def edit_packaging_batch_form(
             db,
             title=f"{batch.internal_batch_number} - Edit",
             batch=batch,
+            warning=warning,
+            message=message,
         ),
     )
 
@@ -8546,13 +8554,22 @@ def add_packaging_batch_line_route(
     try:
         if not str(product_id or "").strip():
             raise PackagingBatchValidationError("Product is required.")
-        add_packaging_batch_real_line(
+        result = add_packaging_batch_real_line(
             db,
             batch_id=batch_id,
             product_id=int(str(product_id).strip()),
             planned_qty=planned_qty,
             notes=notes,
         )
+        if result.auto_refresh_error:
+            return _redirect(
+                f"/packaging-batches/{batch_id}/edit?warning="
+                f"{quote(f'Line saved. Material Snapshot refresh failed: {result.auto_refresh_error}')}"
+            )
+        if result.auto_refresh_attempted:
+            return _redirect(
+                f"/packaging-batches/{batch_id}/edit?message={quote('Line saved and Material Snapshot refreshed.')}"
+            )
         return _redirect(f"/packaging-batches/{batch_id}/edit")
     except (PackagingBatchValidationError, ValueError) as exc:
         batch = get_packaging_batch(db, batch_id)
@@ -8581,13 +8598,22 @@ def edit_packaging_batch_line_route(
 ) -> Response:
     require_permission(request, "production_order.edit")
     try:
-        update_packaging_batch_line(
+        result = update_packaging_batch_line(
             db,
             batch_id=batch_id,
             line_id=line_id,
             planned_qty=planned_qty,
             notes=notes,
         )
+        if result.auto_refresh_error:
+            return _redirect(
+                f"/packaging-batches/{batch_id}/edit?warning="
+                f"{quote(f'Line saved. Material Snapshot refresh failed: {result.auto_refresh_error}')}"
+            )
+        if result.auto_refresh_attempted and result.line.material_snapshot_status == "ready":
+            return _redirect(
+                f"/packaging-batches/{batch_id}/edit?message={quote('Line saved and Material Snapshot refreshed.')}"
+            )
         return _redirect(f"/packaging-batches/{batch_id}/edit")
     except PackagingBatchValidationError as exc:
         batch = get_packaging_batch(db, batch_id)
