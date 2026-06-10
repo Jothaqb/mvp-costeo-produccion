@@ -6545,7 +6545,14 @@ def b2b_customer_products(customer_id: int, request: Request, db: Session = Depe
     return templates.TemplateResponse(
         request=request,
         name="b2b_customer_products.html",
-        context={"title": "B2B Customer Products", "customer": customer, "products": products, "error": None},
+        context={
+            "title": "B2B Customer Products",
+            "customer": customer,
+            "products": products,
+            "error": None,
+            "show_add_product_form": False,
+            "submitted_add_product": None,
+        },
     )
 
 
@@ -6590,7 +6597,19 @@ def add_b2b_customer_product(
         return templates.TemplateResponse(
             request=request,
             name="b2b_customer_products.html",
-            context={"title": "B2B Customer Products", "customer": customer, "products": products, "error": str(exc)},
+            context={
+                "title": "B2B Customer Products",
+                "customer": customer,
+                "products": products,
+                "error": str(exc),
+                "show_add_product_form": True,
+                "submitted_add_product": {
+                    "sku": sku,
+                    "description": description,
+                    "distributor_price": distributor_price,
+                    "active": active,
+                },
+            },
         )
 
 
@@ -6650,7 +6669,14 @@ def update_b2b_customer_product(
         return templates.TemplateResponse(
             request=request,
             name="b2b_customer_products.html",
-            context={"title": "B2B Customer Products", "customer": customer, "products": products, "error": str(exc)},
+            context={
+                "title": "B2B Customer Products",
+                "customer": customer,
+                "products": products,
+                "error": str(exc),
+                "show_add_product_form": False,
+                "submitted_add_product": None,
+            },
         )
 
 
@@ -6865,7 +6891,8 @@ def new_b2b_order(
             "catalog": catalog,
             "channels": channels,
             "error": None,
-            "min_delivery_date": date.today() + timedelta(days=1),
+            "min_delivery_date": date.today(),
+            "submitted_delivery_date": "",
         },
     )
 
@@ -6905,7 +6932,8 @@ async def create_b2b_order(request: Request, db: Session = Depends(get_db)) -> R
                 "catalog": catalog,
                 "channels": channels,
                 "error": str(exc),
-                "min_delivery_date": date.today() + timedelta(days=1),
+                "min_delivery_date": date.today(),
+                "submitted_delivery_date": str(form.get("delivery_date", "") or ""),
                 "submitted_observations": observations,
                 "submitted_b2b_channel_id": b2b_channel_id,
                 "submitted_lines": line_inputs,

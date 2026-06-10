@@ -64,8 +64,8 @@ def parse_required_decimal(value: str | Decimal | None, field_name: str) -> Deci
 
 
 def validate_future_delivery_date(delivery_date: date) -> None:
-    if delivery_date <= date.today():
-        raise B2BValidationError("Delivery date must be a future date.")
+    if delivery_date < date.today():
+        raise B2BValidationError("Delivery date cannot be in the past.")
 
 
 def create_customer(

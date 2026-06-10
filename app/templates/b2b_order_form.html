@@ -38,7 +38,7 @@
       <form method="post" action="/b2b/orders">
         <input type="hidden" name="customer_id" value="{{ selected_customer.id }}">
         <label for="delivery_date">Delivery date</label>
-        <input id="delivery_date" name="delivery_date" type="date" min="{{ min_delivery_date }}" required>
+        <input id="delivery_date" name="delivery_date" type="date" min="{{ min_delivery_date }}" value="{{ submitted_delivery_date or '' }}" required>
 
         <label for="b2b_channel_id">B2B Channel</label>
         <select id="b2b_channel_id" name="b2b_channel_id" required>
@@ -68,10 +68,23 @@
               <tr class="b2b-order-line">
                 <td>
                   <input type="hidden" name="line_index" value="{{ index }}">
+                  <input
+                    class="b2b-product-filter"
+                    type="search"
+                    placeholder="Filter by SKU or description"
+                    aria-label="Filter products for line {{ index }}"
+                    value="{{ submitted_line.sku if submitted_line else '' }}"
+                  >
                   <select class="b2b-product-select" name="line_sku_{{ index }}">
                     <option value="">Select product...</option>
                     {% for product in catalog %}
-                      <option value="{{ product.sku }}" data-price="{{ product.distributor_price }}" {% if submitted_line and submitted_line.sku == product.sku %}selected{% endif %}>{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
+                      <option
+                        value="{{ product.sku }}"
+                        data-price="{{ product.distributor_price }}"
+                        data-sku="{{ product.sku }}"
+                        data-description="{{ product.description }}"
+                        {% if submitted_line and submitted_line.sku == product.sku %}selected{% endif %}
+                      >{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
                     {% endfor %}
                   </select>
                 </td>
@@ -95,10 +108,21 @@
         <tr class="b2b-order-line">
           <td>
             <input type="hidden" name="line_index" value="__index__">
+            <input
+              class="b2b-product-filter"
+              type="search"
+              placeholder="Filter by SKU or description"
+              aria-label="Filter products for line __index__"
+            >
             <select class="b2b-product-select" name="line_sku___index__">
               <option value="">Select product...</option>
               {% for product in catalog %}
-                <option value="{{ product.sku }}" data-price="{{ product.distributor_price }}">{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
+                <option
+                  value="{{ product.sku }}"
+                  data-price="{{ product.distributor_price }}"
+                  data-sku="{{ product.sku }}"
+                  data-description="{{ product.description }}"
+                >{{ product.description }} ({{ product.sku }}) - {{ fmt.money_crc(product.distributor_price) }}</option>
               {% endfor %}
             </select>
           </td>
@@ -119,6 +143,107 @@
 
     function b2bFormatMoney(value) {
       return "\u20a1" + Math.round(value).toLocaleString("en-US");
+    }
+
+    function b2bNormalizeText(value) {
+      return String(value || "").trim().toLowerCase();
+    }
+
+    function b2bRowOptions(row) {
+      if (row._b2bCatalogOptions) {
+        return row._b2bCatalogOptions;
+      }
+      const select = row.querySelector(".b2b-product-select");
+      if (!select) {
+        row._b2bCatalogOptions = [];
+        return row._b2bCatalogOptions;
+      }
+      row._b2bCatalogOptions = Array.from(select.options)
+        .slice(1)
+        .map((option) => ({
+          value: option.value,
+          label: option.textContent,
+          price: option.dataset.price || "",
+          sku: option.dataset.sku || option.value || "",
+          description: option.dataset.description || option.textContent || "",
+        }));
+      return row._b2bCatalogOptions;
+    }
+
+    function b2bBuildOption(optionData, isSelected) {
+      const option = document.createElement("option");
+      option.value = optionData.value;
+      option.textContent = optionData.label;
+      option.dataset.price = optionData.price || "";
+      option.dataset.sku = optionData.sku || "";
+      option.dataset.description = optionData.description || "";
+      option.selected = Boolean(isSelected);
+      return option;
+    }
+
+    function b2bSelectedFilterText(optionData) {
+      const parts = [optionData.sku, optionData.description].filter(Boolean);
+      return parts.join(" - ");
+    }
+
+    function b2bApplyProductFilter(row) {
+      const filterInput = row.querySelector(".b2b-product-filter");
+      const select = row.querySelector(".b2b-product-select");
+      if (!filterInput || !select) {
+        return;
+      }
+
+      const allOptions = b2bRowOptions(row);
+      const selectedValue = select.value;
+      const selectedOption = allOptions.find((option) => option.value === selectedValue) || null;
+      const query = b2bNormalizeText(filterInput.value);
+      let matches = allOptions.filter((option) => {
+        if (!query) {
+          return true;
+        }
+        const haystack = b2bNormalizeText(`${option.sku} ${option.description} ${option.label}`);
+        return haystack.includes(query);
+      });
+
+      if (selectedOption && !matches.some((option) => option.value === selectedOption.value)) {
+        matches = [selectedOption, ...matches];
+      }
+
+      select.replaceChildren();
+      select.appendChild(new Option("Select product...", ""));
+      matches.forEach((optionData) => {
+        select.appendChild(b2bBuildOption(optionData, optionData.value === selectedValue));
+      });
+
+      if (selectedValue && matches.some((option) => option.value === selectedValue)) {
+        select.value = selectedValue;
+      }
+
+      if (query) {
+        select.size = Math.min(Math.max(matches.length + 1, 2), 8);
+      } else {
+        select.size = 1;
+      }
+    }
+
+    function b2bInitializeRow(row) {
+      if (!row || row.dataset.b2bFilterReady === "true") {
+        return;
+      }
+      const select = row.querySelector(".b2b-product-select");
+      const filterInput = row.querySelector(".b2b-product-filter");
+      if (!select || !filterInput) {
+        return;
+      }
+      b2bRowOptions(row);
+      if (!filterInput.value && select.value) {
+        const selectedOption = row._b2bCatalogOptions.find((option) => option.value === select.value);
+        if (selectedOption) {
+          filterInput.value = b2bSelectedFilterText(selectedOption);
+        }
+      }
+      b2bApplyProductFilter(row);
+      row.dataset.b2bFilterReady = "true";
     }
 
     function b2bUpdateRemoveButtons() {
@@ -170,13 +295,41 @@
 
     if (b2bLinesBody) {
       b2bLinesBody.addEventListener("change", (event) => {
-        if (event.target.matches(".b2b-product-select, .b2b-quantity-input")) {
+        if (event.target.matches(".b2b-product-select")) {
+          const row = event.target.closest(".b2b-order-line");
+          const selectedOption = row && row._b2bCatalogOptions
+            ? row._b2bCatalogOptions.find((option) => option.value === event.target.value)
+            : null;
+          const filterInput = row ? row.querySelector(".b2b-product-filter") : null;
+          if (filterInput) {
+            filterInput.value = selectedOption ? b2bSelectedFilterText(selectedOption) : "";
+          }
+          event.target.size = 1;
+          b2bRecalculate();
+          return;
+        }
+        if (event.target.matches(".b2b-quantity-input")) {
           b2bRecalculate();
         }
       });
       b2bLinesBody.addEventListener("input", (event) => {
-        if (event.target.matches(".b2b-product-select, .b2b-quantity-input")) {
+        if (event.target.matches(".b2b-product-filter")) {
+          const row = event.target.closest(".b2b-order-line");
+          if (row) {
+            b2bApplyProductFilter(row);
+          }
+          return;
+        }
+        if (event.target.matches(".b2b-quantity-input")) {
           b2bRecalculate();
+        }
+      });
+      b2bLinesBody.addEventListener("focusout", (event) => {
+        if (!event.target.matches(".b2b-product-select")) {
+          return;
+        }
+        if (event.target.size > 1 && !event.target.value) {
+          event.target.size = 1;
         }
       });
       b2bLinesBody.addEventListener("click", (event) => {
@@ -197,10 +350,15 @@
         const html = b2bLineTemplate.innerHTML.replace(/__index__/g, index);
         b2bLinesBody.insertAdjacentHTML("beforeend", html);
         b2bNextLineIndex += 1;
+        const newRow = b2bLinesBody.lastElementChild;
+        if (newRow) {
+          b2bInitializeRow(newRow);
+        }
         b2bRecalculate();
       });
     }
 
+    document.querySelectorAll("#b2b-lines-body .b2b-order-line").forEach((row) => b2bInitializeRow(row));
     b2bRecalculate();
   </script>
 {% endblock %}

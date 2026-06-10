@@ -10,40 +10,47 @@
     <p><a href="/b2b/customers">Customers</a></p>
 
     {% if can_edit_customer_prices %}
-      <h2>Add product</h2>
-      <form method="post" action="/b2b/customers/{{ customer.id }}/products">
-        <label for="product_lookup">Product lookup</label>
-        <input
-          id="product_lookup"
-          type="search"
-          autocomplete="off"
-          placeholder="Search by SKU, name, or description"
-          data-product-search-url="/master-data/products/search"
-        >
-        <div id="product_lookup_results" class="lookup-results" hidden></div>
+      <p>
+        <button type="button" class="button" id="toggle_add_product_form" aria-expanded="{{ 'true' if show_add_product_form else 'false' }}">
+          Add product
+        </button>
+      </p>
+      <div id="add_product_form_panel" {% if not show_add_product_form %}hidden{% endif %}>
+        <h2>Add product</h2>
+        <form method="post" action="/b2b/customers/{{ customer.id }}/products">
+          <label for="product_lookup">Product lookup</label>
+          <input
+            id="product_lookup"
+            type="search"
+            autocomplete="off"
+            placeholder="Search by SKU, name, or description"
+            data-product-search-url="/master-data/products/search"
+          >
+          <div id="product_lookup_results" class="lookup-results" hidden></div>
 
-        <label for="sku">SKU</label>
-        <input id="sku" name="sku" required>
+          <label for="sku">SKU</label>
+          <input id="sku" name="sku" value="{{ submitted_add_product.sku if submitted_add_product else '' }}" required>
 
-        <label for="description">Description</label>
-        <input id="description" name="description" required>
+          <label for="description">Description</label>
+          <input id="description" name="description" value="{{ submitted_add_product.description if submitted_add_product else '' }}" required>
 
-        <div class="lookup-reference-grid">
-          <p><strong>B2C Price:</strong> <span id="selected_b2c_price">-</span></p>
-          <p><strong>Product Cost:</strong> <span id="selected_standard_cost">-</span></p>
-          <p><strong>Gross Margin %:</strong> <span id="selected_gross_margin">-</span></p>
-        </div>
+          <div class="lookup-reference-grid">
+            <p><strong>B2C Price:</strong> <span id="selected_b2c_price">-</span></p>
+            <p><strong>Product Cost:</strong> <span id="selected_standard_cost">-</span></p>
+            <p><strong>Gross Margin %:</strong> <span id="selected_gross_margin">-</span></p>
+          </div>
 
-        <label for="distributor_price">Distributor price</label>
-        <input id="distributor_price" name="distributor_price" required>
+          <label for="distributor_price">Distributor price</label>
+          <input id="distributor_price" name="distributor_price" value="{{ submitted_add_product.distributor_price if submitted_add_product else '' }}" required>
 
-        <label>
-          <input type="checkbox" name="active" value="true" checked>
-          Active
-        </label>
+          <label>
+            <input type="checkbox" name="active" value="true" {% if submitted_add_product is none or submitted_add_product.active %}checked{% endif %}>
+            Active
+          </label>
 
-        <button type="submit">Add product</button>
-      </form>
+          <button type="submit">Add product</button>
+        </form>
+      </div>
     {% else %}
       <p class="muted-inline">You can review customer-specific products here, but you do not have permission to change pricing.</p>
     {% endif %}
@@ -51,9 +58,16 @@
 
   <section>
     <h2>Catalog and Pricing</h2>
+    <label for="assigned_product_filter">Find assigned product</label>
+    <input id="assigned_product_filter" type="search" placeholder="Filter by SKU or description">
     {% if can_edit_customer_prices %}
       {% for product in products %}
-        <form method="post" action="/b2b/customers/{{ customer.id }}/products/{{ product.id }}/edit">
+        <form
+          method="post"
+          action="/b2b/customers/{{ customer.id }}/products/{{ product.id }}/edit"
+          class="b2b-customer-product-row"
+          data-product-search="{{ product.sku }} {{ product.description }}"
+        >
           <p><strong>{{ product.sku }}</strong></p>
           <label for="description_{{ product.id }}">Description</label>
           <input id="description_{{ product.id }}" name="description" value="{{ product.description }}" required>
@@ -81,9 +95,9 @@
             <th>Active</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="assigned_products_table_body">
           {% for product in products %}
-            <tr>
+            <tr class="b2b-customer-product-row" data-product-search="{{ product.sku }} {{ product.description }}">
               <td>{{ product.sku }}</td>
               <td>{{ product.description }}</td>
               <td>{{ fmt.money_crc(product.distributor_price) }}</td>
@@ -97,9 +111,28 @@
     {% endif %}
   </section>
 
+  <script>
+    (function () {
+      const assignedProductFilter = document.getElementById("assigned_product_filter");
+      const assignedProductRows = Array.from(document.querySelectorAll(".b2b-customer-product-row"));
+      if (!assignedProductFilter || !assignedProductRows.length) {
+        return;
+      }
+      assignedProductFilter.addEventListener("input", () => {
+        const query = assignedProductFilter.value.trim().toLowerCase();
+        assignedProductRows.forEach((row) => {
+          const searchText = String(row.dataset.productSearch || "").toLowerCase();
+          row.hidden = Boolean(query) && !searchText.includes(query);
+        });
+      });
+    })();
+  </script>
+
   {% if can_edit_customer_prices %}
     <script>
       (function () {
+        const addProductToggleButton = document.getElementById("toggle_add_product_form");
+        const addProductFormPanel = document.getElementById("add_product_form_panel");
         const lookupInput = document.getElementById("product_lookup");
         const resultsEl = document.getElementById("product_lookup_results");
         const skuInput = document.getElementById("sku");
@@ -108,6 +141,24 @@
         const b2cPriceEl = document.getElementById("selected_b2c_price");
         const standardCostEl = document.getElementById("selected_standard_cost");
         const grossMarginEl = document.getElementById("selected_gross_margin");
+
+        function syncAddProductToggle() {
+          if (!addProductToggleButton || !addProductFormPanel) {
+            return;
+          }
+          const isOpen = !addProductFormPanel.hidden;
+          addProductToggleButton.textContent = isOpen ? "Hide add product" : "Add product";
+          addProductToggleButton.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        }
+
+        if (addProductToggleButton && addProductFormPanel) {
+          syncAddProductToggle();
+          addProductToggleButton.addEventListener("click", () => {
+            addProductFormPanel.hidden = !addProductFormPanel.hidden;
+            syncAddProductToggle();
+          });
+        }
+
         if (!lookupInput || !resultsEl || !skuInput || !descriptionInput || !distributorPriceInput) {
           return;
         }
