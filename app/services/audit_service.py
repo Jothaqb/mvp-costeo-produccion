@@ -72,6 +72,7 @@ def format_audit_payload_for_display(payload: Any) -> str:
 def snapshot_product_for_audit(product: Product) -> dict[str, Any]:
     category = getattr(product, "category", None)
     supplier_record = getattr(product, "supplier_record", None)
+    default_route = getattr(product, "default_route", None)
     return {
         "product_id": product.id,
         "sku": product.sku,
@@ -82,6 +83,8 @@ def snapshot_product_for_audit(product: Product) -> dict[str, Any]:
         "category_name": category.name if category is not None else None,
         "supplier_id": product.supplier_id,
         "supplier_name": supplier_record.name if supplier_record is not None else product.supplier,
+        "default_route_id": product.default_route_id,
+        "default_route_name": default_route.name if default_route is not None else None,
         "active": product.active,
         "available_for_sale_gc": product.available_for_sale_gc,
         "is_manufactured": product.is_manufactured,

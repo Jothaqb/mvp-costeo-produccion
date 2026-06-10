@@ -173,11 +173,13 @@ from app.services.master_data_service import (
     create_product_category,
     create_product_master,
     create_supplier,
+    get_next_product_sku_suggestion,
     get_product_balance,
     get_product_for_detail,
     list_category_options,
     list_channel_options,
     list_discount_rule_options,
+    list_product_route_options,
     list_supplier_options,
     update_channel,
     update_discount_rule,
@@ -2148,16 +2150,19 @@ def _product_form_context(
     product: Product | None,
     categories: list[ProductCategory],
     suppliers: list[Supplier],
+    routes: list[Route],
     error: str | None = None,
     product_data: dict[str, object] | None = None,
     can_deactivate: bool = False,
+    suggested_sku: str = "",
 ) -> dict[str, object]:
     data = product_data or {
-        "sku": product.sku if product else "",
+        "sku": product.sku if product else suggested_sku,
         "name": product.name if product else "",
         "unit": product.unit if product and product.unit else "",
         "category_id": str(product.category_id) if product and product.category_id else "",
         "supplier_id": str(product.supplier_id) if product and product.supplier_id else "",
+        "default_route_id": str(product.default_route_id) if product and product.default_route_id else "",
         "description": product.description if product and product.description else "",
         "observations": product.observations if product and product.observations else "",
         "b2c_price": product.b2c_price if product else None,
@@ -2175,6 +2180,7 @@ def _product_form_context(
         "product_data": data,
         "categories": categories,
         "suppliers": suppliers,
+        "routes": routes,
         "error": error,
         "can_deactivate": can_deactivate and product is not None and product.active,
     }
@@ -3779,7 +3785,9 @@ def new_product_master(request: Request, db: Session = Depends(get_db)) -> HTMLR
             product=None,
             categories=list_category_options(db),
             suppliers=list_supplier_options(db),
+            routes=list_product_route_options(db),
             can_deactivate=False,
+            suggested_sku=get_next_product_sku_suggestion(db),
         ),
     )
 
@@ -3794,6 +3802,7 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
         "unit": str(form.get("unit", "")),
         "category_id": str(form.get("category_id", "")),
         "supplier_id": str(form.get("supplier_id", "")),
+        "default_route_id": str(form.get("default_route_id", "")),
         "description": str(form.get("description", "")),
         "observations": str(form.get("observations", "")),
         "b2c_price": str(form.get("b2c_price", "")),
@@ -3828,6 +3837,7 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
         db.rollback()
         category_id = int(product_data["category_id"]) if str(product_data["category_id"]).isdigit() else None
         supplier_id = int(product_data["supplier_id"]) if str(product_data["supplier_id"]).isdigit() else None
+        route_id = int(product_data["default_route_id"]) if str(product_data["default_route_id"]).isdigit() else None
         return templates.TemplateResponse(
             request=request,
             name="product_form.html",
@@ -3837,6 +3847,7 @@ async def create_product_master_route(request: Request, db: Session = Depends(ge
                 product=None,
                 categories=list_category_options(db, category_id),
                 suppliers=list_supplier_options(db, supplier_id),
+                routes=list_product_route_options(db, route_id),
                 error=str(exc),
                 product_data=product_data,
                 can_deactivate=False,
@@ -3897,6 +3908,7 @@ def edit_product_master(product_id: int, request: Request, db: Session = Depends
             product=product,
             categories=list_category_options(db, product.category_id),
             suppliers=list_supplier_options(db, product.supplier_id),
+            routes=list_product_route_options(db, product.default_route_id),
             can_deactivate=_can_deactivate_master_data(request),
         ),
     )
@@ -3918,6 +3930,7 @@ async def update_product_master_route(
         "unit": str(form.get("unit", "")),
         "category_id": str(form.get("category_id", "")),
         "supplier_id": str(form.get("supplier_id", "")),
+        "default_route_id": str(form.get("default_route_id", "")),
         "description": str(form.get("description", "")),
         "observations": str(form.get("observations", "")),
         "b2c_price": str(form.get("b2c_price", "")),
@@ -3959,6 +3972,7 @@ async def update_product_master_route(
         product = get_product_for_detail(db, product_id)
         category_id = int(product_data["category_id"]) if str(product_data["category_id"]).isdigit() else product.category_id
         supplier_id = int(product_data["supplier_id"]) if str(product_data["supplier_id"]).isdigit() else product.supplier_id
+        route_id = int(product_data["default_route_id"]) if str(product_data["default_route_id"]).isdigit() else product.default_route_id
         return templates.TemplateResponse(
             request=request,
             name="product_form.html",
@@ -3968,6 +3982,7 @@ async def update_product_master_route(
                 product=product,
                 categories=list_category_options(db, category_id),
                 suppliers=list_supplier_options(db, supplier_id),
+                routes=list_product_route_options(db, route_id),
                 error=str(exc),
                 product_data=product_data,
                 can_deactivate=_can_deactivate_master_data(request),

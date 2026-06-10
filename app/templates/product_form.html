@@ -40,6 +40,18 @@
         {% endfor %}
       </select>
 
+      <label for="default_route_id">Default route</label>
+      <select id="default_route_id" name="default_route_id">
+        <option value="">None</option>
+        {% for route in routes %}
+          <option value="{{ route.id }}" {% if product_data.default_route_id == route.id|string %}selected{% endif %}>{{ route.code }} - {{ route.name }}{% if not route.active %} (inactive){% endif %}</option>
+        {% endfor %}
+      </select>
+      <p class="muted-inline">
+        Manufactured products must have an active default route.
+        <a href="/product-routes">Manage product routes</a>
+      </p>
+
       <label for="description">Description</label>
       <textarea id="description" name="description">{{ product_data.description }}</textarea>
 
@@ -94,4 +106,21 @@
       </div>
     </form>
   </section>
+
+  <script>
+    (function () {
+      const manufacturedCheckbox = document.querySelector('input[name="is_manufactured"]');
+      const defaultRouteSelect = document.getElementById("default_route_id");
+      if (!manufacturedCheckbox || !defaultRouteSelect) {
+        return;
+      }
+
+      function syncDefaultRouteRequired() {
+        defaultRouteSelect.required = manufacturedCheckbox.checked;
+      }
+
+      manufacturedCheckbox.addEventListener("change", syncDefaultRouteRequired);
+      syncDefaultRouteRequired();
+    })();
+  </script>
 {% endblock %}

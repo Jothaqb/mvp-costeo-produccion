@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import Channel, DiscountRule, InventoryBalance, Product, ProductCategory, Supplier
+from app.models import Channel, DiscountRule, InventoryBalance, Product, ProductCategory, Route, Supplier
 
 
 ZERO = Decimal("0")
@@ -223,6 +223,7 @@ def create_product_master(
     b2c_price: str,
     b2b_price: str,
     standard_cost: str,
+    default_route_id: str,
     active: bool,
     available_for_sale_gc: bool,
     is_manufactured: bool,
@@ -242,6 +243,7 @@ def create_product_master(
         b2c_price=b2c_price,
         b2b_price=b2b_price,
         standard_cost=standard_cost,
+        default_route_id=default_route_id,
         active=active,
         available_for_sale_gc=available_for_sale_gc,
         is_manufactured=is_manufactured,
@@ -267,6 +269,7 @@ def update_product_master(
     b2c_price: str,
     b2b_price: str,
     standard_cost: str,
+    default_route_id: str,
     active: bool,
     available_for_sale_gc: bool,
     is_manufactured: bool,
@@ -286,6 +289,7 @@ def update_product_master(
         b2c_price=b2c_price,
         b2b_price=b2b_price,
         standard_cost=standard_cost,
+        default_route_id=default_route_id,
         active=active,
         available_for_sale_gc=available_for_sale_gc,
         is_manufactured=is_manufactured,
@@ -314,6 +318,24 @@ def list_supplier_options(db: Session, current_supplier_id: int | None = None) -
     else:
         query = query.filter((Supplier.active.is_(True)) | (Supplier.id == current_supplier_id))
     return query.order_by(Supplier.name, Supplier.id).all()
+
+
+def list_product_route_options(db: Session, current_route_id: int | None = None) -> list[Route]:
+    query = db.query(Route)
+    if current_route_id is None:
+        query = query.filter(Route.active.is_(True))
+    else:
+        query = query.filter((Route.active.is_(True)) | (Route.id == current_route_id))
+    return query.order_by(Route.code, Route.id).all()
+
+
+def get_next_product_sku_suggestion(db: Session) -> str:
+    highest_numeric_sku = 9999
+    for (sku,) in db.query(Product.sku).all():
+        text = (sku or "").strip()
+        if text.isdigit():
+            highest_numeric_sku = max(highest_numeric_sku, int(text))
+    return str(max(highest_numeric_sku + 1, 10000))
 
 
 def list_discount_rule_options(
@@ -365,7 +387,11 @@ def list_channel_options(
 def get_product_for_detail(db: Session, product_id: int) -> Product:
     return (
         db.query(Product)
-        .options(joinedload(Product.category), joinedload(Product.supplier_record))
+        .options(
+            joinedload(Product.category),
+            joinedload(Product.supplier_record),
+            joinedload(Product.default_route),
+        )
         .filter(Product.id == product_id)
         .one()
     )
@@ -492,6 +518,7 @@ def _assign_product_fields(
     b2c_price: str,
     b2b_price: str,
     standard_cost: str,
+    default_route_id: str,
     active: bool,
     available_for_sale_gc: bool,
     is_manufactured: bool,
@@ -505,6 +532,10 @@ def _assign_product_fields(
 
     selected_category = _resolve_category(db, category_id)
     selected_supplier = _resolve_supplier(db, supplier_id)
+    selected_route = _resolve_route(db, default_route_id)
+
+    if is_manufactured and (selected_route is None or not selected_route.active):
+        raise MasterDataValidationError("Manufactured products must have an active default route.")
 
     product.sku = normalized_sku
     product.name = normalized_name
@@ -516,6 +547,7 @@ def _assign_product_fields(
     product.b2c_price = _parse_nonnegative_decimal(b2c_price, "B2C price")
     product.b2b_price = _parse_nonnegative_decimal(b2b_price, "B2B price")
     product.standard_cost = _parse_nonnegative_decimal(standard_cost, "Standard cost")
+    product.default_route_id = selected_route.id if selected_route is not None else None
     product.active = active
     product.available_for_sale_gc = available_for_sale_gc
     product.is_manufactured = is_manufactured
@@ -541,6 +573,16 @@ def _resolve_supplier(db: Session, raw_supplier_id: str) -> Supplier | None:
     if supplier is None:
         raise MasterDataValidationError("Selected supplier does not exist.")
     return supplier
+
+
+def _resolve_route(db: Session, raw_route_id: str) -> Route | None:
+    route_id = _parse_optional_int(raw_route_id, "Default route")
+    if route_id is None:
+        return None
+    route = db.query(Route).filter(Route.id == route_id).one_or_none()
+    if route is None:
+        raise MasterDataValidationError("Selected default route does not exist.")
+    return route
 
 
 def _normalize_discount_type(value: str) -> str:
