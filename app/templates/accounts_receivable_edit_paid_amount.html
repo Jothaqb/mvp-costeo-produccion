@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <div class="actions">
+      <a class="button" href="/sales/accounts-receivable">Accounts Receivable</a>
+      <a class="button" href="/b2b/orders/{{ order.id }}">Ver orden</a>
+    </div>
+
+    <dl class="summary">
+      <div><dt>Order number</dt><dd>{{ order.order_number }}</dd></div>
+      <div><dt>Customer</dt><dd>{{ order.customer_name_snapshot }}</dd></div>
+      <div>
+        <dt>Fecha facturacion</dt>
+        <dd>
+          {{ state.invoice_date }}
+          {% if state.invoice_date_is_fallback %}<div class="table-status-text">Fallback created date</div>{% endif %}
+        </dd>
+      </div>
+      <div><dt>Total factura</dt><dd>{{ fmt.money_crc(state.total_amount) }}</dd></div>
+      <div><dt>Monto pagado actual</dt><dd>{{ fmt.money_crc(state.paid_amount_current) }}</dd></div>
+      <div><dt>Saldo pendiente actual</dt><dd>{{ fmt.money_crc(state.pending_amount_current) }}</dd></div>
+    </dl>
+
+    <form method="post" action="/sales/accounts-receivable/{{ order.id }}/edit-paid-amount">
+      <label for="paid_amount_current">Monto pagado actual</label>
+      <input
+        id="paid_amount_current"
+        name="paid_amount_current"
+        type="number"
+        min="0"
+        step="0.0001"
+        value="{{ form_data.paid_amount_current }}"
+        required
+      >
+
+      <label for="comment">Comentario</label>
+      <textarea id="comment" name="comment">{{ form_data.comment }}</textarea>
+
+      <div class="form-actions">
+        <button type="submit">Guardar fotografia manual</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

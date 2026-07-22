@@ -110,9 +110,13 @@ from app.services.b2b_sales_service import (
     update_sales_order_lines,
 )
 from app.services.accounts_receivable_service import (
+    AccountsReceivableValidationError,
     STATUS_ALL as AR_STATUS_ALL,
     STATUS_OPTIONS as AR_STATUS_OPTIONS,
+    build_accounts_receivable_edit_state,
     build_accounts_receivable_dashboard,
+    get_accounts_receivable_order_for_manual_balance,
+    update_accounts_receivable_opening_balance,
 )
 from app.services.b2c_sales_service import (
     B2CValidationError,
@@ -291,6 +295,7 @@ from app.services.audit_service import (
     diff_audit_snapshots,
     format_audit_payload_for_display,
     safe_log_audit_event,
+    snapshot_b2b_ar_opening_balance_for_audit,
     snapshot_b2b_customer_for_audit,
     snapshot_b2b_sales_order_for_audit,
     snapshot_b2b_customer_product_for_audit,
@@ -4301,6 +4306,114 @@ def sales_accounts_receivable(
             },
         },
     )
+
+
+def _accounts_receivable_edit_paid_amount_response(
+    request: Request,
+    *,
+    order: B2BSalesOrder,
+    error: str | None = None,
+    form_data: dict[str, str] | None = None,
+) -> HTMLResponse:
+    state = build_accounts_receivable_edit_state(order)
+    paid_amount_value = form_data["paid_amount_current"] if form_data is not None else format(state.paid_amount_current, "f")
+    comment_value = form_data["comment"] if form_data is not None else state.comment
+    return templates.TemplateResponse(
+        request=request,
+        name="accounts_receivable_edit_paid_amount.html",
+        context={
+            "title": "Editar monto pagado",
+            "order": order,
+            "state": state,
+            "error": error,
+            "form_data": {
+                "paid_amount_current": paid_amount_value,
+                "comment": comment_value,
+            },
+        },
+    )
+
+
+@app.get("/sales/accounts-receivable/{order_id}/edit-paid-amount", response_class=HTMLResponse)
+def sales_accounts_receivable_edit_paid_amount(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "ar.manage_opening_balance")
+    try:
+        order = get_accounts_receivable_order_for_manual_balance(db, order_id)
+    except AccountsReceivableValidationError as exc:
+        return _redirect(f"/sales/accounts-receivable?error={quote(str(exc))}")
+    return _accounts_receivable_edit_paid_amount_response(request, order=order)
+
+
+@app.post("/sales/accounts-receivable/{order_id}/edit-paid-amount")
+async def sales_accounts_receivable_update_paid_amount(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "ar.manage_opening_balance")
+    try:
+        order = get_accounts_receivable_order_for_manual_balance(db, order_id)
+    except AccountsReceivableValidationError as exc:
+        return _redirect(f"/sales/accounts-receivable?error={quote(str(exc))}")
+
+    form = await request.form()
+    form_data = {
+        "paid_amount_current": str(form.get("paid_amount_current", "")).strip(),
+        "comment": str(form.get("comment", "")).strip(),
+    }
+    state_before = build_accounts_receivable_edit_state(order)
+    old_snapshot = snapshot_b2b_ar_opening_balance_for_audit(
+        order,
+        order.ar_opening_balance,
+        paid_amount=state_before.paid_amount_current,
+        invoice_date=state_before.invoice_date,
+        credit_days=state_before.credit_days,
+    ) if order.ar_opening_balance is not None else None
+
+    try:
+        opening_balance = update_accounts_receivable_opening_balance(
+            db,
+            order=order,
+            paid_amount_current=form_data["paid_amount_current"],
+            comment=form_data["comment"],
+            acting_user=current_user,
+        )
+        db.refresh(order)
+        state_after = build_accounts_receivable_edit_state(order)
+        new_snapshot = snapshot_b2b_ar_opening_balance_for_audit(
+            order,
+            opening_balance,
+            paid_amount=state_after.paid_amount_current,
+            invoice_date=state_after.invoice_date,
+            credit_days=state_after.credit_days,
+        )
+        changed_old, changed_new = diff_audit_snapshots(old_snapshot, new_snapshot)
+        if changed_new is not None:
+            safe_log_audit_event(
+                module="ar",
+                action="b2b_ar_opening_balance_updated",
+                entity_type="b2b_ar_opening_balance",
+                entity_id=opening_balance.id,
+                entity_label=order.order_number,
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+                user=current_user,
+            )
+        db.commit()
+        return _redirect("/sales/accounts-receivable")
+    except AccountsReceivableValidationError as exc:
+        db.rollback()
+        return _accounts_receivable_edit_paid_amount_response(
+            request,
+            order=order,
+            error=str(exc),
+            form_data=form_data,
+        )
 
 
 @app.get("/sales/orders-menu", response_class=HTMLResponse)

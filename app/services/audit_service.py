@@ -11,6 +11,7 @@ from fastapi import Request
 from app.database import SessionLocal
 from app.models import (
     AuditLog,
+    B2BAROpeningBalance,
     B2BCustomer,
     B2BCustomerProduct,
     B2BSalesOrder,
@@ -303,6 +304,27 @@ def snapshot_b2b_sales_order_for_audit(order: B2BSalesOrder) -> dict[str, Any]:
         "loyverse_receipt_number": order.loyverse_receipt_number,
         "loyverse_invoice_sync_status": order.loyverse_invoice_sync_status,
         "loyverse_invoice_synced_at": order.loyverse_invoice_synced_at,
+    }
+
+
+def snapshot_b2b_ar_opening_balance_for_audit(
+    order: B2BSalesOrder,
+    opening_balance: B2BAROpeningBalance | None,
+    *,
+    paid_amount: Decimal,
+    invoice_date: date,
+    credit_days: int,
+) -> dict[str, Any]:
+    return {
+        "sales_order_id": order.id,
+        "order_number": order.order_number,
+        "customer_name": order.customer_name_snapshot,
+        "total_amount": order.total_amount,
+        "paid_amount": paid_amount,
+        "outstanding_amount": opening_balance.outstanding_amount if opening_balance is not None else Decimal("0"),
+        "comment": opening_balance.comment if opening_balance is not None else None,
+        "invoice_date": invoice_date,
+        "credit_days": credit_days,
     }
 
 
