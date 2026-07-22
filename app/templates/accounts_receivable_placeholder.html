@@ -62,7 +62,7 @@
             <th>Saldo pendiente</th>
             <th>Fecha del pago</th>
             <th>Dias restantes de credito</th>
-            {% if can(request, "ar.manage_opening_balance") %}<th>Accion</th>{% endif %}
+            {% if can(request, "ar.manage_opening_balance") or can(request, "ar.record_payment") %}<th>Accion</th>{% endif %}
           </tr>
         </thead>
         <tbody>

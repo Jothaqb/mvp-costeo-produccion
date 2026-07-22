@@ -214,6 +214,11 @@ def ensure_auth_seed_state(db: Session) -> None:
         "general_approver",
         {"ar.view", "ar.record_payment", "ar.export"},
     )
+    sync_role_permissions_by_code_if_present(
+        db,
+        "general_operator",
+        {"ar.view", "ar.record_payment", "ar.export"},
+    )
     db.flush()
 
 
