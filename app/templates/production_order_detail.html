@@ -2,10 +2,49 @@
 {% import "_formatting.html" as fmt %}
 
 {% block content %}
-  <section>
+  <section id="cost-summary">
     <h1>{{ order.internal_order_number }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     {% if message %}<p class="success">{{ message }}</p>{% endif %}
+    {% if warning %}
+      <div class="alert-panel alert-panel-warning">
+        <p>{{ warning }}</p>
+      </div>
+    {% endif %}
+    {% if cost_increase_alert %}
+      <div class="alert-panel {{ 'alert-panel-error' if cost_increase_alert.severity == 'error' else 'alert-panel-warning' }}">
+        <p>
+          <strong>Alerta de variación de costo.</strong>
+          {% if cost_increase_alert.severity == 'error' %}
+            Revise los tiempos y los costos, ya que el costo por unidad aumentó
+            <strong>{{ "{:.2f}%".format(cost_increase_alert.delta_percent * 100) }}</strong>
+            versus la última producción.
+          {% else %}
+            El costo aumentó
+            <strong>{{ "{:.2f}%".format(cost_increase_alert.delta_percent * 100) }}</strong>
+            versus la última producción.
+          {% endif %}
+        </p>
+        <p>
+          Costo unitario anterior: {{ fmt.money_crc(cost_increase_alert.previous_unit_cost) }}
+          | Costo unitario actual: {{ fmt.money_crc(cost_increase_alert.current_unit_cost) }}
+          | Incremento: {{ fmt.money_crc(cost_increase_alert.delta_amount) }}
+        </p>
+        <div class="actions">
+          <a role="button" href="#activity-time-capture">Revisar costo</a>
+          {% if can_accept_cost_increase %}
+            <form method="post" action="/production-orders/{{ order.id }}/accept-cost-increase">
+              <button type="submit">Aceptar incremento de costo</button>
+            </form>
+          {% elif cost_increase_acceptance_audit %}
+            <p>
+              Incremento ya aceptado por {{ cost_increase_acceptance_audit.username }}
+              el {{ cost_increase_acceptance_audit.timestamp }}.
+            </p>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
     <dl class="summary">
       <div>
         <dt>Status</dt>
@@ -134,7 +173,7 @@
     {% endif %}
   </section>
 
-  <section>
+  <section id="yield-capture">
     <h2>Yield Capture</h2>
     {% if not is_locked and can(request, "production_order.edit") %}
       <form method="post" action="/production-orders/{{ order.id }}/yield">
@@ -151,7 +190,7 @@
     {% endif %}
   </section>
 
-  <section>
+  <section id="activity-time-capture">
     <h2>Activity Time Capture</h2>
     {% if not is_locked and can(request, "production_order.edit") %}
       <form method="post" action="/production-orders/{{ order.id }}/activities">
@@ -225,7 +264,7 @@
     {% endif %}
   </section>
 
-  <section>
+  <section id="material-snapshot">
     <h2>Material Snapshot</h2>
     <table>
       <thead>

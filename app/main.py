@@ -299,6 +299,7 @@ from app.services.audit_service import (
     snapshot_purchase_order_for_audit,
     summarize_historical_import_result,
 )
+from app.services.email_service import auth_emails_enabled, send_production_cost_increase_acceptance_email
 from app.services.password_reset_service import (
     PasswordResetEmailDeliveryError,
     PasswordResetIssueResult,
@@ -329,9 +330,12 @@ from app.services.production_loyverse_inventory_sync_service import (
 )
 from app.services.production_order_service import (
     ProductionOrderValidationError,
+    build_production_order_cost_increase_alert,
     close_order_with_inventory_posting,
     create_production_order,
     delete_open_production_order,
+    get_cost_increase_acceptance_audit,
+    list_cost_increase_approval_recipients,
     parse_optional_decimal,
     refresh_order_bom_from_master,
     reverse_closed_production_order,
@@ -2899,6 +2903,7 @@ def _production_order_detail_response(
     db: Session,
     error: str | None = None,
     message: str | None = None,
+    warning: str | None = None,
 ) -> HTMLResponse:
     order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
     materials = (
@@ -2936,6 +2941,10 @@ def _production_order_detail_response(
         and can(request, "production_order.edit")
         and _can_delete_in_progress_production_order(request)
     )
+    cost_increase_alert = build_production_order_cost_increase_alert(db, order)
+    cost_increase_acceptance_audit = None
+    if cost_increase_alert is not None and cost_increase_alert.requires_acceptance:
+        cost_increase_acceptance_audit = get_cost_increase_acceptance_audit(db, order.id)
     delete_confirm_message = (
         "Are you sure you want to delete this in-progress production order? This action cannot be undone."
         if order.status == "in_progress"
@@ -2943,6 +2952,13 @@ def _production_order_detail_response(
     )
     is_locked = order.status in {ProductionOrderStatus.CLOSED.value, ProductionOrderStatus.REVERSED.value}
     can_reverse_closed_order = order.status == ProductionOrderStatus.CLOSED.value and _can_reverse_closed_production_order(request)
+    can_accept_cost_increase = (
+        cost_increase_alert is not None
+        and cost_increase_alert.requires_acceptance
+        and order.status == ProductionOrderStatus.CLOSED.value
+        and cost_increase_acceptance_audit is None
+        and can(request, "production_order.close")
+    )
     return templates.TemplateResponse(
         request=request,
         name="production_order_detail.html",
@@ -2955,12 +2971,16 @@ def _production_order_detail_response(
             "inventory_readiness": build_production_inventory_readiness(db, order_id),
             "error": error,
             "message": message,
+            "warning": warning,
             "is_locked": is_locked,
             "can_edit_bom": can_edit_bom,
             "can_refresh_bom_from_master": can_refresh_bom_from_master,
             "can_delete_order": can_delete_draft or can_delete_in_progress,
             "delete_confirm_message": delete_confirm_message,
             "can_reverse_closed_order": can_reverse_closed_order,
+            "cost_increase_alert": cost_increase_alert,
+            "cost_increase_acceptance_audit": cost_increase_acceptance_audit,
+            "can_accept_cost_increase": can_accept_cost_increase,
         },
     )
 
@@ -8850,10 +8870,110 @@ def production_order_detail(
     order_id: int,
     request: Request,
     message: str | None = Query(default=None),
+    warning: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     require_permission(request, "production_order.view")
-    return _production_order_detail_response(order_id, request, db, message=message)
+    return _production_order_detail_response(order_id, request, db, message=message, warning=warning)
+
+
+@app.post("/production-orders/{order_id}/accept-cost-increase")
+def accept_production_order_cost_increase(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "production_order.close")
+    order = db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+    alert = build_production_order_cost_increase_alert(db, order)
+    if order.status != ProductionOrderStatus.CLOSED.value:
+        return _redirect(
+            f"/production-orders/{order_id}?warning="
+            f"{quote('El incremento de costo solo puede aceptarse después de cerrar la orden.')}"
+        )
+    if alert is None or not alert.requires_acceptance:
+        return _redirect(
+            f"/production-orders/{order_id}?warning="
+            f"{quote('Esta orden no tiene un incremento de costo que requiera aceptación.')}"
+        )
+    existing_audit = get_cost_increase_acceptance_audit(db, order_id)
+    if existing_audit is not None:
+        return _redirect(
+            f"/production-orders/{order_id}?message={quote('El incremento de costo ya fue aceptado.')}"
+        )
+
+    acceptance_payload = {
+        "production_order_id": order.id,
+        "product_id": order.product_id,
+        "product_sku": order.product_sku_snapshot,
+        "product_name": order.product_name_snapshot,
+        "previous_unit_cost": alert.previous_unit_cost,
+        "current_unit_cost": alert.current_unit_cost,
+        "delta_amount": alert.delta_amount,
+        "delta_percent": alert.delta_percent,
+        "accepted_by_user_id": current_user.id,
+        "accepted_at": datetime.utcnow(),
+    }
+
+    existing_audit = get_cost_increase_acceptance_audit(db, order_id)
+    if existing_audit is not None:
+        return _redirect(
+            f"/production-orders/{order_id}?message={quote('El incremento de costo ya fue aceptado.')}"
+        )
+
+    safe_log_audit_event(
+        module="production",
+        action="production_order_cost_increase_accepted",
+        entity_type="production_order",
+        entity_id=order.id,
+        entity_label=order.internal_order_number,
+        new_values=acceptance_payload,
+        request=request,
+        user=current_user,
+    )
+    acceptance_audit = get_cost_increase_acceptance_audit(db, order_id)
+    if acceptance_audit is None:
+        return _redirect(
+            f"/production-orders/{order_id}?warning="
+            f"{quote('No se pudo registrar la aceptación del incremento de costo. Inténtalo de nuevo.')}"
+        )
+
+    warning_message = None
+    recipient_emails: list[str] = []
+    seen_emails: set[str] = set()
+    for user in list_cost_increase_approval_recipients(db):
+        email = (user.email or "").strip().lower()
+        if not email or email in seen_emails:
+            continue
+        seen_emails.add(email)
+        recipient_emails.append(email)
+
+    if not recipient_emails:
+        warning_message = "El incremento de costo fue aceptado, pero no hay destinatarios de aprobación configurados."
+    elif not auth_emails_enabled():
+        warning_message = "El incremento de costo fue aceptado, pero las notificaciones por correo están deshabilitadas."
+    else:
+        try:
+            send_production_cost_increase_acceptance_email(
+                to_emails=recipient_emails,
+                internal_order_number=order.internal_order_number,
+                product_sku=order.product_sku_snapshot,
+                product_name=order.product_name_snapshot,
+                production_date=order.production_date,
+                previous_unit_cost=alert.previous_unit_cost,
+                current_unit_cost=alert.current_unit_cost,
+                delta_amount=alert.delta_amount,
+                delta_percent=alert.delta_percent,
+                accepted_by_username=acceptance_audit.username,
+                accepted_at=acceptance_audit.timestamp,
+            )
+        except Exception:
+            warning_message = "El incremento de costo fue aceptado, pero no se pudo enviar la notificación por correo."
+
+    redirect_url = f"/production-orders/{order_id}?message={quote('Incremento de costo aceptado.')}"
+    if warning_message:
+        redirect_url += f"&warning={quote(warning_message)}"
+    return _redirect(redirect_url)
 
 
 @app.get("/production-orders/{order_id}/loyverse-inventory-preview", response_class=HTMLResponse)

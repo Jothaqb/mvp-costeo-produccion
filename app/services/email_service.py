@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import smtplib
 import ssl
+from datetime import date, datetime
+from decimal import Decimal
 from email.message import EmailMessage
 
 
@@ -14,20 +16,9 @@ def send_password_reset_email(*, to_email: str, full_name: str | None, reset_lin
     if not auth_emails_enabled():
         return
 
-    host = os.getenv("SMTP_HOST", "").strip()
-    port = _env_int("SMTP_PORT", 0)
-    username = os.getenv("SMTP_USERNAME", "").strip()
-    password = os.getenv("SMTP_PASSWORD", "")
-    use_tls = _env_bool("SMTP_USE_TLS", default=True)
-    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
-    from_name = os.getenv("SMTP_FROM_NAME", "").strip() or "Green Corner ERP"
-
-    if not host or not port or not from_email:
-        raise RuntimeError("SMTP configuration is incomplete.")
-
     message = EmailMessage()
     message["Subject"] = "Reset your Green Corner ERP password"
-    message["From"] = f"{from_name} <{from_email}>"
+    message["From"] = _from_header()
     message["To"] = to_email
     greeting = full_name.strip() if full_name else "there"
     message.set_content(
@@ -43,6 +34,66 @@ def send_password_reset_email(*, to_email: str, full_name: str | None, reset_lin
             ]
         )
     )
+    _send_email_message(message)
+
+
+def send_production_cost_increase_acceptance_email(
+    *,
+    to_emails: list[str],
+    internal_order_number: str,
+    product_sku: str,
+    product_name: str,
+    production_date: date | None,
+    previous_unit_cost: Decimal,
+    current_unit_cost: Decimal,
+    delta_amount: Decimal,
+    delta_percent: Decimal,
+    accepted_by_username: str,
+    accepted_at: datetime,
+) -> None:
+    if not auth_emails_enabled():
+        return
+
+    message = EmailMessage()
+    message["Subject"] = f"Production cost increase accepted - {internal_order_number}"
+    message["From"] = _from_header()
+    message["To"] = ", ".join(to_emails)
+    message.set_content(
+        "\n".join(
+            [
+                "A production cost increase was accepted in Green Corner ERP.",
+                "",
+                f"Order: {internal_order_number}",
+                f"Product: {product_sku} - {product_name}",
+                f"Production date: {production_date.isoformat() if production_date else ''}",
+                f"Previous unit cost: CRC {format(previous_unit_cost, ',.4f')}",
+                f"Current unit cost: CRC {format(current_unit_cost, ',.4f')}",
+                f"Absolute increase: CRC {format(delta_amount, ',.4f')}",
+                f"Increase percent: {format(delta_percent * Decimal('100'), ',.2f')}%",
+                f"Accepted by: {accepted_by_username}",
+                f"Accepted at: {accepted_at.isoformat()}",
+            ]
+        )
+    )
+    _send_email_message(message)
+
+
+def _from_header() -> str:
+    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
+    from_name = os.getenv("SMTP_FROM_NAME", "").strip() or "Green Corner ERP"
+    return f"{from_name} <{from_email}>"
+
+
+def _send_email_message(message: EmailMessage) -> None:
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = _env_int("SMTP_PORT", 0)
+    username = os.getenv("SMTP_USERNAME", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "")
+    use_tls = _env_bool("SMTP_USE_TLS", default=True)
+    from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
+
+    if not host or not port or not from_email:
+        raise RuntimeError("SMTP configuration is incomplete.")
 
     if use_tls:
         with smtplib.SMTP(host, port, timeout=30) as smtp:

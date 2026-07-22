@@ -2,11 +2,13 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     Activity,
     AppSequence,
+    AuditLog,
     ImportedBomHeader,
     ImportedBomLine,
     InventoryBalance,
@@ -19,6 +21,7 @@ from app.models import (
     ProductionOrder,
     ProductionOrderActivity,
     ProductionOrderMaterial,
+    Role,
     Route,
     RouteActivity,
     User,
@@ -65,6 +68,10 @@ LEDGER_PRODUCTION_RECEIPT_NOTE = (
     "labor/overhead/machine. ProductionOrder.real_unit_cost remains unchanged."
 )
 PRODUCTION_ORDER_REVERSAL_ADMIN_ROLE_CODE = "admin"
+COST_INCREASE_WARNING_THRESHOLD = Decimal("0.10")
+COST_INCREASE_ACCEPTANCE_THRESHOLD = Decimal("0.16")
+COST_INCREASE_ACCEPTANCE_AUDIT_ACTION = "production_order_cost_increase_accepted"
+COST_INCREASE_APPROVER_ROLE_CODES = ("general_approver", "admin")
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,18 @@ class ProductionOrderOriginalTransactions:
 class ProductionOrderReversalPlan:
     original_transactions: ProductionOrderOriginalTransactions
     reversal_timestamp: datetime
+
+
+@dataclass(frozen=True)
+class ProductionOrderCostIncreaseAlert:
+    previous_order_id: int
+    previous_closed_at: datetime | None
+    previous_unit_cost: Decimal
+    current_unit_cost: Decimal
+    delta_amount: Decimal
+    delta_percent: Decimal
+    severity: str
+    requires_acceptance: bool
 
 
 def parse_optional_decimal(value: str | Decimal | None, field_name: str) -> Decimal | None:
@@ -468,6 +487,104 @@ def reverse_closed_production_order(
 
 def get_order(db: Session, order_id: int) -> ProductionOrder:
     return db.query(ProductionOrder).filter(ProductionOrder.id == order_id).one()
+
+
+def get_previous_closed_order_for_cost_increase(
+    db: Session,
+    order: ProductionOrder,
+) -> ProductionOrder | None:
+    query = (
+        db.query(ProductionOrder)
+        .filter(
+            ProductionOrder.product_id == order.product_id,
+            ProductionOrder.status == ProductionOrderStatus.CLOSED.value,
+            ProductionOrder.id != order.id,
+            ProductionOrder.real_unit_cost.is_not(None),
+            ProductionOrder.closed_at.is_not(None),
+        )
+    )
+    if order.closed_at is not None:
+        query = query.filter(
+            or_(
+                ProductionOrder.closed_at < order.closed_at,
+                and_(
+                    ProductionOrder.closed_at == order.closed_at,
+                    ProductionOrder.id < order.id,
+                ),
+            )
+        )
+    return query.order_by(ProductionOrder.closed_at.desc(), ProductionOrder.id.desc()).first()
+
+
+def build_production_order_cost_increase_alert(
+    db: Session,
+    order: ProductionOrder,
+) -> ProductionOrderCostIncreaseAlert | None:
+    current_unit_cost = order.real_unit_cost
+    if current_unit_cost is None:
+        return None
+
+    previous_order = get_previous_closed_order_for_cost_increase(db, order)
+    if previous_order is None or previous_order.real_unit_cost is None:
+        return None
+
+    previous_unit_cost = previous_order.real_unit_cost
+    if previous_unit_cost <= ZERO:
+        return None
+
+    delta_amount = current_unit_cost - previous_unit_cost
+    if delta_amount <= ZERO:
+        return None
+
+    delta_percent = delta_amount / previous_unit_cost
+    if delta_percent < COST_INCREASE_WARNING_THRESHOLD:
+        return None
+
+    requires_acceptance = delta_percent >= COST_INCREASE_ACCEPTANCE_THRESHOLD
+    if requires_acceptance:
+        severity = "error"
+    else:
+        severity = "warning"
+
+    return ProductionOrderCostIncreaseAlert(
+        previous_order_id=previous_order.id,
+        previous_closed_at=previous_order.closed_at,
+        previous_unit_cost=previous_unit_cost,
+        current_unit_cost=current_unit_cost,
+        delta_amount=delta_amount,
+        delta_percent=delta_percent,
+        severity=severity,
+        requires_acceptance=requires_acceptance,
+    )
+
+
+def get_cost_increase_acceptance_audit(db: Session, order_id: int) -> AuditLog | None:
+    return (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.module == "production",
+            AuditLog.action == COST_INCREASE_ACCEPTANCE_AUDIT_ACTION,
+            AuditLog.entity_type == "production_order",
+            AuditLog.entity_id == str(order_id),
+        )
+        .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+        .first()
+    )
+
+
+def list_cost_increase_approval_recipients(db: Session) -> list[User]:
+    return (
+        db.query(User)
+        .join(User.roles)
+        .filter(
+            User.is_active.is_(True),
+            User.email.is_not(None),
+            Role.active.is_(True),
+            Role.code.in_(COST_INCREASE_APPROVER_ROLE_CODES),
+        )
+        .order_by(User.id)
+        .all()
+    )
 
 
 def _get_reversal_admin_user(db: Session, user_id: int) -> User:
