@@ -4,6 +4,8 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
     <div class="actions">
       <a class="button" href="/sales">Sales Home</a>
       <a class="button" href="/b2b/orders">B2B Sales Orders</a>
@@ -87,12 +89,19 @@
                 {% endif %}
               </td>
               {% if can(request, "ar.manage_opening_balance") %}
-                <td><a class="table-link" href="/sales/accounts-receivable/{{ row.order_id }}/edit-paid-amount">Editar monto pagado</a></td>
+                <td>
+                  <div><a class="table-link" href="/sales/accounts-receivable/{{ row.order_id }}/edit-paid-amount">Editar monto pagado</a></div>
+                  {% if can(request, "ar.record_payment") and row.has_opening_balance and row.pending_amount > 0 %}
+                    <div><a class="table-link" href="/sales/accounts-receivable/{{ row.order_id }}/payments/new">Registrar pago</a></div>
+                  {% endif %}
+                </td>
+              {% elif can(request, "ar.record_payment") and row.has_opening_balance and row.pending_amount > 0 %}
+                <td><a class="table-link" href="/sales/accounts-receivable/{{ row.order_id }}/payments/new">Registrar pago</a></td>
               {% endif %}
             </tr>
           {% else %}
             <tr>
-              <td colspan="{% if can(request, 'ar.manage_opening_balance') %}11{% else %}10{% endif %}">No invoiced B2B orders match the selected filters.</td>
+              <td colspan="{% if can(request, 'ar.manage_opening_balance') or can(request, 'ar.record_payment') %}11{% else %}10{% endif %}">No invoiced B2B orders match the selected filters.</td>
             </tr>
           {% endfor %}
         </tbody>

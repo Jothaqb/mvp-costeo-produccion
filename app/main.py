@@ -114,8 +114,11 @@ from app.services.accounts_receivable_service import (
     STATUS_ALL as AR_STATUS_ALL,
     STATUS_OPTIONS as AR_STATUS_OPTIONS,
     build_accounts_receivable_edit_state,
+    build_accounts_receivable_payment_entry_state,
     build_accounts_receivable_dashboard,
+    get_accounts_receivable_order_for_payment,
     get_accounts_receivable_order_for_manual_balance,
+    record_accounts_receivable_payment,
     update_accounts_receivable_opening_balance,
 )
 from app.services.b2c_sales_service import (
@@ -296,6 +299,7 @@ from app.services.audit_service import (
     format_audit_payload_for_display,
     safe_log_audit_event,
     snapshot_b2b_ar_opening_balance_for_audit,
+    snapshot_b2b_ar_payment_for_audit,
     snapshot_b2b_customer_for_audit,
     snapshot_b2b_sales_order_for_audit,
     snapshot_b2b_customer_product_for_audit,
@@ -4277,6 +4281,8 @@ def sales_accounts_receivable(
     request: Request,
     customer_id: str = Query(""),
     status: str = Query(AR_STATUS_ALL),
+    message: str | None = Query(default=None),
+    error: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     require_permission(request, "ar.view")
@@ -4306,6 +4312,8 @@ def sales_accounts_receivable(
                 "status": status if status in {item[0] for item in AR_STATUS_OPTIONS} else AR_STATUS_ALL,
             },
             "export_url": export_url,
+            "message": message,
+            "error": error,
         },
     )
 
@@ -4396,6 +4404,34 @@ def _accounts_receivable_edit_paid_amount_response(
     )
 
 
+def _accounts_receivable_new_payment_response(
+    request: Request,
+    *,
+    order: B2BSalesOrder,
+    error: str | None = None,
+    form_data: dict[str, str] | None = None,
+) -> HTMLResponse:
+    state = build_accounts_receivable_payment_entry_state(order)
+    payment_date_value = form_data["payment_date"] if form_data is not None else date.today().isoformat()
+    amount_value = form_data["amount"] if form_data is not None else ""
+    comment_value = form_data["comment"] if form_data is not None else ""
+    return templates.TemplateResponse(
+        request=request,
+        name="accounts_receivable_new_payment.html",
+        context={
+            "title": "Registrar pago",
+            "order": order,
+            "state": state,
+            "error": error,
+            "form_data": {
+                "payment_date": payment_date_value,
+                "amount": amount_value,
+                "comment": comment_value,
+            },
+        },
+    )
+
+
 @app.get("/sales/accounts-receivable/{order_id}/edit-paid-amount", response_class=HTMLResponse)
 def sales_accounts_receivable_edit_paid_amount(
     order_id: int,
@@ -4471,6 +4507,79 @@ async def sales_accounts_receivable_update_paid_amount(
     except AccountsReceivableValidationError as exc:
         db.rollback()
         return _accounts_receivable_edit_paid_amount_response(
+            request,
+            order=order,
+            error=str(exc),
+            form_data=form_data,
+        )
+
+
+@app.get("/sales/accounts-receivable/{order_id}/payments/new", response_class=HTMLResponse)
+def sales_accounts_receivable_new_payment(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "ar.record_payment")
+    try:
+        order = get_accounts_receivable_order_for_payment(db, order_id)
+        state = build_accounts_receivable_payment_entry_state(order)
+        if order.ar_opening_balance is None:
+            raise AccountsReceivableValidationError("This invoice does not have a manual outstanding balance snapshot.")
+        if state.pending_amount_current <= Decimal("0"):
+            raise AccountsReceivableValidationError("This invoice does not have any outstanding balance available for payment registration.")
+    except AccountsReceivableValidationError as exc:
+        return _redirect(f"/sales/accounts-receivable?error={quote(str(exc))}")
+    return _accounts_receivable_new_payment_response(request, order=order)
+
+
+@app.post("/sales/accounts-receivable/{order_id}/payments")
+async def sales_accounts_receivable_create_payment(
+    order_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "ar.record_payment")
+    try:
+        order = get_accounts_receivable_order_for_payment(db, order_id)
+    except AccountsReceivableValidationError as exc:
+        return _redirect(f"/sales/accounts-receivable?error={quote(str(exc))}")
+
+    form = await request.form()
+    form_data = {
+        "payment_date": str(form.get("payment_date", "")).strip(),
+        "amount": str(form.get("amount", "")).strip(),
+        "comment": str(form.get("comment", "")).strip(),
+    }
+    try:
+        payment, saldo_before_payment, saldo_after_payment = record_accounts_receivable_payment(
+            db,
+            order=order,
+            payment_date=form_data["payment_date"],
+            amount=form_data["amount"],
+            comment=form_data["comment"],
+            acting_user=current_user,
+        )
+        safe_log_audit_event(
+            module="ar",
+            action="b2b_ar_payment_recorded",
+            entity_type="b2b_ar_payment",
+            entity_id=payment.id,
+            entity_label=order.order_number,
+            new_values=snapshot_b2b_ar_payment_for_audit(
+                order,
+                payment,
+                saldo_before_payment=saldo_before_payment,
+                saldo_after_payment=saldo_after_payment,
+            ),
+            request=request,
+            user=current_user,
+        )
+        db.commit()
+        return _redirect(f"/sales/accounts-receivable?message={quote('Pago registrado correctamente.')}")
+    except AccountsReceivableValidationError as exc:
+        db.rollback()
+        return _accounts_receivable_new_payment_response(
             request,
             order=order,
             error=str(exc),

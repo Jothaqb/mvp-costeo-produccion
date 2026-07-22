@@ -12,6 +12,7 @@ from app.database import SessionLocal
 from app.models import (
     AuditLog,
     B2BAROpeningBalance,
+    B2BARPayment,
     B2BCustomer,
     B2BCustomerProduct,
     B2BSalesOrder,
@@ -325,6 +326,27 @@ def snapshot_b2b_ar_opening_balance_for_audit(
         "comment": opening_balance.comment if opening_balance is not None else None,
         "invoice_date": invoice_date,
         "credit_days": credit_days,
+    }
+
+
+def snapshot_b2b_ar_payment_for_audit(
+    order: B2BSalesOrder,
+    payment: B2BARPayment,
+    *,
+    saldo_before_payment: Decimal,
+    saldo_after_payment: Decimal,
+) -> dict[str, Any]:
+    return {
+        "sales_order_id": order.id,
+        "order_number": order.order_number,
+        "customer_name": order.customer_name_snapshot,
+        "payment_date": payment.payment_date,
+        "amount": payment.amount,
+        "comment": payment.comment,
+        "saldo_before_payment": saldo_before_payment,
+        "saldo_after_payment": saldo_after_payment,
+        "created_by_user_id": payment.created_by_user_id,
+        "created_at": payment.created_at,
     }
 
 

@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 from sqlalchemy.orm import Session, joinedload
 
-from app.models import B2BAROpeningBalance, B2BCustomer, B2BSalesOrder, User
+from app.models import B2BAROpeningBalance, B2BARPayment, B2BCustomer, B2BSalesOrder, User
 
 
 ZERO = Decimal("0")
@@ -26,6 +26,7 @@ class AccountsReceivableRow:
     order_number: str
     customer_id: int
     customer_name: str
+    has_opening_balance: bool
     invoice_date: date
     invoice_date_is_fallback: bool
     created_at: datetime
@@ -68,6 +69,27 @@ class AccountsReceivableEditState:
     comment: str
 
 
+@dataclass(frozen=True)
+class AccountsReceivablePaymentHistoryEntry:
+    payment_id: int
+    payment_date: date
+    amount: Decimal
+    comment: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class AccountsReceivablePaymentEntryState:
+    order: B2BSalesOrder
+    invoice_date: date
+    invoice_date_is_fallback: bool
+    total_amount: Decimal
+    paid_amount_current: Decimal
+    pending_amount_current: Decimal
+    credit_days: int
+    payment_history: list[AccountsReceivablePaymentHistoryEntry]
+
+
 class AccountsReceivableValidationError(Exception):
     pass
 
@@ -88,6 +110,7 @@ def build_accounts_receivable_dashboard(
         .options(
             joinedload(B2BSalesOrder.customer),
             joinedload(B2BSalesOrder.ar_opening_balance),
+            joinedload(B2BSalesOrder.ar_payments),
         )
         .order_by(B2BSalesOrder.created_at.desc(), B2BSalesOrder.id.desc())
     )
@@ -142,6 +165,7 @@ def get_accounts_receivable_order_for_manual_balance(db: Session, order_id: int)
         .options(
             joinedload(B2BSalesOrder.customer),
             joinedload(B2BSalesOrder.ar_opening_balance),
+            joinedload(B2BSalesOrder.ar_payments),
         )
         .one_or_none()
     )
@@ -155,8 +179,8 @@ def get_accounts_receivable_order_for_manual_balance(db: Session, order_id: int)
 def build_accounts_receivable_edit_state(order: B2BSalesOrder) -> AccountsReceivableEditState:
     invoice_date_is_fallback = order.invoiced_at is None
     invoice_date = order.invoiced_at.date() if order.invoiced_at is not None else order.created_at.date()
-    pending_amount = _pending_amount_from_opening_balance(order)
-    paid_amount = _paid_amount_from_pending_balance(order.total_amount, pending_amount)
+    pending_amount = _current_pending_amount(order)
+    paid_amount = _current_paid_amount(order)
     comment = ""
     if order.ar_opening_balance is not None and order.ar_opening_balance.comment:
         comment = order.ar_opening_balance.comment
@@ -188,7 +212,11 @@ def update_accounts_receivable_opening_balance(
         raise AccountsReceivableValidationError("Current paid amount cannot be greater than the invoice total.")
 
     trimmed_comment = (comment or "").strip() or None
-    outstanding_amount = total_amount - parsed_paid_amount
+    desired_pending_amount = total_amount - parsed_paid_amount
+    if desired_pending_amount < ZERO:
+        desired_pending_amount = ZERO
+    recorded_payments_amount = _sum_recorded_payments(order)
+    outstanding_amount = desired_pending_amount + recorded_payments_amount
     if outstanding_amount < ZERO:
         outstanding_amount = ZERO
 
@@ -218,6 +246,80 @@ def update_accounts_receivable_opening_balance(
     return opening_balance
 
 
+def get_accounts_receivable_order_for_payment(db: Session, order_id: int) -> B2BSalesOrder:
+    order = (
+        db.query(B2BSalesOrder)
+        .filter(B2BSalesOrder.id == order_id)
+        .options(
+            joinedload(B2BSalesOrder.customer),
+            joinedload(B2BSalesOrder.ar_opening_balance),
+            joinedload(B2BSalesOrder.ar_payments),
+        )
+        .one_or_none()
+    )
+    if order is None:
+        raise AccountsReceivableValidationError("B2B sales order not found.")
+    if order.status != "invoiced":
+        raise AccountsReceivableValidationError("Only invoiced B2B sales orders can register payments.")
+    return order
+
+
+def build_accounts_receivable_payment_entry_state(order: B2BSalesOrder) -> AccountsReceivablePaymentEntryState:
+    invoice_date_is_fallback = order.invoiced_at is None
+    invoice_date = order.invoiced_at.date() if order.invoiced_at is not None else order.created_at.date()
+    return AccountsReceivablePaymentEntryState(
+        order=order,
+        invoice_date=invoice_date,
+        invoice_date_is_fallback=invoice_date_is_fallback,
+        total_amount=order.total_amount,
+        paid_amount_current=_current_paid_amount(order),
+        pending_amount_current=_current_pending_amount(order),
+        credit_days=order.customer.credit_days if order.customer is not None else 0,
+        payment_history=_payment_history(order),
+    )
+
+
+def record_accounts_receivable_payment(
+    db: Session,
+    *,
+    order: B2BSalesOrder,
+    payment_date: str | date | None,
+    amount: str | Decimal | None,
+    comment: str | None,
+    acting_user: User | None,
+) -> tuple[B2BARPayment, Decimal, Decimal]:
+    if order.ar_opening_balance is None:
+        raise AccountsReceivableValidationError("This invoice does not have a manual outstanding balance snapshot.")
+
+    pending_before_payment = _current_pending_amount(order)
+    if pending_before_payment <= ZERO:
+        raise AccountsReceivableValidationError("This invoice does not have any outstanding balance available for payment registration.")
+
+    parsed_payment_date = _parse_payment_date(payment_date)
+    parsed_amount = _parse_payment_amount(amount)
+    if parsed_amount <= ZERO:
+        raise AccountsReceivableValidationError("Payment amount must be greater than zero.")
+    if parsed_amount > pending_before_payment:
+        raise AccountsReceivableValidationError("Payment amount cannot be greater than the current outstanding balance.")
+
+    trimmed_comment = (comment or "").strip() or None
+    current_timestamp = datetime.utcnow()
+    payment = B2BARPayment(
+        sales_order_id=order.id,
+        payment_date=parsed_payment_date,
+        amount=parsed_amount,
+        comment=trimmed_comment,
+        created_by_user_id=acting_user.id if acting_user is not None else None,
+        created_at=current_timestamp,
+    )
+    db.add(payment)
+    db.flush()
+    pending_after_payment = pending_before_payment - parsed_amount
+    if pending_after_payment < ZERO:
+        pending_after_payment = ZERO
+    return payment, pending_before_payment, pending_after_payment
+
+
 def _build_row(order: B2BSalesOrder, today: date) -> AccountsReceivableRow:
     invoice_date_is_fallback = order.invoiced_at is None
     invoice_date = (
@@ -225,9 +327,9 @@ def _build_row(order: B2BSalesOrder, today: date) -> AccountsReceivableRow:
         if order.invoiced_at is not None
         else order.created_at.date()
     )
-    pending_amount = _pending_amount_from_opening_balance(order)
-    paid_amount = _paid_amount_from_pending_balance(order.total_amount, pending_amount)
-    last_payment_date = None
+    pending_amount = _current_pending_amount(order)
+    paid_amount = _current_paid_amount(order)
+    last_payment_date = _latest_recorded_payment_date(order)
     credit_days = order.customer.credit_days if order.customer is not None else 0
     due_date = invoice_date if credit_days <= 0 else invoice_date.fromordinal(invoice_date.toordinal() + credit_days)
     days_remaining = (due_date - today).days if pending_amount > ZERO else None
@@ -237,6 +339,7 @@ def _build_row(order: B2BSalesOrder, today: date) -> AccountsReceivableRow:
         order_number=order.order_number,
         customer_id=order.customer_id,
         customer_name=order.customer_name_snapshot,
+        has_opening_balance=order.ar_opening_balance is not None,
         invoice_date=invoice_date,
         invoice_date_is_fallback=invoice_date_is_fallback,
         created_at=order.created_at,
@@ -262,6 +365,20 @@ def _pending_amount_from_opening_balance(order: B2BSalesOrder) -> Decimal:
     return pending_amount
 
 
+def _current_pending_amount(order: B2BSalesOrder) -> Decimal:
+    pending_base_amount = _pending_amount_from_opening_balance(order)
+    if pending_base_amount <= ZERO:
+        return ZERO
+    pending_amount = pending_base_amount - _sum_recorded_payments(order)
+    if pending_amount < ZERO:
+        return ZERO
+    return pending_amount
+
+
+def _current_paid_amount(order: B2BSalesOrder) -> Decimal:
+    return _paid_amount_from_pending_balance(order.total_amount, _current_pending_amount(order))
+
+
 def _paid_amount_from_pending_balance(total_amount: Decimal | None, pending_amount: Decimal) -> Decimal:
     resolved_total_amount = total_amount or ZERO
     paid_amount = resolved_total_amount - pending_amount
@@ -281,6 +398,58 @@ def _parse_paid_amount_current(value: str | Decimal | None) -> Decimal:
         return Decimal(normalized)
     except InvalidOperation as exc:
         raise AccountsReceivableValidationError("Current paid amount must be a valid number.") from exc
+
+
+def _parse_payment_date(value: str | date | None) -> date:
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        raise AccountsReceivableValidationError("Payment date is required.")
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise AccountsReceivableValidationError("Payment date must be a valid date.") from exc
+
+
+def _parse_payment_amount(value: str | Decimal | None) -> Decimal:
+    if isinstance(value, Decimal):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        raise AccountsReceivableValidationError("Payment amount is required.")
+    normalized = text.replace(" ", "").replace(",", ".")
+    try:
+        return Decimal(normalized)
+    except InvalidOperation as exc:
+        raise AccountsReceivableValidationError("Payment amount must be a valid number.") from exc
+
+
+def _sum_recorded_payments(order: B2BSalesOrder) -> Decimal:
+    total = ZERO
+    for payment in order.ar_payments:
+        total += payment.amount or ZERO
+    return total
+
+
+def _latest_recorded_payment_date(order: B2BSalesOrder) -> date | None:
+    payment_dates = [payment.payment_date for payment in order.ar_payments if payment.payment_date is not None]
+    if not payment_dates:
+        return None
+    return max(payment_dates)
+
+
+def _payment_history(order: B2BSalesOrder) -> list[AccountsReceivablePaymentHistoryEntry]:
+    return [
+        AccountsReceivablePaymentHistoryEntry(
+            payment_id=payment.id,
+            payment_date=payment.payment_date,
+            amount=payment.amount,
+            comment=payment.comment,
+            created_at=payment.created_at,
+        )
+        for payment in sorted(order.ar_payments, key=lambda item: (item.payment_date, item.id), reverse=True)
+    ]
 
 
 def _build_status(pending_amount: Decimal, days_remaining: int | None) -> tuple[str, str, str, str]:
