@@ -365,6 +365,10 @@ p {
   overflow-x: auto;
 }
 
+.table-wrap table {
+  min-width: 1120px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

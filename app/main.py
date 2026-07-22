@@ -109,6 +109,11 @@ from app.services.b2b_sales_service import (
     update_customer_product,
     update_sales_order_lines,
 )
+from app.services.accounts_receivable_service import (
+    STATUS_ALL as AR_STATUS_ALL,
+    STATUS_OPTIONS as AR_STATUS_OPTIONS,
+    build_accounts_receivable_dashboard,
+)
 from app.services.b2c_sales_service import (
     B2CValidationError,
     change_b2c_sales_order_status,
@@ -4263,12 +4268,38 @@ def sales_home(request: Request) -> HTMLResponse:
 
 
 @app.get("/sales/accounts-receivable", response_class=HTMLResponse)
-def sales_accounts_receivable_placeholder(request: Request) -> HTMLResponse:
+def sales_accounts_receivable(
+    request: Request,
+    customer_id: str = Query(""),
+    status: str = Query(AR_STATUS_ALL),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
     require_permission(request, "ar.view")
+    selected_customer_id = None
+    if customer_id.strip():
+        try:
+            selected_customer_id = int(customer_id)
+        except ValueError:
+            selected_customer_id = None
+    dashboard = build_accounts_receivable_dashboard(
+        db,
+        customer_id=selected_customer_id,
+        status=status,
+    )
     return templates.TemplateResponse(
         request=request,
         name="accounts_receivable_placeholder.html",
-        context={"title": "Accounts Receivable"},
+        context={
+            "title": "Accounts Receivable",
+            "rows": dashboard.rows,
+            "customers": dashboard.customers,
+            "summary": dashboard.summary,
+            "status_options": AR_STATUS_OPTIONS,
+            "filters": {
+                "customer_id": customer_id,
+                "status": status if status in {item[0] for item in AR_STATUS_OPTIONS} else AR_STATUS_ALL,
+            },
+        },
     )
 
 

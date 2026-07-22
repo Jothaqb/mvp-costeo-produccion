@@ -1,10 +1,100 @@
 {% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
 
 {% block content %}
-  <section class="page-hero">
-    <p class="eyebrow">Sales</p>
-    <h1>Accounts Receivable</h1>
-    <p class="lead">Accounts Receivable coming next sprint.</p>
-    <p><a href="/sales">Back to Sales</a></p>
+  <section>
+    <h1>{{ title }}</h1>
+    <div class="actions">
+      <a class="button" href="/sales">Sales Home</a>
+      <a class="button" href="/b2b/orders">B2B Sales Orders</a>
+    </div>
+    <dl class="summary">
+      <div>
+        <dt>Total en credito</dt>
+        <dd>{{ fmt.money_crc(summary.total_in_credit) }}</dd>
+      </div>
+      <div>
+        <dt>Total vencido</dt>
+        <dd>{{ fmt.money_crc(summary.total_overdue) }}</dd>
+      </div>
+      <div>
+        <dt>Total pagado</dt>
+        <dd>{{ fmt.money_crc(summary.total_paid) }}</dd>
+      </div>
+      <div>
+        <dt>Total pendiente</dt>
+        <dd>{{ fmt.money_crc(summary.total_pending) }}</dd>
+      </div>
+    </dl>
+
+    <form method="get" action="/sales/accounts-receivable" class="filter-form">
+      <label for="customer_id">Cliente</label>
+      <select id="customer_id" name="customer_id">
+        <option value="">Todos</option>
+        {% for customer in customers %}
+          <option value="{{ customer.id }}" {% if filters.customer_id == customer.id|string %}selected{% endif %}>{{ customer.customer_name }}</option>
+        {% endfor %}
+      </select>
+
+      <label for="status">Status</label>
+      <select id="status" name="status">
+        {% for value, label in status_options %}
+          <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+
+      <button type="submit">Filter</button>
+      <a href="/sales/accounts-receivable">Clear</a>
+    </form>
+  </section>
+
+  <section>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Customer</th>
+            <th>Fecha facturacion</th>
+            <th>Status AR</th>
+            <th>Created</th>
+            <th>Net Sales</th>
+            <th>Monto pagado</th>
+            <th>Saldo pendiente</th>
+            <th>Fecha del pago</th>
+            <th>Dias restantes de credito</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td><a class="table-link" href="/b2b/orders/{{ row.order_id }}">{{ row.order_number }}</a></td>
+              <td>{{ row.customer_name }}</td>
+              <td>
+                {{ row.invoice_date }}
+                {% if row.invoice_date_is_fallback %}<div class="table-status-text">Fallback created date</div>{% endif %}
+              </td>
+              <td><span class="status-pill {{ row.status_class }}">{{ row.status_label }}</span></td>
+              <td>{{ row.created_at }}</td>
+              <td>{{ fmt.money_crc(row.net_sales) }}</td>
+              <td>{{ fmt.money_crc(row.paid_amount) }}</td>
+              <td>{{ fmt.money_crc(row.pending_amount) }}</td>
+              <td>{{ row.last_payment_date if row.last_payment_date else "—" }}</td>
+              <td>
+                {% if row.days_remaining is none %}
+                  <span class="table-status-text">Pagada</span>
+                {% else %}
+                  <span class="status-pill {{ row.days_class }}">{{ row.days_remaining }}</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="10">No invoiced B2B orders match the selected filters.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
 {% endblock %}
