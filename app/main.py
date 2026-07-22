@@ -4291,6 +4291,7 @@ def sales_accounts_receivable(
         customer_id=selected_customer_id,
         status=status,
     )
+    export_url = f"/sales/accounts-receivable/export.csv?customer_id={quote(customer_id)}&status={quote(status)}"
     return templates.TemplateResponse(
         request=request,
         name="accounts_receivable_placeholder.html",
@@ -4304,7 +4305,68 @@ def sales_accounts_receivable(
                 "customer_id": customer_id,
                 "status": status if status in {item[0] for item in AR_STATUS_OPTIONS} else AR_STATUS_ALL,
             },
+            "export_url": export_url,
         },
+    )
+
+
+@app.get("/sales/accounts-receivable/export.csv")
+def sales_accounts_receivable_export_csv(
+    request: Request,
+    customer_id: str = Query(""),
+    status: str = Query(AR_STATUS_ALL),
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "ar.export")
+    selected_customer_id = None
+    if customer_id.strip():
+        try:
+            selected_customer_id = int(customer_id)
+        except ValueError:
+            selected_customer_id = None
+    dashboard = build_accounts_receivable_dashboard(
+        db,
+        customer_id=selected_customer_id,
+        status=status,
+    )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        (
+            "Order",
+            "Customer",
+            "Fecha facturacion",
+            "Created",
+            "Net Sales",
+            "Monto pagado",
+            "Saldo pendiente",
+            "Fecha del pago",
+            "Dias credito",
+            "Dias restantes de credito",
+            "Status AR",
+        )
+    )
+    for row in dashboard.rows:
+        writer.writerow(
+            (
+                row.order_number,
+                row.customer_name,
+                row.invoice_date.isoformat(),
+                row.created_at.isoformat(sep=" ", timespec="seconds"),
+                format(row.net_sales, "f"),
+                format(row.paid_amount, "f"),
+                format(row.pending_amount, "f"),
+                row.last_payment_date.isoformat() if row.last_payment_date is not None else "",
+                row.credit_days,
+                row.days_remaining if row.days_remaining is not None else "",
+                row.status_label,
+            )
+        )
+    return Response(
+        content=buffer.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="accounts_receivable.csv"'},
     )
 
 

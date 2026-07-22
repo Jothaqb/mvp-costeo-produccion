@@ -7,6 +7,7 @@
     <div class="actions">
       <a class="button" href="/sales">Sales Home</a>
       <a class="button" href="/b2b/orders">B2B Sales Orders</a>
+      {% if can(request, "ar.export") %}<a class="button" href="{{ export_url }}">Export CSV</a>{% endif %}
     </div>
     <dl class="summary">
       <div>
@@ -71,10 +72,7 @@
             <tr>
               <td><a class="table-link" href="/b2b/orders/{{ row.order_id }}">{{ row.order_number }}</a></td>
               <td>{{ row.customer_name }}</td>
-              <td>
-                {{ row.invoice_date }}
-                {% if row.invoice_date_is_fallback %}<div class="table-status-text">Fallback created date</div>{% endif %}
-              </td>
+              <td>{{ row.invoice_date }}</td>
               <td><span class="status-pill {{ row.status_class }}">{{ row.status_label }}</span></td>
               <td>{{ row.created_at }}</td>
               <td>{{ fmt.money_crc(row.net_sales) }}</td>
