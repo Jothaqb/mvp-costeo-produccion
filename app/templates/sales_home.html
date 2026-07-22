@@ -26,6 +26,17 @@
       <span class="module-entry">Open Customers</span>
     </a>
 
+    {% if can(request, "ar.view") %}
+      <a class="module-card module-link-card" href="/sales/accounts-receivable" aria-label="Open Accounts Receivable">
+        <div>
+          <p class="eyebrow">Submodule</p>
+          <h2>Accounts Receivable</h2>
+          <p>Track B2B invoices, payments, outstanding balances, credit days, and overdue accounts.</p>
+        </div>
+        <span class="module-entry">Open Accounts Receivable</span>
+      </a>
+    {% endif %}
+
     {% if can(request, "reporting.view") %}
       <a class="module-card module-link-card" href="/sales/reporting" aria-label="Open Reporting">
         <div>

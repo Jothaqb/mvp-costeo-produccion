@@ -11,6 +11,7 @@ from fastapi import Request
 from app.database import SessionLocal
 from app.models import (
     AuditLog,
+    B2BCustomer,
     B2BCustomerProduct,
     B2BSalesOrder,
     B2CSalesOrder,
@@ -129,6 +130,23 @@ def snapshot_product_bom_for_audit(bom: ProductBomHeader | None) -> list[dict[st
             str(item.get("notes") or ""),
         ),
     )
+
+
+def snapshot_b2b_customer_for_audit(customer: B2BCustomer) -> dict[str, Any]:
+    return {
+        "customer_id": customer.id,
+        "customer_name": customer.customer_name,
+        "address": customer.address,
+        "province": customer.province,
+        "canton": customer.canton,
+        "district": customer.district,
+        "legal_name": customer.legal_name,
+        "legal_id": customer.legal_id,
+        "phone": customer.phone,
+        "loyverse_customer_id": customer.loyverse_customer_id,
+        "credit_days": customer.credit_days,
+        "active": customer.active,
+    }
 
 
 def snapshot_b2b_customer_product_for_audit(
@@ -275,6 +293,7 @@ def snapshot_b2b_sales_order_for_audit(order: B2BSalesOrder) -> dict[str, Any]:
         "customer_id": order.customer_id,
         "customer_name": order.customer_name_snapshot,
         "status": order.status,
+        "invoiced_at": order.invoiced_at,
         "delivery_date": order.delivery_date,
         "total_amount": order.total_amount,
         "cost_total_snapshot": order.cost_total_snapshot,

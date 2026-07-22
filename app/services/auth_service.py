@@ -51,6 +51,10 @@ BASE_PERMISSION_DEFINITIONS = (
     ("sales.invoice", "sales", "invoice", "Invoice sales orders."),
     ("sales.import", "sales", "import", "Import historical sales data."),
     ("sales.export", "sales", "export", "Export sales data."),
+    ("ar.view", "ar", "view", "View accounts receivable data."),
+    ("ar.record_payment", "ar", "record_payment", "Record accounts receivable payments."),
+    ("ar.export", "ar", "export", "Export accounts receivable data."),
+    ("ar.manage_opening_balance", "ar", "manage_opening_balance", "Manage accounts receivable opening balances."),
     ("purchase_order.view", "purchase_order", "view", "View purchase orders."),
     ("purchase_order.create", "purchase_order", "create", "Create purchase orders."),
     ("purchase_order.edit", "purchase_order", "edit", "Edit purchase orders."),
@@ -179,10 +183,37 @@ def sync_admin_role_permissions(db: Session, role: Role) -> None:
     db.flush()
 
 
+def sync_role_permissions_by_code_if_present(db: Session, role_code: str, permission_codes: set[str]) -> None:
+    role = db.query(Role).filter(Role.code == role_code, Role.active.is_(True)).one_or_none()
+    if role is None:
+        return
+
+    permission_ids = {
+        permission.id
+        for permission in db.query(Permission).filter(Permission.code.in_(sorted(permission_codes))).all()
+    }
+    if not permission_ids:
+        return
+
+    existing_permission_ids = {
+        link.permission_id
+        for link in db.query(RolePermission).filter(RolePermission.role_id == role.id).all()
+    }
+    for permission_id in permission_ids:
+        if permission_id not in existing_permission_ids:
+            db.add(RolePermission(role_id=role.id, permission_id=permission_id))
+    db.flush()
+
+
 def ensure_auth_seed_state(db: Session) -> None:
     ensure_base_permissions(db)
     admin_role = ensure_admin_role(db)
     sync_admin_role_permissions(db, admin_role)
+    sync_role_permissions_by_code_if_present(
+        db,
+        "general_approver",
+        {"ar.view", "ar.record_payment", "ar.export"},
+    )
     db.flush()
 
 

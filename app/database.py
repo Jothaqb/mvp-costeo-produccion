@@ -1047,6 +1047,61 @@ def ensure_b2b_invoice_snapshot_columns() -> None:
         )
 
 
+def ensure_b2b_accounts_receivable_tables() -> None:
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "b2b_customers",
+            {
+                "credit_days": "INTEGER NOT NULL DEFAULT 0",
+            },
+        )
+        _ensure_columns(
+            connection,
+            "b2b_sales_orders",
+            {
+                "invoiced_at": "TIMESTAMP",
+            },
+        )
+
+        if engine.dialect.name != "sqlite":
+            return
+
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS b2b_ar_payments (
+                id INTEGER NOT NULL PRIMARY KEY,
+                sales_order_id INTEGER NOT NULL,
+                payment_date DATE NOT NULL,
+                amount NUMERIC(12, 4) NOT NULL,
+                comment TEXT,
+                created_by_user_id INTEGER,
+                created_at DATETIME NOT NULL,
+                FOREIGN KEY(sales_order_id) REFERENCES b2b_sales_orders(id),
+                FOREIGN KEY(created_by_user_id) REFERENCES users(id)
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE IF NOT EXISTS b2b_ar_opening_balances (
+                id INTEGER NOT NULL PRIMARY KEY,
+                sales_order_id INTEGER NOT NULL UNIQUE,
+                outstanding_amount NUMERIC(12, 4) NOT NULL,
+                invoice_date_override DATE,
+                comment TEXT,
+                created_by_user_id INTEGER,
+                created_at DATETIME NOT NULL,
+                updated_by_user_id INTEGER,
+                updated_at DATETIME,
+                FOREIGN KEY(sales_order_id) REFERENCES b2b_sales_orders(id),
+                FOREIGN KEY(created_by_user_id) REFERENCES users(id),
+                FOREIGN KEY(updated_by_user_id) REFERENCES users(id)
+            )
+            """
+        )
+
+
 def ensure_b2c_sales_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

@@ -4,34 +4,48 @@
   <section>
     <h1>{{ title }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% set form_customer_name = form_data.customer_name if form_data else (customer.customer_name if customer else '') %}
+    {% set form_address = form_data.address if form_data else (customer.address if customer and customer.address else '') %}
+    {% set form_province = form_data.province if form_data else (customer.province if customer and customer.province else '') %}
+    {% set form_canton = form_data.canton if form_data else (customer.canton if customer and customer.canton else '') %}
+    {% set form_district = form_data.district if form_data else (customer.district if customer and customer.district else '') %}
+    {% set form_legal_name = form_data.legal_name if form_data else (customer.legal_name if customer and customer.legal_name else '') %}
+    {% set form_legal_id = form_data.legal_id if form_data else (customer.legal_id if customer and customer.legal_id else '') %}
+    {% set form_phone = form_data.phone if form_data else (customer.phone if customer and customer.phone else '') %}
+    {% set form_loyverse_customer_id = form_data.loyverse_customer_id if form_data else (customer.loyverse_customer_id if customer and customer.loyverse_customer_id else '') %}
+    {% set form_credit_days = form_data.credit_days if form_data else (customer.credit_days if customer else 0) %}
+    {% set form_active = form_data.active if form_data else (customer.active if customer else True) %}
     <form method="post" action="{{ '/b2b/customers/' ~ customer.id ~ '/edit' if customer else '/b2b/customers' }}">
       <label for="customer_name">Customer name</label>
-      <input id="customer_name" name="customer_name" value="{{ customer.customer_name if customer else '' }}" required>
+      <input id="customer_name" name="customer_name" value="{{ form_customer_name }}" required>
 
       <label for="address">Address</label>
-      <textarea id="address" name="address">{{ customer.address if customer and customer.address else '' }}</textarea>
+      <textarea id="address" name="address">{{ form_address }}</textarea>
 
       <label for="province">Province</label>
-      <input id="province" name="province" value="{{ customer.province if customer and customer.province else '' }}">
+      <input id="province" name="province" value="{{ form_province }}">
 
       <label for="canton">Canton</label>
-      <input id="canton" name="canton" value="{{ customer.canton if customer and customer.canton else '' }}">
+      <input id="canton" name="canton" value="{{ form_canton }}">
 
       <label for="district">District</label>
-      <input id="district" name="district" value="{{ customer.district if customer and customer.district else '' }}">
+      <input id="district" name="district" value="{{ form_district }}">
 
       <label for="legal_name">Legal name</label>
-      <input id="legal_name" name="legal_name" value="{{ customer.legal_name if customer and customer.legal_name else '' }}">
+      <input id="legal_name" name="legal_name" value="{{ form_legal_name }}">
 
       <label for="legal_id">Legal ID</label>
-      <input id="legal_id" name="legal_id" value="{{ customer.legal_id if customer and customer.legal_id else '' }}">
+      <input id="legal_id" name="legal_id" value="{{ form_legal_id }}">
 
       <label for="phone">Phone</label>
-      <input id="phone" name="phone" value="{{ customer.phone if customer and customer.phone else '' }}">
-      <input type="hidden" name="loyverse_customer_id" value="{{ customer.loyverse_customer_id if customer and customer.loyverse_customer_id else '' }}">
+      <input id="phone" name="phone" value="{{ form_phone }}">
+      <input type="hidden" name="loyverse_customer_id" value="{{ form_loyverse_customer_id }}">
+
+      <label for="credit_days">Credit days</label>
+      <input id="credit_days" name="credit_days" type="number" min="0" step="1" value="{{ form_credit_days }}">
 
       <label class="checkbox-label">
-        <input type="checkbox" name="active" value="true" {% if not customer or customer.active %}checked{% endif %}>
+        <input type="checkbox" name="active" value="true" {% if form_active %}checked{% endif %}>
         Active
       </label>
 

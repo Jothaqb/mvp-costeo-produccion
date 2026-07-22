@@ -20,6 +20,7 @@ from app.database import (
     Base,
     engine,
     SessionLocal,
+    ensure_b2b_accounts_receivable_tables,
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
     ensure_auth_tables,
@@ -285,6 +286,7 @@ from app.services.audit_service import (
     diff_audit_snapshots,
     format_audit_payload_for_display,
     safe_log_audit_event,
+    snapshot_b2b_customer_for_audit,
     snapshot_b2b_sales_order_for_audit,
     snapshot_b2b_customer_product_for_audit,
     snapshot_b2c_sales_order_for_audit,
@@ -408,6 +410,7 @@ ensure_sprint7c_lot_columns_and_tables()
 ensure_production_order_reversal_columns()
 ensure_b2b_sales_followup_columns()
 ensure_b2b_invoice_snapshot_columns()
+ensure_b2b_accounts_receivable_tables()
 ensure_b2c_sales_tables()
 ensure_discount_master_tables()
 ensure_b2b_loyverse_mapping_tables()
@@ -4259,6 +4262,16 @@ def sales_home(request: Request) -> HTMLResponse:
     )
 
 
+@app.get("/sales/accounts-receivable", response_class=HTMLResponse)
+def sales_accounts_receivable_placeholder(request: Request) -> HTMLResponse:
+    require_permission(request, "ar.view")
+    return templates.TemplateResponse(
+        request=request,
+        name="accounts_receivable_placeholder.html",
+        context={"title": "Accounts Receivable"},
+    )
+
+
 @app.get("/sales/orders-menu", response_class=HTMLResponse)
 def sales_orders_menu(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -6472,7 +6485,7 @@ def new_b2b_customer(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(
         request=request,
         name="b2b_customer_form.html",
-        context={"title": "New B2B Customer", "customer": None, "error": None},
+        context={"title": "New B2B Customer", "customer": None, "form_data": None, "error": None},
     )
 
 
@@ -6488,6 +6501,7 @@ def create_b2b_customer(
     legal_id: str = Form(""),
     phone: str = Form(""),
     loyverse_customer_id: str = Form(""),
+    credit_days: str = Form("0"),
     active: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -6503,7 +6517,17 @@ def create_b2b_customer(
             legal_id,
             phone,
             loyverse_customer_id,
+            credit_days,
             active,
+        )
+        safe_log_audit_event(
+            module="sales",
+            action="b2b_customer_created",
+            entity_type="b2b_customer",
+            entity_id=customer.id,
+            entity_label=customer.customer_name,
+            new_values=snapshot_b2b_customer_for_audit(customer),
+            request=request,
         )
         return _redirect(f"/b2b/customers/{customer.id}/products")
     except B2BValidationError as exc:
@@ -6511,7 +6535,24 @@ def create_b2b_customer(
         return templates.TemplateResponse(
             request=request,
             name="b2b_customer_form.html",
-            context={"title": "New B2B Customer", "customer": None, "error": str(exc)},
+            context={
+                "title": "New B2B Customer",
+                "customer": None,
+                "error": str(exc),
+                "form_data": {
+                    "customer_name": customer_name,
+                    "address": address,
+                    "province": province,
+                    "canton": canton,
+                    "district": district,
+                    "legal_name": legal_name,
+                    "legal_id": legal_id,
+                    "phone": phone,
+                    "loyverse_customer_id": loyverse_customer_id,
+                    "credit_days": credit_days,
+                    "active": active,
+                },
+            },
         )
 
 
@@ -6521,7 +6562,7 @@ def edit_b2b_customer(customer_id: int, request: Request, db: Session = Depends(
     return templates.TemplateResponse(
         request=request,
         name="b2b_customer_form.html",
-        context={"title": "Edit B2B Customer", "customer": customer, "error": None},
+        context={"title": "Edit B2B Customer", "customer": customer, "form_data": None, "error": None},
     )
 
 
@@ -6538,12 +6579,14 @@ def update_b2b_customer(
     legal_id: str = Form(""),
     phone: str = Form(""),
     loyverse_customer_id: str = Form(""),
+    credit_days: str = Form("0"),
     active: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+    old_snapshot = snapshot_b2b_customer_for_audit(customer)
     try:
-        update_customer(
+        updated_customer = update_customer(
             db,
             customer_id,
             customer_name,
@@ -6555,15 +6598,48 @@ def update_b2b_customer(
             legal_id,
             phone,
             loyverse_customer_id,
+            credit_days,
             active,
         )
+        changed_old, changed_new = diff_audit_snapshots(
+            old_snapshot,
+            snapshot_b2b_customer_for_audit(updated_customer),
+        )
+        if changed_old is not None and changed_new is not None:
+            safe_log_audit_event(
+                module="sales",
+                action="b2b_customer_updated",
+                entity_type="b2b_customer",
+                entity_id=updated_customer.id,
+                entity_label=updated_customer.customer_name,
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+            )
         return _redirect("/b2b/customers")
     except B2BValidationError as exc:
         db.rollback()
         return templates.TemplateResponse(
             request=request,
             name="b2b_customer_form.html",
-            context={"title": "Edit B2B Customer", "customer": customer, "error": str(exc)},
+            context={
+                "title": "Edit B2B Customer",
+                "customer": customer,
+                "error": str(exc),
+                "form_data": {
+                    "customer_name": customer_name,
+                    "address": address,
+                    "province": province,
+                    "canton": canton,
+                    "district": district,
+                    "legal_name": legal_name,
+                    "legal_id": legal_id,
+                    "phone": phone,
+                    "loyverse_customer_id": loyverse_customer_id,
+                    "credit_days": credit_days,
+                    "active": active,
+                },
+            },
         )
 
 

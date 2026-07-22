@@ -79,6 +79,7 @@ def create_customer(
     legal_id: str,
     phone: str,
     loyverse_customer_id: str,
+    credit_days: str | int | None,
     active: bool,
 ) -> B2BCustomer:
     customer = B2BCustomer()
@@ -93,6 +94,7 @@ def create_customer(
         legal_id,
         phone,
         loyverse_customer_id,
+        credit_days,
         active,
     )
     db.add(customer)
@@ -113,6 +115,7 @@ def update_customer(
     legal_id: str,
     phone: str,
     loyverse_customer_id: str,
+    credit_days: str | int | None,
     active: bool,
 ) -> B2BCustomer:
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
@@ -127,6 +130,7 @@ def update_customer(
         legal_id,
         phone,
         loyverse_customer_id,
+        credit_days,
         active,
     )
     db.commit()
@@ -145,11 +149,13 @@ def _assign_customer_fields(
     legal_id: str,
     phone: str,
     loyverse_customer_id: str,
+    credit_days: str | int | None,
     active: bool,
 ) -> None:
     name = customer_name.strip()
     if not name:
         raise B2BValidationError("Customer name is required.")
+    parsed_credit_days = _parse_credit_days(credit_days)
     customer.customer_name = name
     customer.address = address.strip() or None
     customer.province = province.strip() or None
@@ -159,7 +165,26 @@ def _assign_customer_fields(
     customer.legal_id = legal_id.strip() or None
     customer.phone = phone.strip() or None
     customer.loyverse_customer_id = loyverse_customer_id.strip() or None
+    customer.credit_days = parsed_credit_days
     customer.active = active
+
+
+def _parse_credit_days(value: str | int | None) -> int:
+    if value is None or value == "":
+        return 0
+    if isinstance(value, int):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return 0
+        try:
+            parsed = int(text)
+        except ValueError as exc:
+            raise B2BValidationError("Credit days must be a whole number.") from exc
+    if parsed < 0:
+        raise B2BValidationError("Credit days cannot be negative.")
+    return parsed
 
 
 def add_customer_product(
@@ -378,6 +403,8 @@ def invoice_b2b_order_in_erp(db: Session, order_id: int) -> B2BSalesOrder:
 
         _snapshot_b2b_order_invoice_margin(order)
         order.status = "invoiced"
+        if order.invoiced_at is None:
+            order.invoiced_at = transaction_date
         db.commit()
         db.refresh(order)
         return order

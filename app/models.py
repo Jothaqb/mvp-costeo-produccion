@@ -440,6 +440,7 @@ class B2BCustomer(Base):
     legal_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
     loyverse_customer_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    credit_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -550,6 +551,7 @@ class B2BSalesOrder(Base):
     loyverse_invoice_sync_attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     loyverse_invoice_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     loyverse_invoice_sync_attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    invoiced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -563,6 +565,15 @@ class B2BSalesOrder(Base):
     lines: Mapped[list["B2BSalesOrderLine"]] = relationship(
         back_populates="sales_order",
         cascade="all, delete-orphan",
+    )
+    ar_payments: Mapped[list["B2BARPayment"]] = relationship(
+        back_populates="sales_order",
+        cascade="all, delete-orphan",
+    )
+    ar_opening_balance: Mapped["B2BAROpeningBalance | None"] = relationship(
+        back_populates="sales_order",
+        cascade="all, delete-orphan",
+        uselist=False,
     )
 
 
@@ -591,6 +602,39 @@ class B2BSalesOrderLine(Base):
     )
 
     sales_order: Mapped[B2BSalesOrder] = relationship(back_populates="lines")
+
+
+class B2BARPayment(Base):
+    __tablename__ = "b2b_ar_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    sales_order_id: Mapped[int] = mapped_column(ForeignKey("b2b_sales_orders.id"), nullable=False, index=True)
+    payment_date: Mapped[date] = mapped_column(Date, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    sales_order: Mapped[B2BSalesOrder] = relationship(back_populates="ar_payments")
+
+
+class B2BAROpeningBalance(Base):
+    __tablename__ = "b2b_ar_opening_balances"
+    __table_args__ = (
+        UniqueConstraint("sales_order_id", name="uq_b2b_ar_opening_balances_sales_order_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    sales_order_id: Mapped[int] = mapped_column(ForeignKey("b2b_sales_orders.id"), nullable=False, index=True)
+    outstanding_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    invoice_date_override: Mapped[date | None] = mapped_column(Date, nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    sales_order: Mapped[B2BSalesOrder] = relationship(back_populates="ar_opening_balance")
 
 
 class B2CSalesOrder(Base):
