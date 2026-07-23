@@ -37,6 +37,17 @@
       </a>
     {% endif %}
 
+    {% if can(request, "sales.import_loyverse_b2c") %}
+      <a class="module-card module-link-card" href="/sales/b2c-loyverse-import" aria-label="Open B2C Loyverse Import Preview">
+        <div>
+          <p class="eyebrow">Submodule</p>
+          <h2>B2C Loyverse Import Preview</h2>
+          <p>Preview B2C receipts from Loyverse before importing them into ERP.</p>
+        </div>
+        <span class="module-entry">Open B2C Loyverse Import Preview</span>
+      </a>
+    {% endif %}
+
     {% if can(request, "reporting.view") %}
       <a class="module-card module-link-card" href="/sales/reporting" aria-label="Open Reporting">
         <div>
