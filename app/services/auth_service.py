@@ -50,6 +50,7 @@ BASE_PERMISSION_DEFINITIONS = (
     ("sales.edit", "sales", "edit", "Edit sales orders."),
     ("sales.invoice", "sales", "invoice", "Invoice sales orders."),
     ("sales.import", "sales", "import", "Import historical sales data."),
+    ("sales.import_loyverse_b2c", "sales", "import_loyverse_b2c", "Preview B2C receipts from Loyverse."),
     ("sales.export", "sales", "export", "Export sales data."),
     ("ar.view", "ar", "view", "View accounts receivable data."),
     ("ar.record_payment", "ar", "record_payment", "Record accounts receivable payments."),

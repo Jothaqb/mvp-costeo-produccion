@@ -158,6 +158,11 @@ from app.services.b2c_sales_historical_import_service import (
     EXPECTED_HEADERS as B2C_HISTORICAL_IMPORT_HEADERS,
     import_b2c_historical_sales_csv,
 )
+from app.services.loyverse_b2c_receipts_import_service import (
+    LoyverseB2CReceiptPreviewError,
+    LoyverseB2CReceiptsPreviewResult,
+    build_loyverse_b2c_receipts_preview,
+)
 from app.services.config_service import (
     ValidationError,
     parse_decimal,
@@ -5460,6 +5465,93 @@ def initialize_b2c_customers_route(db: Session = Depends(get_db)) -> Response:
     except B2CCustomerValidationError as exc:
         db.rollback()
         return _redirect(f"/sales/b2c-customers?error={quote(str(exc))}")
+
+
+def _b2c_loyverse_import_form_context(
+    *,
+    title: str,
+    error: str | None = None,
+    form_data: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "error": error,
+        "form_data": form_data or {"start_datetime": "", "end_datetime": ""},
+    }
+
+
+def _b2c_loyverse_import_preview_context(
+    *,
+    title: str,
+    preview: LoyverseB2CReceiptsPreviewResult,
+    form_data: dict[str, str],
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "preview": preview,
+        "form_data": form_data,
+    }
+
+
+@app.get("/sales/b2c-loyverse-import", response_class=HTMLResponse)
+def b2c_loyverse_import_form(request: Request) -> HTMLResponse:
+    require_permission(request, "sales.import_loyverse_b2c")
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_loyverse_import_form.html",
+        context=_b2c_loyverse_import_form_context(title="B2C Loyverse Import Preview"),
+    )
+
+
+@app.post("/sales/b2c-loyverse-import/preview", response_class=HTMLResponse)
+def b2c_loyverse_import_preview(
+    request: Request,
+    start_datetime: str = Form(""),
+    end_datetime: str = Form(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "sales.import_loyverse_b2c")
+    form_data = {
+        "start_datetime": (start_datetime or "").strip(),
+        "end_datetime": (end_datetime or "").strip(),
+    }
+    try:
+        if not form_data["start_datetime"] or not form_data["end_datetime"]:
+            raise LoyverseB2CReceiptPreviewError("Start and end date/time are required.")
+        parsed_start = datetime.fromisoformat(form_data["start_datetime"])
+        parsed_end = datetime.fromisoformat(form_data["end_datetime"])
+        if parsed_end < parsed_start:
+            raise LoyverseB2CReceiptPreviewError("End date/time must be greater than or equal to start date/time.")
+        preview = build_loyverse_b2c_receipts_preview(db, parsed_start, parsed_end)
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_import_preview.html",
+            context=_b2c_loyverse_import_preview_context(
+                title="B2C Loyverse Import Preview",
+                preview=preview,
+                form_data=form_data,
+            ),
+        )
+    except ValueError:
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_import_form.html",
+            context=_b2c_loyverse_import_form_context(
+                title="B2C Loyverse Import Preview",
+                error="Start and end date/time must be valid ISO date/time values.",
+                form_data=form_data,
+            ),
+        )
+    except LoyverseB2CReceiptPreviewError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_import_form.html",
+            context=_b2c_loyverse_import_form_context(
+                title="B2C Loyverse Import Preview",
+                error=str(exc),
+                form_data=form_data,
+            ),
+        )
 
 
 @app.get("/planning", response_class=HTMLResponse)

@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p class="lead">Preview-only. This screen reads Loyverse receipts, classifies them, and detects blockers or warnings without creating ERP sales orders.</p>
+    <div class="actions">
+      <a class="button" href="/sales/b2c-loyverse-import">Back to Import Form</a>
+      <a class="button" href="/b2c/orders">B2C Sales Orders</a>
+    </div>
+  </section>
+
+  <section>
+    <h2>Query Summary</h2>
+    <p><strong>Start:</strong> {{ form_data.start_datetime }}</p>
+    <p><strong>End:</strong> {{ form_data.end_datetime }}</p>
+    {% if preview.queried_with_store_id %}
+      <p><strong>Store filter:</strong> {{ preview.queried_with_store_id }}</p>
+    {% endif %}
+    <dl class="summary">
+      <div><dt>Receipts read</dt><dd>{{ preview.summary.receipts_read }}</dd></div>
+      <div><dt>Importable</dt><dd>{{ preview.summary.importable_count }}</dd></div>
+      <div><dt>Already imported</dt><dd>{{ preview.summary.already_imported_count }}</dd></div>
+      <div><dt>Excluded refunds</dt><dd>{{ preview.summary.excluded_refund_count }}</dd></div>
+      <div><dt>Excluded cancelled</dt><dd>{{ preview.summary.excluded_cancelled_count }}</dd></div>
+      <div><dt>Receipts with blockers</dt><dd>{{ preview.summary.receipts_with_blockers_count }}</dd></div>
+      <div><dt>Receipts with warnings</dt><dd>{{ preview.summary.receipts_with_warnings_count }}</dd></div>
+      <div><dt>Total gross</dt><dd>{{ fmt.money_crc(preview.summary.total_gross) }}</dd></div>
+      <div><dt>Total net</dt><dd>{{ fmt.money_crc(preview.summary.total_net) }}</dd></div>
+    </dl>
+  </section>
+
+  {% if preview.limitations %}
+    <section>
+      <h2>Current Limitations</h2>
+      <ul>
+        {% for limitation in preview.limitations %}
+          <li>{{ limitation }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if preview.warnings %}
+    <section>
+      <h2>Preview Warnings</h2>
+      <ul>
+        {% for warning in preview.warnings %}
+          <li>{{ warning }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <section>
+    <h2>Receipts</h2>
+    {% if preview.receipts %}
+      {% for receipt in preview.receipts %}
+        <article class="card">
+          <h3>{{ receipt.receipt_number or "Receipt without number" }}</h3>
+          <p><strong>Receipt ID:</strong> {{ receipt.receipt_id or "N/A" }}</p>
+          <p><strong>Receipt date:</strong> {{ receipt.receipt_date if receipt.receipt_date else "N/A" }}</p>
+          <p><strong>Created at:</strong> {{ receipt.created_at if receipt.created_at else "N/A" }}</p>
+          <p><strong>Customer:</strong> {{ receipt.customer_name or "N/A" }}</p>
+          <p><strong>Customer phone:</strong> {{ receipt.customer_phone or "N/A" }}</p>
+          <p><strong>Payment type:</strong> {{ receipt.payment_type_name or receipt.payment_type_id or "N/A" }}</p>
+          <p><strong>Status:</strong> {{ receipt.receipt_status_label }}</p>
+          <p><strong>Importable:</strong> {{ "yes" if receipt.importable else "no" }}</p>
+          <p><strong>Detected as already imported:</strong> {{ "yes" if receipt.already_imported else "no" }}</p>
+          <p><strong>Duplicate detection note:</strong> {{ receipt.duplicate_detection_note }}</p>
+          <p><strong>Gross total:</strong> {{ fmt.money_crc(receipt.gross_total) }}</p>
+          <p><strong>Discount total:</strong> {{ fmt.money_crc(receipt.discount_total) }}</p>
+          <p><strong>Net total:</strong> {{ fmt.money_crc(receipt.net_total) }}</p>
+
+          {% if receipt.blockers %}
+            <div class="error">
+              <strong>Blockers</strong>
+              <ul>
+                {% for blocker in receipt.blockers %}
+                  <li>{{ blocker }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+
+          {% if receipt.warnings %}
+            <div class="warning">
+              <strong>Warnings</strong>
+              <ul>
+                {% for warning in receipt.warnings %}
+                  <li>{{ warning }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+
+          <details>
+            <summary>Line details ({{ receipt.lines|length }})</summary>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Line</th>
+                    <th>Variant ID</th>
+                    <th>Item ID</th>
+                    <th>SKU</th>
+                    <th>Description</th>
+                    <th>Quantity</th>
+                    <th>Unit price</th>
+                    <th>Discount</th>
+                    <th>Net line total</th>
+                    <th>Match result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for line in receipt.lines %}
+                    <tr>
+                      <td>{{ line.line_number }}</td>
+                      <td>{{ line.loyverse_variant_id or "N/A" }}</td>
+                      <td>{{ line.loyverse_item_id or "N/A" }}</td>
+                      <td>{{ line.sku or "N/A" }}</td>
+                      <td>{{ line.description or "N/A" }}</td>
+                      <td>{{ line.quantity if line.quantity is not none else "N/A" }}</td>
+                      <td>{{ fmt.money_crc(line.unit_price) if line.unit_price is not none else "N/A" }}</td>
+                      <td>{{ fmt.money_crc(line.discount_amount) if line.discount_amount is not none else "N/A" }}</td>
+                      <td>{{ fmt.money_crc(line.net_line_total) if line.net_line_total is not none else "N/A" }}</td>
+                      <td>{{ line.product_match_label }}</td>
+                    </tr>
+                    {% if line.blockers or line.warnings %}
+                      <tr>
+                        <td colspan="10">
+                          {% if line.blockers %}
+                            <div class="error">
+                              <strong>Line blockers:</strong>
+                              <ul>
+                                {% for blocker in line.blockers %}
+                                  <li>{{ blocker }}</li>
+                                {% endfor %}
+                              </ul>
+                            </div>
+                          {% endif %}
+                          {% if line.warnings %}
+                            <div class="warning">
+                              <strong>Line warnings:</strong>
+                              <ul>
+                                {% for warning in line.warnings %}
+                                  <li>{{ warning }}</li>
+                                {% endfor %}
+                              </ul>
+                            </div>
+                          {% endif %}
+                        </td>
+                      </tr>
+                    {% endif %}
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </details>
+
+          <details>
+            <summary>Raw payload summary</summary>
+            <pre>{{ receipt.raw_payload_summary }}</pre>
+          </details>
+        </article>
+      {% endfor %}
+    {% else %}
+      <p>No receipts were returned for the selected range.</p>
+    {% endif %}
+  </section>
+{% endblock %}

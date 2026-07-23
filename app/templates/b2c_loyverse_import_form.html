@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p class="lead">Consult Loyverse B2C receipts by date range and review blockers or warnings before any import flow is implemented.</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <div class="actions">
+      <a class="button" href="/sales">Sales Home</a>
+      <a class="button" href="/b2c/orders">B2C Sales Orders</a>
+    </div>
+  </section>
+
+  <section>
+    <form action="/sales/b2c-loyverse-import/preview" method="post" class="wide-form">
+      <label for="start_datetime">Start date/time</label>
+      <input
+        id="start_datetime"
+        name="start_datetime"
+        type="datetime-local"
+        value="{{ form_data.start_datetime }}"
+        required
+      >
+
+      <label for="end_datetime">End date/time</label>
+      <input
+        id="end_datetime"
+        name="end_datetime"
+        type="datetime-local"
+        value="{{ form_data.end_datetime }}"
+        required
+      >
+
+      <div class="inline-actions">
+        <button type="submit">Preview Loyverse Receipts</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}
