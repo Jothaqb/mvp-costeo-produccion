@@ -4,7 +4,7 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
-    <p class="lead">Preview-only. This screen reads Loyverse receipts, classifies them, and detects blockers or warnings without creating ERP sales orders.</p>
+    <p class="lead">Review Loyverse receipts before applying clean B2C sales into ERP reporting-only history.</p>
     <div class="actions">
       <a class="button" href="/sales/b2c-loyverse-import">Back to Import Form</a>
       <a class="button" href="/b2c/orders">B2C Sales Orders</a>
@@ -29,7 +29,55 @@
       <div><dt>Total gross</dt><dd>{{ fmt.money_crc(preview.summary.total_gross) }}</dd></div>
       <div><dt>Total net</dt><dd>{{ fmt.money_crc(preview.summary.total_net) }}</dd></div>
     </dl>
+    {% if can(request, "sales.apply_loyverse_b2c") and apply_candidate_count > 0 %}
+      <form method="post" action="/sales/b2c-loyverse-import/apply" onsubmit="return confirm('Apply clean, non-duplicate Loyverse receipts as reporting-only B2C sales?');">
+        <input type="hidden" name="start_datetime" value="{{ form_data.start_datetime }}">
+        <input type="hidden" name="end_datetime" value="{{ form_data.end_datetime }}">
+        <button type="submit">Apply clean receipts reporting-only</button>
+      </form>
+    {% elif can(request, "sales.apply_loyverse_b2c") %}
+      <p class="muted-inline">No clean non-duplicate receipts are available to apply.</p>
+    {% endif %}
   </section>
+
+  {% if apply_result %}
+    <section>
+      <h2>Apply Result</h2>
+      <dl class="summary">
+        <div><dt>Range applied</dt><dd>{{ form_data.start_datetime }} - {{ form_data.end_datetime }}</dd></div>
+        <div><dt>Receipts read</dt><dd>{{ apply_result.receipts_read }}</dd></div>
+        <div><dt>Imported</dt><dd>{{ apply_result.imported_count }}</dd></div>
+        <div><dt>Skipped duplicates</dt><dd>{{ apply_result.skipped_duplicate_count }}</dd></div>
+        <div><dt>Blocked / not imported</dt><dd>{{ apply_result.skipped_blocked_count }}</dd></div>
+        <div><dt>Excluded refunds</dt><dd>{{ apply_result.excluded_refunds_count }}</dd></div>
+        <div><dt>Excluded cancelled</dt><dd>{{ apply_result.excluded_cancelled_count }}</dd></div>
+        <div><dt>Warnings</dt><dd>{{ apply_result.warning_count }}</dd></div>
+        <div><dt>Total imported</dt><dd>{{ fmt.money_crc(apply_result.total_imported) }}</dd></div>
+      </dl>
+
+      {% if apply_result.imported_receipts %}
+        <h3>Imported receipts</h3>
+        <ul>
+          {% for imported in apply_result.imported_receipts %}
+            <li>{{ imported.receipt_number }} -> <a href="/b2c/orders/{{ imported.order_id }}">{{ imported.order_number }}</a> ({{ fmt.money_crc(imported.total_amount) }})</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if apply_result.skipped_duplicates or apply_result.skipped_blocked %}
+        <h3>Not imported</h3>
+        <ul>
+          {% for skipped in apply_result.skipped_duplicates %}
+            <li>{{ skipped.receipt_number }}: {{ skipped.reason }}</li>
+          {% endfor %}
+          {% for skipped in apply_result.skipped_blocked %}
+            <li>{{ skipped.receipt_number }}: {{ skipped.reason }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+      <p class="muted-inline">Note: the receipt details below reflect the pre-apply preview. Use the Apply Result summary above as the final import result for this run.</p>
+    </section>
+  {% endif %}
 
   {% if preview.limitations %}
     <section>

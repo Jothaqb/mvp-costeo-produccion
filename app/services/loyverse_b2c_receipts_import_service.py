@@ -19,7 +19,7 @@ LOYVERSE_API_BASE_URL = "https://api.loyverse.com/v1.0"
 LOYVERSE_REQUEST_TIMEOUT_SECONDS = 8
 LOYVERSE_RECEIPTS_PAGE_LIMIT = 250
 DECIMAL_QUANT = Decimal("0.0001")
-ROUNDING_TOLERANCE = Decimal("0.01")
+LOYVERSE_TOTAL_TOLERANCE = Decimal("5.00")
 ZERO = Decimal("0")
 LOYVERSE_LOCAL_TIMEZONE = ZoneInfo("America/Costa_Rica")
 
@@ -47,6 +47,7 @@ class LoyverseReceiptLinePreview:
     gross_line_total: Decimal | None
     discount_amount: Decimal | None
     net_line_total: Decimal | None
+    product_id: int | None
     product_match_status: str
     product_match_label: str
     blockers: list[str]
@@ -235,6 +236,7 @@ def build_loyverse_b2c_receipts_preview(
                 gross_line_total=line["gross_line_total"],
                 discount_amount=line["discount_amount"],
                 net_line_total=line["net_line_total"],
+                product_id=product_match["product_id"],
                 product_match_status=product_match["status"],
                 product_match_label=product_match["label"],
                 blockers=line_blockers,
@@ -443,6 +445,7 @@ def _resolve_receipt_line_product(
             product = matches[0]
             return {
                 "status": "matched_variant_id",
+                "product_id": product.id,
                 "label": f"{product.sku} - {product.name}",
                 "blockers": [],
                 "warnings": [],
@@ -450,27 +453,9 @@ def _resolve_receipt_line_product(
         if len(matches) > 1:
             return {
                 "status": "ambiguous_variant_id",
+                "product_id": None,
                 "label": "Multiple ERP products share this Loyverse variant mapping.",
                 "blockers": ["Multiple ERP products share the same Loyverse variant mapping."],
-                "warnings": [],
-            }
-
-    item_id = (line.get("loyverse_item_id") or "").strip()
-    if item_id:
-        matches = products_by_item_id.get(item_id, [])
-        if len(matches) == 1:
-            product = matches[0]
-            return {
-                "status": "matched_item_id",
-                "label": f"{product.sku} - {product.name}",
-                "blockers": [],
-                "warnings": ["Matched by Loyverse item_id because variant mapping was not available."],
-            }
-        if len(matches) > 1:
-            return {
-                "status": "ambiguous_item_id",
-                "label": "Multiple ERP products share this Loyverse item mapping.",
-                "blockers": ["Multiple ERP products share the same Loyverse item mapping."],
                 "warnings": [],
             }
 
@@ -481,6 +466,7 @@ def _resolve_receipt_line_product(
             product = matches[0]
             return {
                 "status": "matched_sku",
+                "product_id": product.id,
                 "label": f"{product.sku} - {product.name}",
                 "blockers": [],
                 "warnings": ["Matched by SKU because Loyverse variant mapping was not available."],
@@ -488,13 +474,36 @@ def _resolve_receipt_line_product(
         if len(matches) > 1:
             return {
                 "status": "ambiguous_sku",
+                "product_id": None,
                 "label": "Multiple ERP products share this SKU.",
                 "blockers": ["Multiple ERP products share the same SKU."],
                 "warnings": [],
             }
 
+    item_id = (line.get("loyverse_item_id") or "").strip()
+    if item_id:
+        matches = products_by_item_id.get(item_id, [])
+        if len(matches) == 1:
+            product = matches[0]
+            return {
+                "status": "matched_item_id",
+                "product_id": product.id,
+                "label": f"{product.sku} - {product.name}",
+                "blockers": [],
+                "warnings": ["Matched by Loyverse item_id because variant mapping and SKU were not available."],
+            }
+        if len(matches) > 1:
+            return {
+                "status": "ambiguous_item_id",
+                "product_id": None,
+                "label": "Multiple ERP products share this Loyverse item mapping.",
+                "blockers": ["Multiple ERP products share the same Loyverse item mapping."],
+                "warnings": [],
+            }
+
     return {
         "status": "missing_mapping",
+        "product_id": None,
         "label": "No ERP product mapping found.",
         "blockers": ["No ERP product mapping found for this line."],
         "warnings": [],
@@ -602,7 +611,7 @@ def _validate_receipt_totals(receipt: dict) -> list[PreviewMessage]:
         return issues
     if closest_diff == ZERO:
         return issues
-    if closest_diff <= ROUNDING_TOLERANCE:
+    if closest_diff <= LOYVERSE_TOTAL_TOLERANCE:
         issues.append(
             PreviewMessage(
                 "warning",

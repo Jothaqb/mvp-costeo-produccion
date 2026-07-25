@@ -163,6 +163,11 @@ from app.services.loyverse_b2c_receipts_import_service import (
     LoyverseB2CReceiptsPreviewResult,
     build_loyverse_b2c_receipts_preview,
 )
+from app.services.loyverse_b2c_receipts_apply_service import (
+    LoyverseB2CApplyResult,
+    LoyverseB2CReceiptApplyError,
+    apply_loyverse_b2c_receipts_reporting_only,
+)
 from app.services.config_service import (
     ValidationError,
     parse_decimal,
@@ -5485,11 +5490,15 @@ def _b2c_loyverse_import_preview_context(
     title: str,
     preview: LoyverseB2CReceiptsPreviewResult,
     form_data: dict[str, str],
+    apply_result: LoyverseB2CApplyResult | None = None,
 ) -> dict[str, object]:
+    apply_candidate_count = sum(1 for receipt in preview.receipts if receipt.importable and not receipt.already_imported)
     return {
         "title": title,
         "preview": preview,
         "form_data": form_data,
+        "apply_result": apply_result,
+        "apply_candidate_count": apply_candidate_count,
     }
 
 
@@ -5543,6 +5552,86 @@ def b2c_loyverse_import_preview(
             ),
         )
     except LoyverseB2CReceiptPreviewError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_import_form.html",
+            context=_b2c_loyverse_import_form_context(
+                title="B2C Loyverse Import Preview",
+                error=str(exc),
+                form_data=form_data,
+            ),
+        )
+
+
+@app.post("/sales/b2c-loyverse-import/apply", response_class=HTMLResponse)
+def b2c_loyverse_import_apply(
+    request: Request,
+    start_datetime: str = Form(""),
+    end_datetime: str = Form(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    current_user = require_permission(request, "sales.apply_loyverse_b2c")
+    form_data = {
+        "start_datetime": (start_datetime or "").strip(),
+        "end_datetime": (end_datetime or "").strip(),
+    }
+    try:
+        if not form_data["start_datetime"] or not form_data["end_datetime"]:
+            raise LoyverseB2CReceiptPreviewError("Start and end date/time are required.")
+        parsed_start = datetime.fromisoformat(form_data["start_datetime"])
+        parsed_end = datetime.fromisoformat(form_data["end_datetime"])
+        if parsed_end < parsed_start:
+            raise LoyverseB2CReceiptPreviewError("End date/time must be greater than or equal to start date/time.")
+        apply_result = apply_loyverse_b2c_receipts_reporting_only(
+            db,
+            parsed_start,
+            parsed_end,
+            current_user,
+        )
+        safe_log_audit_event(
+            module="sales",
+            action="b2c_loyverse_receipts_reporting_imported",
+            entity_type="b2c_loyverse_receipts_import",
+            entity_label=f"{form_data['start_datetime']} - {form_data['end_datetime']}",
+            new_values={
+                "user": getattr(current_user, "username", None),
+                "start_datetime": form_data["start_datetime"],
+                "end_datetime": form_data["end_datetime"],
+                "receipts_read": apply_result.receipts_read,
+                "receipts_imported": apply_result.imported_count,
+                "receipts_omitted_by_duplicate": apply_result.skipped_duplicate_count,
+                "refunds_excluded": apply_result.excluded_refunds_count,
+                "cancelled_excluded": apply_result.excluded_cancelled_count,
+                "blocked_receipts": apply_result.skipped_blocked_count,
+                "warnings": apply_result.warning_count,
+                "total_imported": apply_result.total_imported,
+                "receipt_numbers_imported": apply_result.imported_receipt_numbers,
+                "timestamp": datetime.utcnow(),
+            },
+            request=request,
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_import_preview.html",
+            context=_b2c_loyverse_import_preview_context(
+                title="B2C Loyverse Import Preview",
+                preview=apply_result.preview,
+                form_data=form_data,
+                apply_result=apply_result,
+            ),
+        )
+    except ValueError:
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_import_form.html",
+            context=_b2c_loyverse_import_form_context(
+                title="B2C Loyverse Import Preview",
+                error="Start and end date/time must be valid ISO date/time values.",
+                form_data=form_data,
+            ),
+        )
+    except (LoyverseB2CReceiptPreviewError, LoyverseB2CReceiptApplyError) as exc:
+        db.rollback()
         return templates.TemplateResponse(
             request=request,
             name="b2c_loyverse_import_form.html",
