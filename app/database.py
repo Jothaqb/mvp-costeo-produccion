@@ -1103,6 +1103,10 @@ def ensure_b2b_accounts_receivable_tables() -> None:
 
 
 def ensure_b2c_sales_tables() -> None:
+    if engine.dialect.name == "postgresql":
+        ensure_b2c_loyverse_receipt_columns()
+        return
+
     if engine.dialect.name != "sqlite":
         return
 
@@ -1159,6 +1163,73 @@ def ensure_b2c_sales_tables() -> None:
         connection.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_b2c_sales_order_lines_sales_order_id ON b2c_sales_order_lines (sales_order_id)"
         )
+        ensure_b2c_loyverse_receipt_columns(connection)
+
+
+def ensure_b2c_loyverse_receipt_columns(existing_connection=None) -> None:
+    if engine.dialect.name not in {"sqlite", "postgresql"}:
+        return
+
+    def apply(connection) -> None:
+        if engine.dialect.name == "postgresql":
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_receipt_id VARCHAR(100)"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_receipt_number VARCHAR(100)"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_receipt_date TIMESTAMP"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_receipt_status VARCHAR(50)"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_payment_type_id_snapshot VARCHAR(100)"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_payment_type_name_snapshot VARCHAR(255)"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_source VARCHAR(50)"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_imported_at TIMESTAMP"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS loyverse_raw_payload_summary TEXT"
+            )
+        else:
+            _ensure_columns(
+                connection,
+                "b2c_sales_orders",
+                {
+                    "loyverse_receipt_id": "VARCHAR(100)",
+                    "loyverse_receipt_number": "VARCHAR(100)",
+                    "loyverse_receipt_date": "DATETIME",
+                    "loyverse_receipt_status": "VARCHAR(50)",
+                    "loyverse_payment_type_id_snapshot": "VARCHAR(100)",
+                    "loyverse_payment_type_name_snapshot": "VARCHAR(255)",
+                    "loyverse_source": "VARCHAR(50)",
+                    "loyverse_imported_at": "DATETIME",
+                    "loyverse_raw_payload_summary": "TEXT",
+                },
+            )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_loyverse_receipt_number "
+            "ON b2c_sales_orders (loyverse_receipt_number)"
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_loyverse_receipt_id "
+            "ON b2c_sales_orders (loyverse_receipt_id)"
+        )
+
+    if existing_connection is not None:
+        apply(existing_connection)
+        return
+
+    with engine.begin() as connection:
+        apply(connection)
 
 
 def ensure_b2c_customer_tables() -> None:

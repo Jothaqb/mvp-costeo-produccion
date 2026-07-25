@@ -160,7 +160,7 @@ def build_loyverse_b2c_receipts_preview(
 
     receipts: list[LoyverseReceiptPreview] = []
     limitations = [
-        "Duplicate detection is limited in L1A because B2CSalesOrder does not yet store Loyverse receipt identifiers.",
+        "Duplicate detection now checks Loyverse receipt fields when available and falls back to legacy B2C order numbers. Receipts imported before L1B.1 may only be detected through legacy fallbacks.",
         "The preview uses Loyverse created_at range filters because the current API list endpoint does not expose receipt_date range filters.",
     ]
     result_warnings: list[str] = []
@@ -523,24 +523,45 @@ def _resolve_payment_type_mapping(
 
 def _detect_existing_import(db: Session, receipt: dict) -> dict:
     receipt_number = (receipt.get("receipt_number") or "").strip()
-    if not receipt_number:
+    receipt_id = _normalized_optional_loyverse_id(receipt.get("receipt_id"))
+    if not receipt_number and not receipt_id:
         return {
             "already_imported": False,
-            "note": "Duplicate detection is unavailable because the receipt has no usable receipt_number.",
+            "note": "Duplicate detection is unavailable because the receipt has no usable receipt_number or receipt_id.",
         }
 
-    existing = (
-        db.query(B2CSalesOrder.id)
-        .filter(B2CSalesOrder.order_number == receipt_number)
-        .first()
-    )
+    checks = []
+    if receipt_number:
+        checks.append(("loyverse_receipt_number", B2CSalesOrder.loyverse_receipt_number == receipt_number))
+    if receipt_id:
+        checks.append(("loyverse_receipt_id", B2CSalesOrder.loyverse_receipt_id == receipt_id))
+    if receipt_number:
+        checks.extend(
+            [
+                ("legacy_order_number", B2CSalesOrder.order_number == receipt_number),
+                ("loy_prefixed_order_number", B2CSalesOrder.order_number == f"LOY-{receipt_number}"),
+            ]
+        )
+
+    for label, criterion in checks:
+        existing = db.query(B2CSalesOrder.id).filter(criterion).first()
+        if existing is not None:
+            return {
+                "already_imported": True,
+                "note": f"Duplicate detected using {label}. Formal Loyverse receipt fields are checked before legacy order_number fallbacks.",
+            }
+
     return {
-        "already_imported": existing is not None,
-        "note": (
-            "Basic duplicate detection uses B2CSalesOrder.order_number == receipt_number. "
-            "Dedicated Loyverse receipt fields are not available until L1B."
-        ),
+        "already_imported": False,
+        "note": "No existing B2C order matched Loyverse receipt fields or legacy order_number fallbacks.",
     }
+
+
+def _normalized_optional_loyverse_id(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.upper() == "N/A":
+        return ""
+    return text
 
 
 def _validate_receipt_totals(receipt: dict) -> list[PreviewMessage]:
