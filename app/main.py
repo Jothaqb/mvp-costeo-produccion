@@ -168,6 +168,7 @@ from app.services.loyverse_b2c_receipts_apply_service import (
     LoyverseB2CReceiptApplyError,
     apply_loyverse_b2c_receipts_reporting_only,
 )
+from app.services.loyverse_b2c_reconciliation_service import build_loyverse_b2c_reconciliation
 from app.services.config_service import (
     ValidationError,
     parse_decimal,
@@ -5502,6 +5503,21 @@ def _b2c_loyverse_import_preview_context(
     }
 
 
+def _b2c_loyverse_reconciliation_context(
+    *,
+    title: str,
+    error: str | None = None,
+    form_data: dict[str, str] | None = None,
+    reconciliation=None,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "error": error,
+        "form_data": form_data or {"start_datetime": "", "end_datetime": ""},
+        "reconciliation": reconciliation,
+    }
+
+
 @app.get("/sales/b2c-loyverse-import", response_class=HTMLResponse)
 def b2c_loyverse_import_form(request: Request) -> HTMLResponse:
     require_permission(request, "sales.import_loyverse_b2c")
@@ -5557,6 +5573,67 @@ def b2c_loyverse_import_preview(
             name="b2c_loyverse_import_form.html",
             context=_b2c_loyverse_import_form_context(
                 title="B2C Loyverse Import Preview",
+                error=str(exc),
+                form_data=form_data,
+            ),
+        )
+
+
+@app.get("/sales/b2c-loyverse-reconciliation", response_class=HTMLResponse)
+def b2c_loyverse_reconciliation_form(request: Request) -> HTMLResponse:
+    require_permission(request, "sales.reconcile_loyverse_b2c")
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_loyverse_reconciliation.html",
+        context=_b2c_loyverse_reconciliation_context(title="B2C Loyverse Reconciliation"),
+    )
+
+
+@app.post("/sales/b2c-loyverse-reconciliation", response_class=HTMLResponse)
+def b2c_loyverse_reconciliation(
+    request: Request,
+    start_datetime: str = Form(""),
+    end_datetime: str = Form(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "sales.reconcile_loyverse_b2c")
+    form_data = {
+        "start_datetime": (start_datetime or "").strip(),
+        "end_datetime": (end_datetime or "").strip(),
+    }
+    try:
+        if not form_data["start_datetime"] or not form_data["end_datetime"]:
+            raise LoyverseB2CReceiptPreviewError("Start and end date/time are required.")
+        parsed_start = datetime.fromisoformat(form_data["start_datetime"])
+        parsed_end = datetime.fromisoformat(form_data["end_datetime"])
+        if parsed_end < parsed_start:
+            raise LoyverseB2CReceiptPreviewError("End date/time must be greater than or equal to start date/time.")
+        reconciliation = build_loyverse_b2c_reconciliation(db, parsed_start, parsed_end)
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_reconciliation.html",
+            context=_b2c_loyverse_reconciliation_context(
+                title="B2C Loyverse Reconciliation",
+                form_data=form_data,
+                reconciliation=reconciliation,
+            ),
+        )
+    except ValueError:
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_reconciliation.html",
+            context=_b2c_loyverse_reconciliation_context(
+                title="B2C Loyverse Reconciliation",
+                error="Start and end date/time must be valid ISO date/time values.",
+                form_data=form_data,
+            ),
+        )
+    except LoyverseB2CReceiptPreviewError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_loyverse_reconciliation.html",
+            context=_b2c_loyverse_reconciliation_context(
+                title="B2C Loyverse Reconciliation",
                 error=str(exc),
                 form_data=form_data,
             ),

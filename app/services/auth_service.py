@@ -52,6 +52,7 @@ BASE_PERMISSION_DEFINITIONS = (
     ("sales.import", "sales", "import", "Import historical sales data."),
     ("sales.import_loyverse_b2c", "sales", "import_loyverse_b2c", "Preview B2C receipts from Loyverse."),
     ("sales.apply_loyverse_b2c", "sales", "apply_loyverse_b2c", "Apply B2C Loyverse receipts into ERP reporting-only sales."),
+    ("sales.reconcile_loyverse_b2c", "sales", "reconcile_loyverse_b2c", "Reconcile B2C Loyverse receipts against ERP reporting-only sales."),
     ("sales.export", "sales", "export", "Export sales data."),
     ("ar.view", "ar", "view", "View accounts receivable data."),
     ("ar.record_payment", "ar", "record_payment", "Record accounts receivable payments."),

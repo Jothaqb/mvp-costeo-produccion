@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p class="lead">Compare Loyverse B2C receipts against ERP reporting-only B2C sales without importing data.</p>
+    <p class="warning">This screen is read-only. It does not import receipts or change inventory.</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <div class="actions">
+      <a class="button" href="/sales">Sales Home</a>
+      <a class="button" href="/sales/b2c-loyverse-import">B2C Loyverse Import Preview</a>
+      <a class="button" href="/b2c/orders">B2C Sales Orders</a>
+    </div>
+  </section>
+
+  <section>
+    <form action="/sales/b2c-loyverse-reconciliation" method="post" class="wide-form">
+      <label for="start_datetime">Start date/time</label>
+      <input
+        id="start_datetime"
+        name="start_datetime"
+        type="datetime-local"
+        value="{{ form_data.start_datetime }}"
+        required
+      >
+
+      <label for="end_datetime">End date/time</label>
+      <input
+        id="end_datetime"
+        name="end_datetime"
+        type="datetime-local"
+        value="{{ form_data.end_datetime }}"
+        required
+      >
+
+      <div class="inline-actions">
+        <button type="submit">Reconcile Loyverse Receipts</button>
+      </div>
+    </form>
+  </section>
+
+  {% if reconciliation %}
+    <section>
+      <h2>Reconciliation Summary</h2>
+      <p><strong>Start:</strong> {{ form_data.start_datetime }}</p>
+      <p><strong>End:</strong> {{ form_data.end_datetime }}</p>
+      {% if reconciliation.queried_with_store_id %}
+        <p><strong>Store filter:</strong> {{ reconciliation.queried_with_store_id }}</p>
+      {% endif %}
+      <p class="muted-inline">Loyverse API range uses created_at filters. Day summaries use receipt_date when available, then created_at.</p>
+      <dl class="summary">
+        <div><dt>Receipts read from Loyverse</dt><dd>{{ reconciliation.summary.receipts_read }}</dd></div>
+        <div><dt>ERP matched orders</dt><dd>{{ reconciliation.summary.erp_matched_orders }}</dd></div>
+        <div><dt>Missing in ERP</dt><dd>{{ reconciliation.summary.missing_in_erp }}</dd></div>
+        <div><dt>Duplicate ERP orders</dt><dd>{{ reconciliation.summary.duplicate_erp_orders }}</dd></div>
+        <div><dt>Excluded refunds</dt><dd>{{ reconciliation.summary.excluded_refunds }}</dd></div>
+        <div><dt>Excluded cancelled</dt><dd>{{ reconciliation.summary.excluded_cancelled }}</dd></div>
+        <div><dt>Total Loyverse net</dt><dd>{{ fmt.money_crc(reconciliation.summary.total_loyverse_net) }}</dd></div>
+        <div><dt>Total ERP matched net</dt><dd>{{ fmt.money_crc(reconciliation.summary.total_erp_matched_net) }}</dd></div>
+        <div><dt>Total difference</dt><dd>{{ fmt.money_crc(reconciliation.summary.total_difference) }}</dd></div>
+        <div><dt>Receipts with blockers</dt><dd>{{ reconciliation.summary.receipts_with_blockers }}</dd></div>
+        <div><dt>Receipts with warnings</dt><dd>{{ reconciliation.summary.receipts_with_warnings }}</dd></div>
+      </dl>
+    </section>
+
+    {% if reconciliation.limitations %}
+      <section>
+        <h2>Read-only Notes</h2>
+        <ul>
+          {% for limitation in reconciliation.limitations %}
+            <li>{{ limitation }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% if reconciliation.warnings %}
+      <section>
+        <h2>Warnings</h2>
+        <ul>
+          {% for warning in reconciliation.warnings %}
+            <li>{{ warning }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    <section>
+      <h2>Summary by Day</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th>Loyverse receipts</th>
+              <th>ERP matched</th>
+              <th>Missing ERP</th>
+              <th>Refunds</th>
+              <th>Cancelled</th>
+              <th>Loyverse net total</th>
+              <th>ERP matched total</th>
+              <th>Difference</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in reconciliation.by_day %}
+              <tr>
+                <td>{{ row.day if row.day else "N/A" }}</td>
+                <td>{{ row.loyverse_receipts }}</td>
+                <td>{{ row.erp_matched }}</td>
+                <td>{{ row.missing_erp }}</td>
+                <td>{{ row.refunds }}</td>
+                <td>{{ row.cancelled }}</td>
+                <td>{{ fmt.money_crc(row.loyverse_net_total) }}</td>
+                <td>{{ fmt.money_crc(row.erp_matched_total) }}</td>
+                <td>{{ fmt.money_crc(row.difference) }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="9">No receipt rows found.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Summary by Payment Type</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Payment type</th>
+              <th>Loyverse receipts</th>
+              <th>ERP matched</th>
+              <th>Missing ERP</th>
+              <th>Loyverse net total</th>
+              <th>ERP matched total</th>
+              <th>Difference</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in reconciliation.by_payment_type %}
+              <tr>
+                <td>{{ row.payment_type }}</td>
+                <td>{{ row.loyverse_receipts }}</td>
+                <td>{{ row.erp_matched }}</td>
+                <td>{{ row.missing_erp }}</td>
+                <td>{{ fmt.money_crc(row.loyverse_net_total) }}</td>
+                <td>{{ fmt.money_crc(row.erp_matched_total) }}</td>
+                <td>{{ fmt.money_crc(row.difference) }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="7">No payment type rows found.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Receipt Detail</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Receipt number</th>
+              <th>Receipt date</th>
+              <th>Created at</th>
+              <th>Customer</th>
+              <th>Payment type</th>
+              <th>Loyverse net total</th>
+              <th>ERP order number</th>
+              <th>ERP status</th>
+              <th>ERP total</th>
+              <th>Difference</th>
+              <th>Reconciliation status</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in reconciliation.rows %}
+              <tr>
+                <td>{{ row.receipt_number or "N/A" }}</td>
+                <td>{{ row.receipt_date if row.receipt_date else "N/A" }}</td>
+                <td>{{ row.created_at if row.created_at else "N/A" }}</td>
+                <td>{{ row.customer_name or "N/A" }}</td>
+                <td>{{ row.payment_type_name or "N/A" }}</td>
+                <td>{{ fmt.money_crc(row.loyverse_net_total) }}</td>
+                <td>
+                  {% if row.erp_order_numbers %}
+                    {% for order_number in row.erp_order_numbers %}
+                      {% set order_id = row.erp_order_ids[loop.index0] %}
+                      <a href="/b2c/orders/{{ order_id }}">{{ order_number }}</a>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                  {% else %}
+                    N/A
+                  {% endif %}
+                </td>
+                <td>{{ row.erp_statuses|join(", ") if row.erp_statuses else "N/A" }}</td>
+                <td>{{ fmt.money_crc(row.erp_total) }}</td>
+                <td>{{ fmt.money_crc(row.difference) }}</td>
+                <td>{{ row.reconciliation_status }}</td>
+                <td>
+                  {% if row.notes %}
+                    <ul>
+                      {% for note in row.notes %}
+                        <li>{{ note }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                  {% if row.blockers %}
+                    <strong>Blockers</strong>
+                    <ul>
+                      {% for blocker in row.blockers %}
+                        <li>{{ blocker }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                  {% if row.warnings %}
+                    <strong>Warnings</strong>
+                    <ul>
+                      {% for warning in row.warnings %}
+                        <li>{{ warning }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="12">No receipt rows found.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

@@ -48,6 +48,17 @@
       </a>
     {% endif %}
 
+    {% if can(request, "sales.reconcile_loyverse_b2c") %}
+      <a class="module-card module-link-card" href="/sales/b2c-loyverse-reconciliation" aria-label="Open B2C Loyverse Reconciliation">
+        <div>
+          <p class="eyebrow">Submodule</p>
+          <h2>B2C Loyverse Reconciliation</h2>
+          <p>Compare Loyverse receipts against ERP B2C imported sales without importing data.</p>
+        </div>
+        <span class="module-entry">Open B2C Loyverse Reconciliation</span>
+      </a>
+    {% endif %}
+
     {% if can(request, "reporting.view") %}
       <a class="module-card module-link-card" href="/sales/reporting" aria-label="Open Reporting">
         <div>
