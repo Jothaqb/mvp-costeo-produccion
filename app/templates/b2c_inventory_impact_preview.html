@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p class="lead">Preview stock impact of imported B2C Loyverse sales without changing inventory.</p>
+    <p class="warning">This screen is read-only. It does not create inventory transactions or change stock.</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <div class="actions">
+      <a class="button" href="/sales">Sales Home</a>
+      <a class="button" href="/sales/b2c-loyverse-reconciliation">B2C Loyverse Reconciliation</a>
+      <a class="button" href="/b2c/orders">B2C Sales Orders</a>
+    </div>
+  </section>
+
+  <section>
+    <form action="/sales/b2c-inventory-impact-preview" method="post" class="wide-form">
+      <label for="start_date">Start date</label>
+      <input
+        id="start_date"
+        name="start_date"
+        type="date"
+        value="{{ form_data.start_date }}"
+        required
+      >
+
+      <label for="end_date">End date</label>
+      <input
+        id="end_date"
+        name="end_date"
+        type="date"
+        value="{{ form_data.end_date }}"
+        required
+      >
+
+      <div class="inline-actions">
+        <button type="submit">Preview Inventory Impact</button>
+      </div>
+    </form>
+  </section>
+
+  {% if preview %}
+    <section>
+      <h2>Impact Summary</h2>
+      <p><strong>Start:</strong> {{ form_data.start_date }}</p>
+      <p><strong>End:</strong> {{ form_data.end_date }}</p>
+      <dl class="summary">
+        <div><dt>Orders included</dt><dd>{{ preview.summary.orders_included }}</dd></div>
+        <div><dt>Lines included</dt><dd>{{ preview.summary.lines_included }}</dd></div>
+        <div><dt>Affected products</dt><dd>{{ preview.summary.affected_products }}</dd></div>
+        <div><dt>Total simulated quantity</dt><dd>{{ preview.summary.total_simulated_qty }}</dd></div>
+        <div><dt>Total estimated cost</dt><dd>{{ fmt.money_crc(preview.summary.total_estimated_cost) }}</dd></div>
+        <div><dt>Products with negative simulated stock</dt><dd>{{ preview.summary.products_with_negative_stock }}</dd></div>
+        <div><dt>Lines without product</dt><dd>{{ preview.summary.lines_without_product }}</dd></div>
+        <div><dt>Lines without cost</dt><dd>{{ preview.summary.lines_without_cost }}</dd></div>
+        <div><dt>Lines possibly already impacted</dt><dd>{{ preview.summary.lines_possibly_already_impacted }}</dd></div>
+      </dl>
+    </section>
+
+    {% if preview.limitations %}
+      <section>
+        <h2>Read-only Notes</h2>
+        <ul>
+          {% for limitation in preview.limitations %}
+            <li>{{ limitation }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    {% if preview.warnings %}
+      <section>
+        <h2>Warnings</h2>
+        <ul>
+          {% for warning in preview.warnings %}
+            <li>{{ warning }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    <section>
+      <h2>Summary by Product</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Product</th>
+              <th>Stock current ERP</th>
+              <th>Simulated quantity</th>
+              <th>Stock after</th>
+              <th>Cost unit</th>
+              <th>Estimated total cost</th>
+              <th>Alerts</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in preview.product_rows %}
+              <tr>
+                <td>{{ row.sku }}</td>
+                <td>{{ row.product_name }}</td>
+                <td>{{ row.stock_current }}</td>
+                <td>{{ row.simulated_qty }}</td>
+                <td>{{ row.stock_after }}</td>
+                <td>{{ fmt.money_crc(row.cost_unit) if row.cost_unit is not none else "N/A" }}</td>
+                <td>{{ fmt.money_crc(row.cost_total) if row.cost_total is not none else "N/A" }}</td>
+                <td>{{ row.alerts|join(", ") if row.alerts else "ok" }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="8">No products found for the selected range.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Detail by Order / Line</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Order number</th>
+              <th>Order date</th>
+              <th>Receipt number</th>
+              <th>Receipt date</th>
+              <th>SKU</th>
+              <th>Product</th>
+              <th>Quantity</th>
+              <th>Stock current</th>
+              <th>Stock after</th>
+              <th>Cost unit</th>
+              <th>Cost total</th>
+              <th>Status</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in preview.line_rows %}
+              <tr>
+                <td><a href="/b2c/orders/{{ row.order_id }}">{{ row.order_number }}</a></td>
+                <td>{{ row.order_date }}</td>
+                <td>{{ row.receipt_number or "N/A" }}</td>
+                <td>{{ row.receipt_date if row.receipt_date else "N/A" }}</td>
+                <td>{{ row.sku or "N/A" }}</td>
+                <td>{{ row.product_name }}</td>
+                <td>{{ row.quantity }}</td>
+                <td>{{ row.stock_current }}</td>
+                <td>{{ row.stock_after }}</td>
+                <td>{{ fmt.money_crc(row.cost_unit) if row.cost_unit is not none else "N/A" }}</td>
+                <td>{{ fmt.money_crc(row.cost_total) if row.cost_total is not none else "N/A" }}</td>
+                <td>{{ row.status }}</td>
+                <td>{{ row.notes|join(", ") if row.notes else "ok" }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="13">No order lines found for the selected range.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

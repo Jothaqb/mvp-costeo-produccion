@@ -59,6 +59,17 @@
       </a>
     {% endif %}
 
+    {% if can(request, "sales.preview_b2c_inventory_impact") %}
+      <a class="module-card module-link-card" href="/sales/b2c-inventory-impact-preview" aria-label="Open B2C Inventory Impact Preview">
+        <div>
+          <p class="eyebrow">Submodule</p>
+          <h2>B2C Inventory Impact Preview</h2>
+          <p>Preview stock impact of imported B2C Loyverse sales without changing inventory.</p>
+        </div>
+        <span class="module-entry">Open B2C Inventory Impact Preview</span>
+      </a>
+    {% endif %}
+
     {% if can(request, "reporting.view") %}
       <a class="module-card module-link-card" href="/sales/reporting" aria-label="Open Reporting">
         <div>

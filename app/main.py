@@ -168,6 +168,7 @@ from app.services.loyverse_b2c_receipts_apply_service import (
     LoyverseB2CReceiptApplyError,
     apply_loyverse_b2c_receipts_reporting_only,
 )
+from app.services.b2c_inventory_impact_preview_service import build_b2c_inventory_impact_preview
 from app.services.loyverse_b2c_reconciliation_service import build_loyverse_b2c_reconciliation
 from app.services.config_service import (
     ValidationError,
@@ -5518,6 +5519,21 @@ def _b2c_loyverse_reconciliation_context(
     }
 
 
+def _b2c_inventory_impact_preview_context(
+    *,
+    title: str,
+    error: str | None = None,
+    form_data: dict[str, str] | None = None,
+    preview=None,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "error": error,
+        "form_data": form_data or {"start_date": "", "end_date": ""},
+        "preview": preview,
+    }
+
+
 @app.get("/sales/b2c-loyverse-import", response_class=HTMLResponse)
 def b2c_loyverse_import_form(request: Request) -> HTMLResponse:
     require_permission(request, "sales.import_loyverse_b2c")
@@ -5573,6 +5589,57 @@ def b2c_loyverse_import_preview(
             name="b2c_loyverse_import_form.html",
             context=_b2c_loyverse_import_form_context(
                 title="B2C Loyverse Import Preview",
+                error=str(exc),
+                form_data=form_data,
+            ),
+        )
+
+
+@app.get("/sales/b2c-inventory-impact-preview", response_class=HTMLResponse)
+def b2c_inventory_impact_preview_form(request: Request) -> HTMLResponse:
+    require_permission(request, "sales.preview_b2c_inventory_impact")
+    return templates.TemplateResponse(
+        request=request,
+        name="b2c_inventory_impact_preview.html",
+        context=_b2c_inventory_impact_preview_context(title="B2C Inventory Impact Preview"),
+    )
+
+
+@app.post("/sales/b2c-inventory-impact-preview", response_class=HTMLResponse)
+def b2c_inventory_impact_preview(
+    request: Request,
+    start_date: str = Form(""),
+    end_date: str = Form(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "sales.preview_b2c_inventory_impact")
+    form_data = {
+        "start_date": (start_date or "").strip(),
+        "end_date": (end_date or "").strip(),
+    }
+    try:
+        if not form_data["start_date"] or not form_data["end_date"]:
+            raise ValueError("Start and end dates are required.")
+        parsed_start = date.fromisoformat(form_data["start_date"])
+        parsed_end = date.fromisoformat(form_data["end_date"])
+        if parsed_end < parsed_start:
+            raise ValueError("End date must be greater than or equal to start date.")
+        preview = build_b2c_inventory_impact_preview(db, parsed_start, parsed_end)
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_inventory_impact_preview.html",
+            context=_b2c_inventory_impact_preview_context(
+                title="B2C Inventory Impact Preview",
+                form_data=form_data,
+                preview=preview,
+            ),
+        )
+    except ValueError as exc:
+        return templates.TemplateResponse(
+            request=request,
+            name="b2c_inventory_impact_preview.html",
+            context=_b2c_inventory_impact_preview_context(
+                title="B2C Inventory Impact Preview",
                 error=str(exc),
                 form_data=form_data,
             ),
