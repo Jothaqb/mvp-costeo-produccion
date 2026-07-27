@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>{{ title }}</h1>
+    <p class="lead">Compare official ERP stock against Loyverse stock before any future synchronization work.</p>
+    <p class="warning">This screen is read-only. It does not update ERP or Loyverse stock.</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <div class="actions">
+      <a class="button" href="/inventory">Inventory Home</a>
+    </div>
+  </section>
+
+  <section>
+    <form action="/inventory/erp-loyverse-stock-preview" method="post" class="wide-form">
+      <label for="sku_query">SKU or product name</label>
+      <input
+        id="sku_query"
+        name="sku_query"
+        type="text"
+        value="{{ form_data.sku_query }}"
+        placeholder="Search by SKU or product name"
+      >
+
+      <label class="checkbox">
+        <input type="checkbox" name="active_only" {% if form_data.active_only %}checked{% endif %}>
+        Active products only
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" name="available_only" {% if form_data.available_only %}checked{% endif %}>
+        Available for sale only
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" name="only_differences" {% if form_data.only_differences %}checked{% endif %}>
+        Only rows with differences or issues
+      </label>
+
+      <div class="inline-actions">
+        <button type="submit">Preview ERP vs Loyverse Stock</button>
+      </div>
+    </form>
+  </section>
+
+  {% if preview %}
+    <section>
+      <h2>Comparison Summary</h2>
+      {% if preview.store_id %}
+        <p><strong>Loyverse store:</strong> {{ preview.store_id }}</p>
+      {% endif %}
+      <dl class="summary">
+        <div><dt>Products compared</dt><dd>{{ preview.summary.products_compared }}</dd></div>
+        <div><dt>Matched</dt><dd>{{ preview.summary.matched }}</dd></div>
+        <div><dt>With difference</dt><dd>{{ preview.summary.difference }}</dd></div>
+        <div><dt>Missing in Loyverse</dt><dd>{{ preview.summary.missing_in_loyverse }}</dd></div>
+        <div><dt>Missing inventory balance</dt><dd>{{ preview.summary.missing_inventory_balance }}</dd></div>
+        <div><dt>Inactive products</dt><dd>{{ preview.summary.inactive_products }}</dd></div>
+        <div><dt>Mapping missing</dt><dd>{{ preview.summary.mapping_missing }}</dd></div>
+        <div><dt>API errors</dt><dd>{{ preview.summary.api_errors }}</dd></div>
+        <div><dt>Total absolute difference</dt><dd>{{ preview.summary.total_absolute_difference }}</dd></div>
+      </dl>
+    </section>
+
+    {% if preview.warnings %}
+      <section>
+        <h2>Warnings</h2>
+        <ul>
+          {% for warning in preview.warnings %}
+            <li>{{ warning }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% endif %}
+
+    <section>
+      <h2>Comparison by Product</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Product name</th>
+              <th>ERP stock official</th>
+              <th>Loyverse stock</th>
+              <th>Difference</th>
+              <th>Status</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in preview.rows %}
+              <tr>
+                <td>{{ row.sku }}</td>
+                <td>
+                  {{ row.product_name }}
+                  {% if row.loyverse_variant_id %}
+                    <div class="muted-inline">Variant: {{ row.loyverse_variant_id }}</div>
+                  {% endif %}
+                </td>
+                <td>{{ row.erp_stock_official }}</td>
+                <td>{{ row.loyverse_stock if row.loyverse_stock is not none else "N/A" }}</td>
+                <td>{{ row.difference if row.difference is not none else "N/A" }}</td>
+                <td>{{ row.status }}</td>
+                <td>
+                  {% if row.notes %}
+                    <ul>
+                      {% for note in row.notes %}
+                        <li>{{ note }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% else %}
+                    ok
+                  {% endif %}
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="7">No products matched the current filters.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

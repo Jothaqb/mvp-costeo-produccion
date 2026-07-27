@@ -39,5 +39,16 @@
         {% endif %}
       </div>
     </article>
+
+    {% if can(request, "inventory.preview_erp_loyverse_stock") %}
+      <a class="module-card module-link-card" href="/inventory/erp-loyverse-stock-preview" aria-label="Open ERP vs Loyverse Stock Preview">
+        <div>
+          <p class="eyebrow">Preview</p>
+          <h2>ERP vs Loyverse Stock Preview</h2>
+          <p>Compare official ERP stock against Loyverse stock without updating either system.</p>
+        </div>
+        <span class="module-entry">Open Preview</span>
+      </a>
+    {% endif %}
   </section>
 {% endblock %}

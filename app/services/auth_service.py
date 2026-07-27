@@ -71,6 +71,7 @@ BASE_PERMISSION_DEFINITIONS = (
     ("production_order.import", "production_order", "import", "Import historical production orders."),
     ("inventory.view", "inventory", "view", "View inventory balances and transactions."),
     ("inventory.adjust", "inventory", "adjust", "Create manual inventory adjustments."),
+    ("inventory.preview_erp_loyverse_stock", "inventory", "preview_erp_loyverse_stock", "Preview ERP stock vs Loyverse stock without updating either system."),
     ("audit.view", "audit", "view", "View audit trails."),
 )
 
