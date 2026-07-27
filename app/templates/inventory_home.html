@@ -50,5 +50,16 @@
         <span class="module-entry">Open Preview</span>
       </a>
     {% endif %}
+
+    {% if can(request, "inventory.preview_erp_loyverse_cost") %}
+      <a class="module-card module-link-card" href="/inventory/erp-loyverse-cost-preview" aria-label="Open ERP vs Loyverse Cost Preview">
+        <div>
+          <p class="eyebrow">Preview</p>
+          <h2>ERP vs Loyverse Cost Preview</h2>
+          <p>Compare ERP standard cost against Loyverse cost without updating either system.</p>
+        </div>
+        <span class="module-entry">Open Preview</span>
+      </a>
+    {% endif %}
   </section>
 {% endblock %}

@@ -169,6 +169,7 @@ from app.services.loyverse_b2c_receipts_apply_service import (
     apply_loyverse_b2c_receipts_reporting_only,
 )
 from app.services.b2c_inventory_impact_preview_service import build_b2c_inventory_impact_preview
+from app.services.erp_loyverse_cost_preview_service import build_erp_loyverse_cost_preview
 from app.services.erp_loyverse_stock_preview_service import build_erp_loyverse_stock_preview
 from app.services.loyverse_b2c_reconciliation_service import build_loyverse_b2c_reconciliation
 from app.services.config_service import (
@@ -5555,6 +5556,26 @@ def _erp_loyverse_stock_preview_context(
     }
 
 
+def _erp_loyverse_cost_preview_context(
+    *,
+    title: str,
+    error: str | None = None,
+    form_data: dict[str, object] | None = None,
+    preview=None,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "error": error,
+        "form_data": form_data or {
+            "active_only": True,
+            "available_only": False,
+            "only_differences": False,
+            "sku_query": "",
+        },
+        "preview": preview,
+    }
+
+
 @app.get("/sales/b2c-loyverse-import", response_class=HTMLResponse)
 def b2c_loyverse_import_form(request: Request) -> HTMLResponse:
     require_permission(request, "sales.import_loyverse_b2c")
@@ -5705,6 +5726,50 @@ def erp_loyverse_stock_preview(
         name="erp_loyverse_stock_preview.html",
         context=_erp_loyverse_stock_preview_context(
             title="ERP vs Loyverse Stock Preview",
+            form_data=form_data,
+            preview=preview,
+        ),
+    )
+
+
+@app.get("/inventory/erp-loyverse-cost-preview", response_class=HTMLResponse)
+def erp_loyverse_cost_preview_form(request: Request) -> HTMLResponse:
+    require_permission(request, "inventory.preview_erp_loyverse_cost")
+    return templates.TemplateResponse(
+        request=request,
+        name="erp_loyverse_cost_preview.html",
+        context=_erp_loyverse_cost_preview_context(title="ERP vs Loyverse Cost Preview"),
+    )
+
+
+@app.post("/inventory/erp-loyverse-cost-preview", response_class=HTMLResponse)
+def erp_loyverse_cost_preview(
+    request: Request,
+    active_only: str | None = Form(None),
+    available_only: str | None = Form(None),
+    only_differences: str | None = Form(None),
+    sku_query: str = Form(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "inventory.preview_erp_loyverse_cost")
+    form_data = {
+        "active_only": active_only is not None,
+        "available_only": available_only is not None,
+        "only_differences": only_differences is not None,
+        "sku_query": (sku_query or "").strip(),
+    }
+    preview = build_erp_loyverse_cost_preview(
+        db,
+        active_only=bool(form_data["active_only"]),
+        available_only=bool(form_data["available_only"]),
+        only_differences=bool(form_data["only_differences"]),
+        sku_query=str(form_data["sku_query"]),
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="erp_loyverse_cost_preview.html",
+        context=_erp_loyverse_cost_preview_context(
+            title="ERP vs Loyverse Cost Preview",
             form_data=form_data,
             preview=preview,
         ),
