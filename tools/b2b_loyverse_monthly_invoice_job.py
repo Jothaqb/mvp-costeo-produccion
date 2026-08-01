@@ -60,6 +60,7 @@ CSV_FIELDS = [
     "loyverse_receipt_id",
     "loyverse_receipt_number",
     "loyverse_sync_status",
+    "used_payment_type_fallback",
     "reason",
 ]
 ERROR_FIELDS = ["order_id", "order_number", "stage", "classification", "error"]
@@ -92,6 +93,7 @@ class Evaluation:
     reason: str
     payload: dict[str, object] | None
     variant_snapshots: dict[int, str]
+    used_payment_type_fallback: bool = False
     missing_customer_mapping: bool = False
     missing_variant_mapping: bool = False
     missing_payment_type_mapping: bool = False
@@ -109,6 +111,7 @@ class Evaluation:
             "loyverse_receipt_id": self.loyverse_receipt_id,
             "loyverse_receipt_number": self.loyverse_receipt_number,
             "loyverse_sync_status": self.loyverse_sync_status,
+            "used_payment_type_fallback": self.used_payment_type_fallback,
             "reason": self.reason,
         }
 
@@ -134,6 +137,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm", default="")
+    parser.add_argument("--loyverse-payment-type-id", default="")
+    parser.add_argument("--loyverse-payment-type-name", default="")
     return parser.parse_args()
 
 
@@ -161,6 +166,12 @@ def validate_args(args: argparse.Namespace) -> tuple[date, date, tzinfo]:
     if end_date_exclusive <= start_date:
         raise SystemExit("--end-date-exclusive must be greater than --start-date.")
     timezone = resolve_timezone(args.timezone)
+    args.loyverse_payment_type_id = args.loyverse_payment_type_id.strip()
+    args.loyverse_payment_type_name = args.loyverse_payment_type_name.strip()
+    if bool(args.loyverse_payment_type_id) != bool(args.loyverse_payment_type_name):
+        raise SystemExit(
+            "--loyverse-payment-type-id and --loyverse-payment-type-name must be provided together."
+        )
     if not args.use_env:
         raise SystemExit("--use-env is required; credentials are accepted only from environment variables.")
     if args.execute and args.confirm != EXECUTE_CONFIRMATION:
@@ -264,7 +275,14 @@ def load_orders(
     )
 
 
-def evaluate_order(db: Session, order: B2BSalesOrder, store_id: str) -> Evaluation:
+def evaluate_order(
+    db: Session,
+    order: B2BSalesOrder,
+    store_id: str,
+    *,
+    fallback_payment_type_id: str = "",
+    fallback_payment_type_name: str = "",
+) -> Evaluation:
     base = {
         "order_id": order.id,
         "order_number": order.order_number,
@@ -304,6 +322,7 @@ def evaluate_order(db: Session, order: B2BSalesOrder, store_id: str) -> Evaluati
     missing_customer = False
     missing_payment = False
     missing_variant = False
+    used_payment_type_fallback = False
     customer_id = ""
     payment_type_id = ""
     line_payloads: list[dict] = []
@@ -317,8 +336,12 @@ def evaluate_order(db: Session, order: B2BSalesOrder, store_id: str) -> Evaluati
     try:
         payment_type_id = _resolve_payment_type_id(db, order)
     except B2BLoyverseInvoiceError as exc:
-        missing_payment = True
-        errors.append(str(exc))
+        if fallback_payment_type_id and fallback_payment_type_name:
+            payment_type_id = fallback_payment_type_id
+            used_payment_type_fallback = True
+        else:
+            missing_payment = True
+            errors.append(str(exc))
     try:
         line_payloads, variant_snapshots = _build_line_payloads(db, order)
     except B2BLoyverseInvoiceError as exc:
@@ -338,6 +361,7 @@ def evaluate_order(db: Session, order: B2BSalesOrder, store_id: str) -> Evaluati
             missing_customer_mapping=missing_customer,
             missing_variant_mapping=missing_variant,
             missing_payment_type_mapping=missing_payment,
+            used_payment_type_fallback=used_payment_type_fallback,
         )
 
     payload = _build_receipt_payload(
@@ -356,7 +380,13 @@ def evaluate_order(db: Session, order: B2BSalesOrder, store_id: str) -> Evaluati
         **base,
         classification="eligible",
         eligible=True,
-        reason="Ready for Loyverse receipt creation.",
+        reason=(
+            f"Ready for Loyverse receipt creation. Emergency payment type fallback used: "
+            f"{fallback_payment_type_name}."
+            if used_payment_type_fallback
+            else "Ready for Loyverse receipt creation."
+        ),
+        used_payment_type_fallback=used_payment_type_fallback,
     )
 
 
@@ -405,6 +435,14 @@ def build_summary(
     execution_results: list[dict[str, object]],
 ) -> dict[str, object]:
     eligible = [item for item in evaluations if item.classification == "eligible"]
+    payment_fallback_count = sum(item.used_payment_type_fallback for item in evaluations)
+    summary_warnings = list(warnings)
+    if payment_fallback_count:
+        summary_warnings.append(
+            "Emergency payment type fallback supplied by CLI was used for "
+            f"{payment_fallback_count} order(s): {args.loyverse_payment_type_name} "
+            f"({args.loyverse_payment_type_id}). No payment type mappings were modified."
+        )
     result_counts = {name: 0 for name in ("success", "unknown", "failed")}
     for result in execution_results:
         outcome = str(result.get("result", ""))
@@ -438,7 +476,8 @@ def build_summary(
         "generated_at": datetime.now(timezone).isoformat(),
         "mode": "execute" if args.execute else "dry-run",
         "database_info_masked": database_info_masked,
-        "warnings": warnings,
+        "warnings": summary_warnings,
+        "orders_using_payment_type_fallback": payment_fallback_count,
         "included_erp_statuses": sorted(SUPPORTED_ORDER_STATUSES),
         "notes": [
             "delivery_date is the business-date criterion for this emergency monthly close.",
@@ -514,6 +553,8 @@ def execute_one(
     token: str,
     store_id: str,
     timezone: tzinfo,
+    fallback_payment_type_id: str,
+    fallback_payment_type_name: str,
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     db: Session = session_factory()
     api_call_started = False
@@ -532,7 +573,13 @@ def execute_one(
                 "classification": "failed",
                 "error": "Order left the approved delivery-date range.",
             }
-        refreshed = evaluate_order(db, order, store_id)
+        refreshed = evaluate_order(
+            db,
+            order,
+            store_id,
+            fallback_payment_type_id=fallback_payment_type_id,
+            fallback_payment_type_name=fallback_payment_type_name,
+        )
         if not refreshed.eligible:
             return execution_row(evaluation, "failed", refreshed.reason, timezone), {
                 "order_id": order.id,
@@ -672,7 +719,16 @@ def main() -> None:
     db: Session = session_factory()
     try:
         orders = load_orders(db, start_date, end_date_exclusive)
-        evaluations = [evaluate_order(db, order, store_id) for order in orders]
+        evaluations = [
+            evaluate_order(
+                db,
+                order,
+                store_id,
+                fallback_payment_type_id=args.loyverse_payment_type_id,
+                fallback_payment_type_name=args.loyverse_payment_type_name,
+            )
+            for order in orders
+        ]
     finally:
         db.rollback()
         db.close()
@@ -702,6 +758,8 @@ def main() -> None:
                 token=token,
                 store_id=store_id,
                 timezone=timezone,
+                fallback_payment_type_id=args.loyverse_payment_type_id,
+                fallback_payment_type_name=args.loyverse_payment_type_name,
             )
             execution_results.append(result)
             if error is not None:
