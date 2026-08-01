@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import re
 
@@ -34,6 +34,7 @@ ALLOWED_STATUS_TRANSITIONS = {
 }
 ZERO = Decimal("0")
 SNAPSHOT_QUANT = Decimal("0.0001")
+COSTA_RICA_TIMEZONE = timezone(timedelta(hours=-6), name="America/Costa_Rica")
 
 
 class B2BValidationError(Exception):
@@ -63,8 +64,12 @@ def parse_required_decimal(value: str | Decimal | None, field_name: str) -> Deci
         raise B2BValidationError(f"{field_name} must be a valid number.") from exc
 
 
+def current_b2b_operational_date() -> date:
+    return datetime.now(COSTA_RICA_TIMEZONE).date()
+
+
 def validate_future_delivery_date(delivery_date: date) -> None:
-    if delivery_date < date.today():
+    if delivery_date < current_b2b_operational_date():
         raise B2BValidationError("Delivery date cannot be in the past.")
 
 
