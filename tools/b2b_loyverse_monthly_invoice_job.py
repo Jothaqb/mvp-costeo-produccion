@@ -61,6 +61,7 @@ CSV_FIELDS = [
     "loyverse_receipt_number",
     "loyverse_sync_status",
     "used_payment_type_fallback",
+    "used_customer_override",
     "reason",
 ]
 ERROR_FIELDS = ["order_id", "order_number", "stage", "classification", "error"]
@@ -94,6 +95,7 @@ class Evaluation:
     payload: dict[str, object] | None
     variant_snapshots: dict[int, str]
     used_payment_type_fallback: bool = False
+    used_customer_override: bool = False
     missing_customer_mapping: bool = False
     missing_variant_mapping: bool = False
     missing_payment_type_mapping: bool = False
@@ -112,6 +114,7 @@ class Evaluation:
             "loyverse_receipt_number": self.loyverse_receipt_number,
             "loyverse_sync_status": self.loyverse_sync_status,
             "used_payment_type_fallback": self.used_payment_type_fallback,
+            "used_customer_override": self.used_customer_override,
             "reason": self.reason,
         }
 
@@ -139,6 +142,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confirm", default="")
     parser.add_argument("--loyverse-payment-type-id", default="")
     parser.add_argument("--loyverse-payment-type-name", default="")
+    parser.add_argument("--customer-override-erp-id", type=int)
+    parser.add_argument("--customer-override-loyverse-id", default="")
+    parser.add_argument("--customer-override-loyverse-name", default="")
     return parser.parse_args()
 
 
@@ -172,6 +178,22 @@ def validate_args(args: argparse.Namespace) -> tuple[date, date, tzinfo]:
         raise SystemExit(
             "--loyverse-payment-type-id and --loyverse-payment-type-name must be provided together."
         )
+    args.customer_override_loyverse_id = args.customer_override_loyverse_id.strip()
+    args.customer_override_loyverse_name = args.customer_override_loyverse_name.strip()
+    customer_override_values = (
+        args.customer_override_erp_id,
+        args.customer_override_loyverse_id,
+        args.customer_override_loyverse_name,
+    )
+    if any(value not in (None, "") for value in customer_override_values) and not all(
+        value not in (None, "") for value in customer_override_values
+    ):
+        raise SystemExit(
+            "--customer-override-erp-id, --customer-override-loyverse-id and "
+            "--customer-override-loyverse-name must be provided together."
+        )
+    if args.customer_override_erp_id is not None and args.customer_override_erp_id <= 0:
+        raise SystemExit("--customer-override-erp-id must be a positive integer.")
     if not args.use_env:
         raise SystemExit("--use-env is required; credentials are accepted only from environment variables.")
     if args.execute and args.confirm != EXECUTE_CONFIRMATION:
@@ -282,6 +304,9 @@ def evaluate_order(
     *,
     fallback_payment_type_id: str = "",
     fallback_payment_type_name: str = "",
+    customer_override_erp_id: int | None = None,
+    customer_override_loyverse_id: str = "",
+    customer_override_loyverse_name: str = "",
 ) -> Evaluation:
     base = {
         "order_id": order.id,
@@ -323,6 +348,7 @@ def evaluate_order(
     missing_payment = False
     missing_variant = False
     used_payment_type_fallback = False
+    used_customer_override = False
     customer_id = ""
     payment_type_id = ""
     line_payloads: list[dict] = []
@@ -331,8 +357,17 @@ def evaluate_order(
     try:
         customer_id = _resolve_customer_id(db, order)
     except B2BLoyverseInvoiceError as exc:
-        missing_customer = True
-        errors.append(str(exc))
+        if (
+            customer_override_erp_id is not None
+            and order.customer_id == customer_override_erp_id
+            and customer_override_loyverse_id
+            and customer_override_loyverse_name
+        ):
+            customer_id = customer_override_loyverse_id
+            used_customer_override = True
+        else:
+            missing_customer = True
+            errors.append(str(exc))
     try:
         payment_type_id = _resolve_payment_type_id(db, order)
     except B2BLoyverseInvoiceError as exc:
@@ -362,6 +397,7 @@ def evaluate_order(
             missing_variant_mapping=missing_variant,
             missing_payment_type_mapping=missing_payment,
             used_payment_type_fallback=used_payment_type_fallback,
+            used_customer_override=used_customer_override,
         )
 
     payload = _build_receipt_payload(
@@ -376,17 +412,21 @@ def evaluate_order(
     base["payload"] = payload
     base["payload_fingerprint"] = fingerprint
     base["variant_snapshots"] = variant_snapshots
+    readiness_notes = ["Ready for Loyverse receipt creation."]
+    if used_payment_type_fallback:
+        readiness_notes.append(f"Emergency payment type fallback used: {fallback_payment_type_name}.")
+    if used_customer_override:
+        readiness_notes.append(
+            f"Emergency customer override used for ERP customer_id {customer_override_erp_id}: "
+            f"{customer_override_loyverse_name}."
+        )
     return Evaluation(
         **base,
         classification="eligible",
         eligible=True,
-        reason=(
-            f"Ready for Loyverse receipt creation. Emergency payment type fallback used: "
-            f"{fallback_payment_type_name}."
-            if used_payment_type_fallback
-            else "Ready for Loyverse receipt creation."
-        ),
+        reason=" ".join(readiness_notes),
         used_payment_type_fallback=used_payment_type_fallback,
+        used_customer_override=used_customer_override,
     )
 
 
@@ -436,12 +476,19 @@ def build_summary(
 ) -> dict[str, object]:
     eligible = [item for item in evaluations if item.classification == "eligible"]
     payment_fallback_count = sum(item.used_payment_type_fallback for item in evaluations)
+    customer_override_count = sum(item.used_customer_override for item in evaluations)
     summary_warnings = list(warnings)
     if payment_fallback_count:
         summary_warnings.append(
             "Emergency payment type fallback supplied by CLI was used for "
             f"{payment_fallback_count} order(s): {args.loyverse_payment_type_name} "
             f"({args.loyverse_payment_type_id}). No payment type mappings were modified."
+        )
+    if customer_override_count:
+        summary_warnings.append(
+            "Emergency customer override supplied by CLI was used for ERP customer_id "
+            f"{args.customer_override_erp_id}: {args.customer_override_loyverse_name} "
+            f"({args.customer_override_loyverse_id}). No customer mappings were modified."
         )
     result_counts = {name: 0 for name in ("success", "unknown", "failed")}
     for result in execution_results:
@@ -478,6 +525,7 @@ def build_summary(
         "database_info_masked": database_info_masked,
         "warnings": summary_warnings,
         "orders_using_payment_type_fallback": payment_fallback_count,
+        "orders_using_customer_override": customer_override_count,
         "included_erp_statuses": sorted(SUPPORTED_ORDER_STATUSES),
         "notes": [
             "delivery_date is the business-date criterion for this emergency monthly close.",
@@ -555,6 +603,9 @@ def execute_one(
     timezone: tzinfo,
     fallback_payment_type_id: str,
     fallback_payment_type_name: str,
+    customer_override_erp_id: int | None,
+    customer_override_loyverse_id: str,
+    customer_override_loyverse_name: str,
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     db: Session = session_factory()
     api_call_started = False
@@ -579,6 +630,9 @@ def execute_one(
             store_id,
             fallback_payment_type_id=fallback_payment_type_id,
             fallback_payment_type_name=fallback_payment_type_name,
+            customer_override_erp_id=customer_override_erp_id,
+            customer_override_loyverse_id=customer_override_loyverse_id,
+            customer_override_loyverse_name=customer_override_loyverse_name,
         )
         if not refreshed.eligible:
             return execution_row(evaluation, "failed", refreshed.reason, timezone), {
@@ -726,6 +780,9 @@ def main() -> None:
                 store_id,
                 fallback_payment_type_id=args.loyverse_payment_type_id,
                 fallback_payment_type_name=args.loyverse_payment_type_name,
+                customer_override_erp_id=args.customer_override_erp_id,
+                customer_override_loyverse_id=args.customer_override_loyverse_id,
+                customer_override_loyverse_name=args.customer_override_loyverse_name,
             )
             for order in orders
         ]
@@ -760,6 +817,9 @@ def main() -> None:
                 timezone=timezone,
                 fallback_payment_type_id=args.loyverse_payment_type_id,
                 fallback_payment_type_name=args.loyverse_payment_type_name,
+                customer_override_erp_id=args.customer_override_erp_id,
+                customer_override_loyverse_id=args.customer_override_loyverse_id,
+                customer_override_loyverse_name=args.customer_override_loyverse_name,
             )
             execution_results.append(result)
             if error is not None:
