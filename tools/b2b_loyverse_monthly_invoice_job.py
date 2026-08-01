@@ -145,6 +145,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--customer-override-erp-id", type=int)
     parser.add_argument("--customer-override-loyverse-id", default="")
     parser.add_argument("--customer-override-loyverse-name", default="")
+    parser.add_argument(
+        "--exclude-order-number",
+        action="append",
+        default=[],
+        help="Repeat to manually exclude an ERP order number from this batch.",
+    )
     return parser.parse_args()
 
 
@@ -194,6 +200,9 @@ def validate_args(args: argparse.Namespace) -> tuple[date, date, tzinfo]:
         )
     if args.customer_override_erp_id is not None and args.customer_override_erp_id <= 0:
         raise SystemExit("--customer-override-erp-id must be a positive integer.")
+    args.exclude_order_number = sorted(
+        {value.strip() for value in args.exclude_order_number if value and value.strip()}
+    )
     if not args.use_env:
         raise SystemExit("--use-env is required; credentials are accepted only from environment variables.")
     if args.execute and args.confirm != EXECUTE_CONFIRMATION:
@@ -307,6 +316,7 @@ def evaluate_order(
     customer_override_erp_id: int | None = None,
     customer_override_loyverse_id: str = "",
     customer_override_loyverse_name: str = "",
+    excluded_order_numbers: set[str] | None = None,
 ) -> Evaluation:
     base = {
         "order_id": order.id,
@@ -321,6 +331,15 @@ def evaluate_order(
         "payload": None,
         "variant_snapshots": {},
     }
+    if order.order_number in (excluded_order_numbers or set()):
+        return Evaluation(
+            **base,
+            classification="excluded_manual",
+            eligible=False,
+            reason=(
+                "Manually excluded by --exclude-order-number to avoid a duplicate Loyverse receipt."
+            ),
+        )
     if base["loyverse_receipt_id"] or base["loyverse_receipt_number"]:
         return Evaluation(
             **base,
@@ -477,6 +496,7 @@ def build_summary(
     eligible = [item for item in evaluations if item.classification == "eligible"]
     payment_fallback_count = sum(item.used_payment_type_fallback for item in evaluations)
     customer_override_count = sum(item.used_customer_override for item in evaluations)
+    excluded_manual = [item.order_number for item in evaluations if item.classification == "excluded_manual"]
     summary_warnings = list(warnings)
     if payment_fallback_count:
         summary_warnings.append(
@@ -489,6 +509,10 @@ def build_summary(
             "Emergency customer override supplied by CLI was used for ERP customer_id "
             f"{args.customer_override_erp_id}: {args.customer_override_loyverse_name} "
             f"({args.customer_override_loyverse_id}). No customer mappings were modified."
+        )
+    if excluded_manual:
+        summary_warnings.append(
+            "Orders manually excluded by --exclude-order-number: " + ", ".join(excluded_manual) + "."
         )
     result_counts = {name: 0 for name in ("success", "unknown", "failed")}
     for result in execution_results:
@@ -509,6 +533,8 @@ def build_summary(
         "orders_eligible": len(eligible),
         "orders_blocked": sum(item.classification == "blocked" for item in evaluations),
         "orders_already_sent": sum(item.classification == "already_sent" for item in evaluations),
+        "orders_excluded_manual": len(excluded_manual),
+        "excluded_order_numbers": excluded_manual,
         "orders_sent_success": result_counts["success"],
         "orders_unknown": (
             sum(item.loyverse_sync_status == SYNC_STATUS_UNKNOWN for item in evaluations)
@@ -563,6 +589,11 @@ def write_reports(
         CSV_FIELDS,
         [item.csv_row() for item in evaluations if item.classification == "already_sent"],
     )
+    write_csv(
+        export_dir / "orders_excluded.csv",
+        CSV_FIELDS,
+        [item.csv_row() for item in evaluations if item.classification == "excluded_manual"],
+    )
     write_json(
         export_dir / "payloads_preview.json",
         [
@@ -606,6 +637,7 @@ def execute_one(
     customer_override_erp_id: int | None,
     customer_override_loyverse_id: str,
     customer_override_loyverse_name: str,
+    excluded_order_numbers: set[str],
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     db: Session = session_factory()
     api_call_started = False
@@ -633,6 +665,7 @@ def execute_one(
             customer_override_erp_id=customer_override_erp_id,
             customer_override_loyverse_id=customer_override_loyverse_id,
             customer_override_loyverse_name=customer_override_loyverse_name,
+            excluded_order_numbers=excluded_order_numbers,
         )
         if not refreshed.eligible:
             return execution_row(evaluation, "failed", refreshed.reason, timezone), {
@@ -783,6 +816,7 @@ def main() -> None:
                 customer_override_erp_id=args.customer_override_erp_id,
                 customer_override_loyverse_id=args.customer_override_loyverse_id,
                 customer_override_loyverse_name=args.customer_override_loyverse_name,
+                excluded_order_numbers=set(args.exclude_order_number),
             )
             for order in orders
         ]
@@ -820,6 +854,7 @@ def main() -> None:
                 customer_override_erp_id=args.customer_override_erp_id,
                 customer_override_loyverse_id=args.customer_override_loyverse_id,
                 customer_override_loyverse_name=args.customer_override_loyverse_name,
+                excluded_order_numbers=set(args.exclude_order_number),
             )
             execution_results.append(result)
             if error is not None:
