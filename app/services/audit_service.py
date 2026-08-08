@@ -295,6 +295,7 @@ def snapshot_b2b_sales_order_for_audit(order: B2BSalesOrder) -> dict[str, Any]:
         "customer_id": order.customer_id,
         "customer_name": order.customer_name_snapshot,
         "status": order.status,
+        "invoice_date": order.invoice_date,
         "invoiced_at": order.invoiced_at,
         "delivery_date": order.delivery_date,
         "total_amount": order.total_amount,

@@ -551,6 +551,7 @@ class B2BSalesOrder(Base):
     loyverse_invoice_sync_attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     loyverse_invoice_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     loyverse_invoice_sync_attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    invoice_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     invoiced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

@@ -121,6 +121,7 @@ def import_b2b_historical_sales_csv(db: Session, *, file_name: str, file_bytes: 
             channel_id=order_payload["channel_id"],
             b2b_channel_name_snapshot=order_payload["channel_name_snapshot"],
             delivery_date=order_payload["delivery_date"],
+            invoice_date=order_payload["delivery_date"],
             status="invoiced",
             total_amount=order_payload["total_amount"],
             cost_total_snapshot=order_payload["cost_total_snapshot"],

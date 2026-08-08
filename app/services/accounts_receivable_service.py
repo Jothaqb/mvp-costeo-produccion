@@ -12,6 +12,7 @@ STATUS_ALL = "all"
 STATUS_IN_CREDIT = "in_credit"
 STATUS_OVERDUE = "overdue"
 STATUS_PAID = "paid"
+HISTORICAL_CSV_IMPORT_PREFIX = "Historical CSV import"
 STATUS_OPTIONS = (
     (STATUS_ALL, "Todos"),
     (STATUS_IN_CREDIT, "En credito"),
@@ -92,6 +93,16 @@ class AccountsReceivablePaymentEntryState:
 
 class AccountsReceivableValidationError(Exception):
     pass
+
+
+def resolve_b2b_invoice_date(order: B2BSalesOrder) -> tuple[date, str]:
+    if order.invoice_date is not None:
+        return order.invoice_date, "invoice_date"
+    if order.invoiced_at is not None:
+        return order.invoiced_at.date(), "invoiced_at"
+    if (order.observations or "").startswith(HISTORICAL_CSV_IMPORT_PREFIX):
+        return order.delivery_date, "historical_delivery_date"
+    return order.created_at.date(), "created_at"
 
 
 def build_accounts_receivable_dashboard(
@@ -177,8 +188,8 @@ def get_accounts_receivable_order_for_manual_balance(db: Session, order_id: int)
 
 
 def build_accounts_receivable_edit_state(order: B2BSalesOrder) -> AccountsReceivableEditState:
-    invoice_date_is_fallback = order.invoiced_at is None
-    invoice_date = order.invoiced_at.date() if order.invoiced_at is not None else order.created_at.date()
+    invoice_date, invoice_date_source = resolve_b2b_invoice_date(order)
+    invoice_date_is_fallback = invoice_date_source == "created_at"
     pending_amount = _current_pending_amount(order)
     paid_amount = _current_paid_amount(order)
     comment = ""
@@ -265,8 +276,8 @@ def get_accounts_receivable_order_for_payment(db: Session, order_id: int) -> B2B
 
 
 def build_accounts_receivable_payment_entry_state(order: B2BSalesOrder) -> AccountsReceivablePaymentEntryState:
-    invoice_date_is_fallback = order.invoiced_at is None
-    invoice_date = order.invoiced_at.date() if order.invoiced_at is not None else order.created_at.date()
+    invoice_date, invoice_date_source = resolve_b2b_invoice_date(order)
+    invoice_date_is_fallback = invoice_date_source == "created_at"
     return AccountsReceivablePaymentEntryState(
         order=order,
         invoice_date=invoice_date,
@@ -321,12 +332,8 @@ def record_accounts_receivable_payment(
 
 
 def _build_row(order: B2BSalesOrder, today: date) -> AccountsReceivableRow:
-    invoice_date_is_fallback = order.invoiced_at is None
-    invoice_date = (
-        order.invoiced_at.date()
-        if order.invoiced_at is not None
-        else order.created_at.date()
-    )
+    invoice_date, invoice_date_source = resolve_b2b_invoice_date(order)
+    invoice_date_is_fallback = invoice_date_source == "created_at"
     pending_amount = _current_pending_amount(order)
     paid_amount = _current_paid_amount(order)
     last_payment_date = _latest_recorded_payment_date(order)

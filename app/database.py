@@ -1060,6 +1060,7 @@ def ensure_b2b_accounts_receivable_tables() -> None:
             connection,
             "b2b_sales_orders",
             {
+                "invoice_date": "DATE",
                 "invoiced_at": "TIMESTAMP",
             },
         )

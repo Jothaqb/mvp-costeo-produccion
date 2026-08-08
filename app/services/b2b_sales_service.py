@@ -410,6 +410,7 @@ def invoice_b2b_order_in_erp(db: Session, order_id: int) -> B2BSalesOrder:
         order.status = "invoiced"
         if order.invoiced_at is None:
             order.invoiced_at = transaction_date
+        order.invoice_date = order.invoiced_at.date()
         db.commit()
         db.refresh(order)
         return order
