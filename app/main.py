@@ -7438,6 +7438,35 @@ def b2b_customer_products(customer_id: int, request: Request, db: Session = Depe
     )
 
 
+@app.get("/b2b/customers/{customer_id}/products/export.csv")
+def export_b2b_customer_products_csv(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "sales.view")
+    customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+    products = (
+        db.query(B2BCustomerProduct)
+        .filter(B2BCustomerProduct.customer_id == customer_id)
+        .order_by(B2BCustomerProduct.sku, B2BCustomerProduct.id)
+        .all()
+    )
+    return _csv_report_response(
+        filename=f"b2b_customer_{customer.id}_catalog.csv",
+        headers=("Codigo", "Descripcion", "Precio", "Estado"),
+        rows=[
+            (
+                product.sku,
+                product.description,
+                format(product.distributor_price, "f"),
+                "Activo" if product.active else "Inactivo",
+            )
+            for product in products
+        ],
+    )
+
+
 @app.post("/b2b/customers/{customer_id}/products")
 def add_b2b_customer_product(
     customer_id: int,

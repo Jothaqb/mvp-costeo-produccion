@@ -5,9 +5,12 @@
   {% set can_edit_customer_prices = can(request, "b2b_customer_products.edit_prices") %}
 
   <section>
-    <h1>Products for {{ customer.customer_name }}</h1>
+    <h1>Catálogo de {{ customer.customer_name }}</h1>
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <p><a href="/b2b/customers">Customers</a></p>
+    <section class="actions">
+      <a class="button" href="/b2b/customers">Customers</a>
+      <a class="button" href="/b2b/customers/{{ customer.id }}/products/export.csv">Descargar CSV</a>
+    </section>
 
     {% if can_edit_customer_prices %}
       <p>
