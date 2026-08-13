@@ -28,6 +28,7 @@ class AccountsReceivableRow:
     customer_id: int
     customer_name: str
     has_opening_balance: bool
+    can_register_payment: bool
     invoice_date: date
     invoice_date_is_fallback: bool
     created_at: datetime
@@ -299,7 +300,7 @@ def record_accounts_receivable_payment(
     comment: str | None,
     acting_user: User | None,
 ) -> tuple[B2BARPayment, Decimal, Decimal]:
-    if order.ar_opening_balance is None:
+    if order.ar_opening_balance is None and order.invoiced_at is None:
         raise AccountsReceivableValidationError("This invoice does not have a manual outstanding balance snapshot.")
 
     pending_before_payment = _current_pending_amount(order)
@@ -347,6 +348,7 @@ def _build_row(order: B2BSalesOrder, today: date) -> AccountsReceivableRow:
         customer_id=order.customer_id,
         customer_name=order.customer_name_snapshot,
         has_opening_balance=order.ar_opening_balance is not None,
+        can_register_payment=order.ar_opening_balance is not None or order.invoiced_at is not None,
         invoice_date=invoice_date,
         invoice_date_is_fallback=invoice_date_is_fallback,
         created_at=order.created_at,
@@ -365,6 +367,9 @@ def _build_row(order: B2BSalesOrder, today: date) -> AccountsReceivableRow:
 
 def _pending_amount_from_opening_balance(order: B2BSalesOrder) -> Decimal:
     if order.ar_opening_balance is None:
+        if order.invoiced_at is not None:
+            total_amount = order.total_amount or ZERO
+            return total_amount if total_amount > ZERO else ZERO
         return ZERO
     pending_amount = order.ar_opening_balance.outstanding_amount or ZERO
     if pending_amount < ZERO:

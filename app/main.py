@@ -4539,7 +4539,7 @@ def sales_accounts_receivable_new_payment(
     try:
         order = get_accounts_receivable_order_for_payment(db, order_id)
         state = build_accounts_receivable_payment_entry_state(order)
-        if order.ar_opening_balance is None:
+        if order.ar_opening_balance is None and order.invoiced_at is None:
             raise AccountsReceivableValidationError("This invoice does not have a manual outstanding balance snapshot.")
         if state.pending_amount_current <= Decimal("0"):
             raise AccountsReceivableValidationError("This invoice does not have any outstanding balance available for payment registration.")
