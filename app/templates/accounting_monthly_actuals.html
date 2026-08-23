@@ -18,7 +18,7 @@
     </form>
   </section>
 
-  <form method="post" action="/accounting/monthly-actuals">
+  <form method="post" action="/accounting/monthly-actuals" class="wide-form" style="width: 100%;">
     <input type="hidden" name="month" value="{{ period_value }}">
     {% for section in statement.sections %}
       <section>
@@ -31,8 +31,8 @@
                 <tr>
                   <td>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}</td>
                   <td>{{ fmt.money_crc(line.budget_amount) }}</td>
-                  <td><input name="actual_{{ line.rubric.id }}" type="number" min="0" step="0.0001" value="{{ line.actual_amount }}" required></td>
-                  <td><input name="notes_{{ line.rubric.id }}" type="text" value="{{ line.notes or '' }}" maxlength="1000"></td>
+                  <td><input name="actual_{{ line.rubric.id }}" type="number" min="0" step="0.0001" value="{{ line.actual_amount }}" required style="min-width: 160px;"></td>
+                  <td><input name="notes_{{ line.rubric.id }}" type="text" value="{{ line.notes or '' }}" maxlength="1000" style="max-width: none; min-width: 320px;"></td>
                 </tr>
               {% endfor %}
             </tbody>

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import re
 
 from sqlalchemy.orm import Session
 
@@ -21,6 +22,7 @@ ZERO = Decimal("0")
 MONEY_QUANT = Decimal("0.0001")
 PERCENT_QUANT = Decimal("0.01")
 ACCOUNTING_SECTIONS = ("operating", "administrative", "financial", "tax")
+ACCOUNTING_RUBRIC_CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,99}$")
 SECTION_LABELS = {
     "operating": "Gastos Operativos",
     "administrative": "Gastos Administrativos",
@@ -117,6 +119,42 @@ def parse_nonnegative_amount(value: object, field_name: str) -> Decimal:
     if not amount.is_finite() or amount < ZERO:
         raise AccountingValidationError(f"{field_name} must be zero or greater.")
     return amount
+
+
+def _normalize_rubric_code(value: object) -> str:
+    code = str(value or "").strip().lower()
+    if not ACCOUNTING_RUBRIC_CODE_PATTERN.fullmatch(code):
+        raise AccountingValidationError(
+            "Rubric code must contain 2 to 100 lowercase letters, numbers, underscores, or hyphens."
+        )
+    return code
+
+
+def _normalize_rubric_name(value: object) -> str:
+    name = str(value or "").strip()
+    if not name:
+        raise AccountingValidationError("Rubric name is required.")
+    if len(name) > 255:
+        raise AccountingValidationError("Rubric name cannot exceed 255 characters.")
+    return name
+
+
+def _normalize_rubric_section(value: object) -> str:
+    section = str(value or "").strip().lower()
+    if section not in ACCOUNTING_SECTIONS:
+        raise AccountingValidationError("Rubric section is invalid.")
+    return section
+
+
+def _parse_display_order(value: object) -> int:
+    normalized = str(value or "").strip()
+    try:
+        display_order = int(normalized)
+    except ValueError as exc:
+        raise AccountingValidationError("Display order must be a whole number.") from exc
+    if display_order < 0:
+        raise AccountingValidationError("Display order must be zero or greater.")
+    return display_order
 
 
 def get_accounting_sales_summary(db: Session, period_month: date) -> AccountingSalesSummary:
@@ -308,7 +346,49 @@ def save_monthly_actuals(
     db.flush()
 
 
-def update_rubric_budget(db: Session, rubric: AccountingRubric, raw_budget: object) -> None:
-    rubric.monthly_budget_amount = parse_nonnegative_amount(raw_budget, f"Budget for {rubric.name}")
+def create_accounting_rubric(
+    db: Session,
+    *,
+    code: object,
+    name: object,
+    section: object,
+    monthly_budget_amount: object,
+    display_order: object,
+    active: bool = True,
+) -> AccountingRubric:
+    normalized_code = _normalize_rubric_code(code)
+    if db.query(AccountingRubric).filter(AccountingRubric.code == normalized_code).first() is not None:
+        raise AccountingValidationError(f"Rubric code '{normalized_code}' already exists.")
+    rubric = AccountingRubric(
+        code=normalized_code,
+        name=_normalize_rubric_name(name),
+        section=_normalize_rubric_section(section),
+        monthly_budget_amount=parse_nonnegative_amount(monthly_budget_amount, "Monthly budget"),
+        display_order=_parse_display_order(display_order),
+        active=bool(active),
+    )
+    db.add(rubric)
     db.flush()
+    return rubric
 
+
+def update_accounting_rubric(
+    db: Session,
+    rubric: AccountingRubric,
+    *,
+    name: object,
+    section: object,
+    monthly_budget_amount: object,
+    display_order: object,
+    active: bool,
+) -> AccountingRubric:
+    rubric.name = _normalize_rubric_name(name)
+    rubric.section = _normalize_rubric_section(section)
+    rubric.monthly_budget_amount = parse_nonnegative_amount(
+        monthly_budget_amount,
+        f"Budget for {rubric.name}",
+    )
+    rubric.display_order = _parse_display_order(display_order)
+    rubric.active = bool(active)
+    db.flush()
+    return rubric

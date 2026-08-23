@@ -129,9 +129,10 @@ from app.services.accounting_income_statement_service import (
     ACCOUNTING_SECTIONS,
     SECTION_LABELS as ACCOUNTING_SECTION_LABELS,
     build_income_statement,
+    create_accounting_rubric,
     parse_period_month,
     save_monthly_actuals,
-    update_rubric_budget,
+    update_accounting_rubric,
 )
 from app.services.b2c_sales_service import (
     B2CValidationError,
@@ -7593,13 +7594,21 @@ async def accounting_rubrics_save(
     try:
         rubrics = db.query(AccountingRubric).all()
         for rubric in rubrics:
-            field_name = f"budget_{rubric.id}"
-            if field_name in form:
-                update_rubric_budget(db, rubric, form.get(field_name, ""))
+            if f"name_{rubric.id}" not in form:
+                continue
+            update_accounting_rubric(
+                db,
+                rubric,
+                name=form.get(f"name_{rubric.id}", ""),
+                section=form.get(f"section_{rubric.id}", ""),
+                monthly_budget_amount=form.get(f"budget_{rubric.id}", ""),
+                display_order=form.get(f"display_order_{rubric.id}", ""),
+                active=f"active_{rubric.id}" in form,
+            )
         db.commit()
         safe_log_audit_event(
             module="accounting",
-            action="rubric_budgets_updated",
+            action="rubrics_updated",
             entity_type="accounting_rubrics",
             entity_label="Monthly average budgets",
             request=request,
@@ -7608,6 +7617,39 @@ async def accounting_rubrics_save(
         return _redirect(
             f"/accounting/rubrics?message={quote('Budgets actualizados correctamente.')}"
         )
+    except AccountingValidationError as exc:
+        db.rollback()
+        return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")
+
+
+@app.post("/accounting/rubrics/new")
+async def accounting_rubric_create(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "accounting.manage_budget")
+    form = await request.form()
+    try:
+        rubric = create_accounting_rubric(
+            db,
+            code=form.get("code", ""),
+            name=form.get("name", ""),
+            section=form.get("section", ""),
+            monthly_budget_amount=form.get("monthly_budget_amount", ""),
+            display_order=form.get("display_order", ""),
+            active="active" in form,
+        )
+        db.commit()
+        safe_log_audit_event(
+            module="accounting",
+            action="rubric_created",
+            entity_type="accounting_rubric",
+            entity_id=rubric.id,
+            entity_label=rubric.name,
+            request=request,
+            user=current_user,
+        )
+        return _redirect(f"/accounting/rubrics?message={quote('Rubro creado correctamente.')}")
     except AccountingValidationError as exc:
         db.rollback()
         return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")

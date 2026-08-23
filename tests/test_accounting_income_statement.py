@@ -1,6 +1,7 @@
 import unittest
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -18,9 +19,12 @@ from app.models import (
     InventoryTransaction,
 )
 from app.services.accounting_income_statement_service import (
+    AccountingValidationError,
     build_income_statement,
+    create_accounting_rubric,
     get_accounting_sales_summary,
     save_monthly_actuals,
+    update_accounting_rubric,
 )
 
 
@@ -253,6 +257,96 @@ class AccountingIncomeStatementTests(unittest.TestCase):
 
         self.assertEqual(balances_after, balances_before)
         self.assertEqual(transactions_after, transactions_before)
+
+    def test_create_new_rubric_and_use_it_in_monthly_actuals(self) -> None:
+        with self.Session.begin() as db:
+            rubric = create_accounting_rubric(
+                db,
+                code="op_new_service",
+                name="Nuevo servicio",
+                section="operating",
+                monthly_budget_amount="250.50",
+                display_order="45",
+                active=True,
+            )
+            rubric_id = rubric.id
+            save_monthly_actuals(
+                db,
+                period_month=date(2026, 9, 1),
+                values_by_rubric_id={rubric_id: ("125.25", "Rubro nuevo activo")},
+                user_id=None,
+            )
+
+        with self.Session() as db:
+            statement = build_income_statement(db, date(2026, 9, 1))
+            operating = next(section for section in statement.sections if section.code == "operating")
+            line = next(item for item in operating.lines if item.rubric.id == rubric_id)
+
+        self.assertEqual(line.rubric.name, "Nuevo servicio")
+        self.assertEqual(line.actual_amount, Decimal("125.2500"))
+        self.assertEqual(line.budget_amount, Decimal("250.5000"))
+
+    def test_edit_rubric_name_section_budget_order_and_active_state(self) -> None:
+        rubric_id = self.rubrics["op_test"]
+        with self.Session.begin() as db:
+            rubric = db.get(AccountingRubric, rubric_id)
+            update_accounting_rubric(
+                db,
+                rubric,
+                name="Operativo editado",
+                section="administrative",
+                monthly_budget_amount="321.75",
+                display_order="99",
+                active=False,
+            )
+
+        with self.Session() as db:
+            rubric = db.get(AccountingRubric, rubric_id)
+            self.assertEqual(rubric.name, "Operativo editado")
+            self.assertEqual(rubric.section, "administrative")
+            self.assertEqual(rubric.monthly_budget_amount, Decimal("321.7500"))
+            self.assertEqual(rubric.display_order, 99)
+            self.assertFalse(rubric.active)
+
+        with self.Session.begin() as db:
+            rubric = db.get(AccountingRubric, rubric_id)
+            update_accounting_rubric(
+                db,
+                rubric,
+                name=rubric.name,
+                section=rubric.section,
+                monthly_budget_amount=rubric.monthly_budget_amount,
+                display_order=rubric.display_order,
+                active=True,
+            )
+
+        with self.Session() as db:
+            self.assertTrue(db.get(AccountingRubric, rubric_id).active)
+
+    def test_duplicate_rubric_code_is_rejected(self) -> None:
+        with self.Session.begin() as db:
+            with self.assertRaises(AccountingValidationError):
+                create_accounting_rubric(
+                    db,
+                    code="op_test",
+                    name="Duplicado",
+                    section="operating",
+                    monthly_budget_amount="0",
+                    display_order="50",
+                    active=True,
+                )
+
+    def test_accounting_forms_use_full_width_and_expose_rubric_controls(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        rubrics_template = (project_root / "app/templates/accounting_rubrics.html").read_text(encoding="utf-8")
+        actuals_template = (project_root / "app/templates/accounting_monthly_actuals.html").read_text(encoding="utf-8")
+
+        self.assertIn('class="wide-form" style="width: 100%;"', rubrics_template)
+        self.assertIn('name="name_{{ rubric.id }}"', rubrics_template)
+        self.assertIn('name="section_{{ rubric.id }}"', rubrics_template)
+        self.assertIn('name="active_{{ rubric.id }}"', rubrics_template)
+        self.assertIn('action="/accounting/rubrics/new"', rubrics_template)
+        self.assertIn('class="wide-form" style="width: 100%;"', actuals_template)
 
 
 if __name__ == "__main__":

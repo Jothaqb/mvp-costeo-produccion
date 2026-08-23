@@ -11,21 +11,39 @@
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
   {% if message %}<p class="success">{{ message }}</p>{% endif %}
 
-  <form method="post" action="/accounting/rubrics">
+  <form method="post" action="/accounting/rubrics" class="wide-form" style="width: 100%;">
     <div class="table-wrap">
       <table>
         <thead><tr><th>Orden</th><th>Código</th><th>Rubro</th><th>Sección</th><th>Estado</th><th>Budget mensual</th></tr></thead>
         <tbody>
           {% for rubric in rubrics %}
             <tr>
-              <td>{{ rubric.display_order }}</td>
-              <td>{{ rubric.code }}</td>
-              <td>{{ rubric.name }}</td>
-              <td>{{ section_labels[rubric.section] }}</td>
-              <td>{{ "Activo" if rubric.active else "Inactivo" }}</td>
               <td>
                 {% if can(request, "accounting.manage_budget") %}
-                  <input name="budget_{{ rubric.id }}" type="number" min="0" step="0.0001" value="{{ rubric.monthly_budget_amount }}" required>
+                  <input name="display_order_{{ rubric.id }}" type="number" min="0" step="1" value="{{ rubric.display_order }}" required style="min-width: 90px;">
+                {% else %}{{ rubric.display_order }}{% endif %}
+              </td>
+              <td>{{ rubric.code }}</td>
+              <td>
+                {% if can(request, "accounting.manage_budget") %}
+                  <input name="name_{{ rubric.id }}" type="text" value="{{ rubric.name }}" maxlength="255" required style="max-width: none; min-width: 260px;">
+                {% else %}{{ rubric.name }}{% endif %}
+              </td>
+              <td>
+                {% if can(request, "accounting.manage_budget") %}
+                  <select name="section_{{ rubric.id }}" required style="min-width: 190px;">
+                    {% for section in sections %}<option value="{{ section }}" {% if rubric.section == section %}selected{% endif %}>{{ section_labels[section] }}</option>{% endfor %}
+                  </select>
+                {% else %}{{ section_labels[rubric.section] }}{% endif %}
+              </td>
+              <td>
+                {% if can(request, "accounting.manage_budget") %}
+                  <label class="checkbox-label"><input name="active_{{ rubric.id }}" type="checkbox" {% if rubric.active %}checked{% endif %}> Activo</label>
+                {% else %}{{ "Activo" if rubric.active else "Inactivo" }}{% endif %}
+              </td>
+              <td>
+                {% if can(request, "accounting.manage_budget") %}
+                  <input name="budget_{{ rubric.id }}" type="number" min="0" step="0.0001" value="{{ rubric.monthly_budget_amount }}" required style="min-width: 160px;">
                 {% else %}
                   {{ fmt.money_crc(rubric.monthly_budget_amount) }}
                 {% endif %}
@@ -36,9 +54,25 @@
       </table>
     </div>
     <div class="report-actions">
-      {% if can(request, "accounting.manage_budget") %}<button type="submit">Guardar budgets</button>{% endif %}
+      {% if can(request, "accounting.manage_budget") %}<button type="submit">Guardar cambios</button>{% endif %}
       <a class="button secondary" href="/accounting/income-statement">Volver al Estado de Resultados</a>
     </div>
   </form>
-  <p class="muted-inline">Fase 1 mantiene el catálogo inicial fijo. Altas, bajas y budgets específicos por mes quedan fuera de alcance.</p>
+  {% if can(request, "accounting.manage_budget") %}
+    <section class="report-panel">
+      <h2>Agregar rubro contable</h2>
+      <form method="post" action="/accounting/rubrics/new" class="wide-form">
+        <div class="form-grid">
+          <div><label for="new_code">Código único</label><input id="new_code" name="code" type="text" maxlength="100" pattern="[a-z0-9][a-z0-9_-]{1,99}" required></div>
+          <div><label for="new_name">Nombre</label><input id="new_name" name="name" type="text" maxlength="255" required></div>
+          <div><label for="new_section">Sección</label><select id="new_section" name="section" required>{% for section in sections %}<option value="{{ section }}">{{ section_labels[section] }}</option>{% endfor %}</select></div>
+          <div><label for="new_budget">Budget mensual</label><input id="new_budget" name="monthly_budget_amount" type="number" min="0" step="0.0001" value="0" required></div>
+          <div><label for="new_order">Orden</label><input id="new_order" name="display_order" type="number" min="0" step="1" value="0" required></div>
+          <div><label class="checkbox-label"><input name="active" type="checkbox" checked> Activo</label></div>
+        </div>
+        <button type="submit">Agregar rubro</button>
+      </form>
+    </section>
+  {% endif %}
+  <p class="muted-inline">Los rubros con movimientos históricos no se eliminan: pueden desactivarse para conservar su trazabilidad.</p>
 {% endblock %}
