@@ -347,6 +347,10 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         self.assertIn('name="active_{{ rubric.id }}"', rubrics_template)
         self.assertIn('action="/accounting/rubrics/new"', rubrics_template)
         self.assertIn('class="wide-form" style="width: 100%;"', actuals_template)
+        self.assertIn('id="rubric_filter"', actuals_template)
+        self.assertIn('data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }}"', actuals_template)
+        self.assertIn('filterInput.addEventListener("input", applyFilter)', actuals_template)
+        self.assertIn('row.hidden = !matches', actuals_template)
 
 
 if __name__ == "__main__":

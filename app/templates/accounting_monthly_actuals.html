@@ -18,18 +18,40 @@
     </form>
   </section>
 
+  <section class="report-panel">
+    <label for="rubric_filter">Buscar rubro</label>
+    <input
+      id="rubric_filter"
+      type="search"
+      placeholder="Nombre, código o sección (ej. internet, salario, operativo)"
+      autocomplete="off"
+      style="max-width: none; width: 100%;"
+    >
+    <div class="report-actions">
+      <button id="rubric_filter_clear" type="button" class="secondary">Limpiar filtro</button>
+      <span id="rubric_filter_count" class="muted-inline" aria-live="polite"></span>
+    </div>
+    <p id="rubric_filter_empty" class="muted-inline" hidden>No se encontraron rubros para este filtro.</p>
+  </section>
+
   <form method="post" action="/accounting/monthly-actuals" class="wide-form" style="width: 100%;">
     <input type="hidden" name="month" value="{{ period_value }}">
     {% for section in statement.sections %}
-      <section>
+      <section class="accounting-actuals-section">
         <h2>{{ section.label }}</h2>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Rubro</th><th>Budget mensual</th><th>Real</th><th>Notas</th></tr></thead>
             <tbody>
               {% for line in section.lines %}
-                <tr>
-                  <td>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}</td>
+                <tr
+                  class="accounting-rubric-row"
+                  data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }}"
+                >
+                  <td>
+                    {{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}
+                    <span class="muted-inline">{{ line.rubric.code }}</span>
+                  </td>
                   <td>{{ fmt.money_crc(line.budget_amount) }}</td>
                   <td><input name="actual_{{ line.rubric.id }}" type="number" min="0" step="0.0001" value="{{ line.actual_amount }}" required style="min-width: 160px;"></td>
                   <td><input name="notes_{{ line.rubric.id }}" type="text" value="{{ line.notes or '' }}" maxlength="1000" style="max-width: none; min-width: 320px;"></td>
@@ -45,4 +67,45 @@
       <a class="button secondary" href="/accounting/income-statement?month={{ period_value }}">Cancelar</a>
     </div>
   </form>
+
+  <script>
+    (() => {
+      const filterInput = document.getElementById("rubric_filter");
+      const clearButton = document.getElementById("rubric_filter_clear");
+      const countLabel = document.getElementById("rubric_filter_count");
+      const emptyMessage = document.getElementById("rubric_filter_empty");
+      const sections = Array.from(document.querySelectorAll(".accounting-actuals-section"));
+      const rows = Array.from(document.querySelectorAll(".accounting-rubric-row"));
+      if (!filterInput || !clearButton || !countLabel || !emptyMessage) return;
+
+      const normalize = (value) => value
+        .toLocaleLowerCase("es")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim();
+
+      const applyFilter = () => {
+        const query = normalize(filterInput.value);
+        let visibleRows = 0;
+        rows.forEach((row) => {
+          const matches = !query || normalize(row.dataset.rubricSearch || "").includes(query);
+          row.hidden = !matches;
+          if (matches) visibleRows += 1;
+        });
+        sections.forEach((section) => {
+          section.hidden = !section.querySelector(".accounting-rubric-row:not([hidden])");
+        });
+        countLabel.textContent = `${visibleRows} de ${rows.length} rubros visibles`;
+        emptyMessage.hidden = visibleRows !== 0;
+      };
+
+      filterInput.addEventListener("input", applyFilter);
+      clearButton.addEventListener("click", () => {
+        filterInput.value = "";
+        applyFilter();
+        filterInput.focus();
+      });
+      applyFilter();
+    })();
+  </script>
 {% endblock %}
