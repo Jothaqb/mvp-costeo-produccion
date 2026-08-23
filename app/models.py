@@ -415,6 +415,12 @@ class AccountingRubric(Base):
         back_populates="rubric",
         cascade="all, delete-orphan",
     )
+    subrubrics: Mapped[list["AccountingSubrubric"]] = relationship(
+        "AccountingSubrubric",
+        back_populates="rubric",
+        cascade="all, delete-orphan",
+        order_by="AccountingSubrubric.display_order, AccountingSubrubric.id",
+    )
 
 
 class AccountingMonthlyActual(Base):
@@ -451,6 +457,83 @@ class AccountingMonthlyActual(Base):
     )
 
     rubric: Mapped["AccountingRubric"] = relationship("AccountingRubric", back_populates="monthly_actuals")
+    created_by_user: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_user_id])
+    updated_by_user: Mapped["User | None"] = relationship("User", foreign_keys=[updated_by_user_id])
+
+
+class AccountingSubrubric(Base):
+    __tablename__ = "accounting_subrubrics"
+    __table_args__ = (
+        CheckConstraint(
+            "monthly_budget_amount >= 0",
+            name="ck_accounting_subrubrics_monthly_budget_nonnegative",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    rubric_id: Mapped[int] = mapped_column(ForeignKey("accounting_rubrics.id"), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    monthly_budget_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4),
+        default=Decimal("0"),
+        nullable=False,
+    )
+    display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    rubric: Mapped["AccountingRubric"] = relationship("AccountingRubric", back_populates="subrubrics")
+    monthly_actuals: Mapped[list["AccountingSubrubricMonthlyActual"]] = relationship(
+        "AccountingSubrubricMonthlyActual",
+        back_populates="subrubric",
+        cascade="all, delete-orphan",
+    )
+
+
+class AccountingSubrubricMonthlyActual(Base):
+    __tablename__ = "accounting_subrubric_monthly_actuals"
+    __table_args__ = (
+        UniqueConstraint(
+            "period_month",
+            "subrubric_id",
+            name="uq_accounting_subrubric_actuals_period_subrubric",
+        ),
+        CheckConstraint(
+            "actual_amount >= 0",
+            name="ck_accounting_subrubric_actuals_amount_nonnegative",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    period_month: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    subrubric_id: Mapped[int] = mapped_column(ForeignKey("accounting_subrubrics.id"), nullable=False, index=True)
+    actual_amount: Mapped[Decimal] = mapped_column(
+        Numeric(14, 4),
+        default=Decimal("0"),
+        nullable=False,
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    subrubric: Mapped["AccountingSubrubric"] = relationship(
+        "AccountingSubrubric",
+        back_populates="monthly_actuals",
+    )
     created_by_user: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_user_id])
     updated_by_user: Mapped["User | None"] = relationship("User", foreign_keys=[updated_by_user_id])
 

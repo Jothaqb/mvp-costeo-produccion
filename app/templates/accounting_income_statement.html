@@ -64,13 +64,32 @@
           <tbody>
             {% for line in section.lines %}
               <tr>
-                <td>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}</td>
-                <td>{{ fmt.money_crc(line.actual_amount) }}</td>
-                <td>{{ fmt.money_crc(line.budget_amount) }}</td>
-                <td>{{ fmt.money_crc(line.difference_amount) }}</td>
-                <td>{{ "{:.2f}%".format(line.difference_percent) if line.difference_percent is not none else "N/A" }}</td>
-                <td>{{ "{:.2f}%".format(line.compliance_percent) if line.compliance_percent is not none else "N/A" }}</td>
+                <td><strong>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}</strong></td>
+                <td><strong>{{ fmt.money_crc(line.actual_amount) }}</strong></td>
+                <td><strong>{{ fmt.money_crc(line.budget_amount) }}</strong></td>
+                <td><strong>{{ fmt.money_crc(line.difference_amount) }}</strong></td>
+                <td><strong>{{ "{:.2f}%".format(line.difference_percent) if line.difference_percent is not none else "N/A" }}</strong></td>
+                <td><strong>{{ "{:.2f}%".format(line.compliance_percent) if line.compliance_percent is not none else "N/A" }}</strong></td>
               </tr>
+              {% if line.subrubrics %}
+                {% if line.direct_actual_amount %}
+                  <tr>
+                    <td>&nbsp;&nbsp;Monto directo existente</td>
+                    <td>{{ fmt.money_crc(line.direct_actual_amount) }}</td>
+                    <td>N/A</td><td>N/A</td><td>N/A</td><td>N/A</td>
+                  </tr>
+                {% endif %}
+                {% for subline in line.subrubrics %}
+                  <tr>
+                    <td>&nbsp;&nbsp;↳ {{ subline.subrubric.name }}{% if not subline.subrubric.active %} (Inactivo){% endif %}</td>
+                    <td>{{ fmt.money_crc(subline.actual_amount) }}</td>
+                    <td>{{ fmt.money_crc(subline.budget_amount) }}</td>
+                    <td>{{ fmt.money_crc(subline.difference_amount) }}</td>
+                    <td>{{ "{:.2f}%".format(subline.difference_percent) if subline.difference_percent is not none else "N/A" }}</td>
+                    <td>{{ "{:.2f}%".format(subline.compliance_percent) if subline.compliance_percent is not none else "N/A" }}</td>
+                  </tr>
+                {% endfor %}
+              {% endif %}
             {% endfor %}
             <tr>
               <th>Total {{ section.label }}</th>

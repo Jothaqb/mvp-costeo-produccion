@@ -14,7 +14,7 @@
   <form method="post" action="/accounting/rubrics" class="wide-form" style="width: 100%;">
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Orden</th><th>Código</th><th>Rubro</th><th>Sección</th><th>Estado</th><th>Budget mensual</th></tr></thead>
+        <thead><tr><th>Orden</th><th>Código</th><th>Rubro</th><th>Sección</th><th>Estado</th><th>Budget directo</th><th>Budget efectivo</th></tr></thead>
         <tbody>
           {% for rubric in rubrics %}
             <tr>
@@ -48,6 +48,16 @@
                   {{ fmt.money_crc(rubric.monthly_budget_amount) }}
                 {% endif %}
               </td>
+              <td>
+                {% set active_subrubrics = rubric.subrubrics | selectattr("active") | list %}
+                {% if active_subrubrics %}
+                  {{ fmt.money_crc(active_subrubrics | sum(attribute="monthly_budget_amount")) }}
+                  <span class="muted-inline">Suma de {{ active_subrubrics | length }} subrubros activos</span>
+                {% else %}
+                  {{ fmt.money_crc(rubric.monthly_budget_amount) }}
+                  <span class="muted-inline">Budget directo</span>
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}
         </tbody>
@@ -58,7 +68,51 @@
       <a class="button secondary" href="/accounting/income-statement">Volver al Estado de Resultados</a>
     </div>
   </form>
+
+  <section>
+    <h2>Subrubros</h2>
+    <p class="muted-inline">Los subrubros se conservan cuando tienen histórico; para dejar de usarlos, desactívelos.</p>
+    <form method="post" action="/accounting/subrubrics" class="wide-form" style="width: 100%;">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Rubro principal</th><th>Orden</th><th>Código</th><th>Subrubro</th><th>Estado</th><th>Budget mensual</th></tr></thead>
+          <tbody>
+            {% for rubric in rubrics %}
+              {% for subrubric in rubric.subrubrics %}
+                <tr>
+                  <td>{{ rubric.name }}</td>
+                  <td>{% if can(request, "accounting.manage_budget") %}<input name="sub_display_order_{{ subrubric.id }}" type="number" min="0" step="1" value="{{ subrubric.display_order }}" required style="min-width: 90px;">{% else %}{{ subrubric.display_order }}{% endif %}</td>
+                  <td>{{ subrubric.code }}</td>
+                  <td>{% if can(request, "accounting.manage_budget") %}<input name="sub_name_{{ subrubric.id }}" type="text" value="{{ subrubric.name }}" maxlength="255" required style="max-width: none; min-width: 260px;">{% else %}{{ subrubric.name }}{% endif %}</td>
+                  <td>{% if can(request, "accounting.manage_budget") %}<label class="checkbox-label"><input name="sub_active_{{ subrubric.id }}" type="checkbox" {% if subrubric.active %}checked{% endif %}> Activo</label>{% else %}{{ "Activo" if subrubric.active else "Inactivo" }}{% endif %}</td>
+                  <td>{% if can(request, "accounting.manage_budget") %}<input name="sub_budget_{{ subrubric.id }}" type="number" min="0" step="0.0001" value="{{ subrubric.monthly_budget_amount }}" required style="min-width: 160px;">{% else %}{{ fmt.money_crc(subrubric.monthly_budget_amount) }}{% endif %}</td>
+                </tr>
+              {% endfor %}
+            {% endfor %}
+            {% if not rubrics | map(attribute="subrubrics") | map("length") | sum %}<tr><td colspan="6">No hay subrubros configurados.</td></tr>{% endif %}
+          </tbody>
+        </table>
+      </div>
+      {% if can(request, "accounting.manage_budget") %}<button type="submit">Guardar subrubros</button>{% endif %}
+    </form>
+  </section>
+
   {% if can(request, "accounting.manage_budget") %}
+    <section class="report-panel">
+      <h2>Agregar subrubro</h2>
+      <form method="post" action="/accounting/subrubrics/new" class="wide-form">
+        <div class="form-grid">
+          <div><label for="new_sub_rubric">Rubro principal</label><select id="new_sub_rubric" name="rubric_id" required>{% for rubric in rubrics %}<option value="{{ rubric.id }}">{{ rubric.name }}</option>{% endfor %}</select></div>
+          <div><label for="new_sub_code">Código único</label><input id="new_sub_code" name="code" type="text" maxlength="100" pattern="[a-z0-9][a-z0-9_-]{1,99}" required></div>
+          <div><label for="new_sub_name">Nombre</label><input id="new_sub_name" name="name" type="text" maxlength="255" required></div>
+          <div><label for="new_sub_budget">Budget mensual</label><input id="new_sub_budget" name="monthly_budget_amount" type="number" min="0" step="0.0001" value="0" required></div>
+          <div><label for="new_sub_order">Orden</label><input id="new_sub_order" name="display_order" type="number" min="0" step="1" value="0" required></div>
+          <div><label class="checkbox-label"><input name="active" type="checkbox" checked> Activo</label></div>
+        </div>
+        <button type="submit">Agregar subrubro</button>
+      </form>
+    </section>
+
     <section class="report-panel">
       <h2>Agregar rubro contable</h2>
       <form method="post" action="/accounting/rubrics/new" class="wide-form">

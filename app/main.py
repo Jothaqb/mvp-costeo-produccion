@@ -54,6 +54,7 @@ from app.database import (
 from app.models import (
     Activity,
     AccountingRubric,
+    AccountingSubrubric,
     AppSettings,
     AuditLog,
     B2BCustomer,
@@ -130,9 +131,12 @@ from app.services.accounting_income_statement_service import (
     SECTION_LABELS as ACCOUNTING_SECTION_LABELS,
     build_income_statement,
     create_accounting_rubric,
+    create_accounting_subrubric,
     parse_period_month,
     save_monthly_actuals,
+    save_monthly_subrubric_actuals,
     update_accounting_rubric,
+    update_accounting_subrubric,
 )
 from app.services.b2c_sales_service import (
     B2CValidationError,
@@ -7534,10 +7538,25 @@ async def accounting_monthly_actuals_save(
             for rubric_id in rubric_ids
             if f"actual_{rubric_id}" in form
         }
+        subrubric_ids = [subrubric.id for subrubric in db.query(AccountingSubrubric).all()]
+        subrubric_values = {
+            subrubric_id: (
+                form.get(f"subactual_{subrubric_id}", ""),
+                str(form.get(f"subnotes_{subrubric_id}", "")),
+            )
+            for subrubric_id in subrubric_ids
+            if f"subactual_{subrubric_id}" in form
+        }
         save_monthly_actuals(
             db,
             period_month=period_month,
             values_by_rubric_id=values,
+            user_id=current_user.id,
+        )
+        save_monthly_subrubric_actuals(
+            db,
+            period_month=period_month,
+            values_by_subrubric_id=subrubric_values,
             user_id=current_user.id,
         )
         db.commit()
@@ -7569,7 +7588,12 @@ def accounting_rubrics(
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     require_permission(request, "accounting.view")
-    rubrics = db.query(AccountingRubric).order_by(AccountingRubric.display_order, AccountingRubric.id).all()
+    rubrics = (
+        db.query(AccountingRubric)
+        .options(joinedload(AccountingRubric.subrubrics))
+        .order_by(AccountingRubric.display_order, AccountingRubric.id)
+        .all()
+    )
     return templates.TemplateResponse(
         request=request,
         name="accounting_rubrics.html",
@@ -7620,6 +7644,81 @@ async def accounting_rubrics_save(
     except AccountingValidationError as exc:
         db.rollback()
         return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")
+
+
+@app.post("/accounting/subrubrics")
+async def accounting_subrubrics_save(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "accounting.manage_budget")
+    form = await request.form()
+    try:
+        subrubrics = db.query(AccountingSubrubric).all()
+        for subrubric in subrubrics:
+            if f"sub_name_{subrubric.id}" not in form:
+                continue
+            update_accounting_subrubric(
+                db,
+                subrubric,
+                name=form.get(f"sub_name_{subrubric.id}", ""),
+                monthly_budget_amount=form.get(f"sub_budget_{subrubric.id}", ""),
+                display_order=form.get(f"sub_display_order_{subrubric.id}", ""),
+                active=f"sub_active_{subrubric.id}" in form,
+            )
+        db.commit()
+        safe_log_audit_event(
+            module="accounting",
+            action="subrubrics_updated",
+            entity_type="accounting_subrubrics",
+            entity_label="Accounting subrubrics",
+            request=request,
+            user=current_user,
+        )
+        return _redirect(f"/accounting/rubrics?message={quote('Subrubros actualizados correctamente.')}")
+    except AccountingValidationError as exc:
+        db.rollback()
+        return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")
+
+
+@app.post("/accounting/subrubrics/new")
+async def accounting_subrubric_create(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "accounting.manage_budget")
+    form = await request.form()
+    try:
+        rubric_id = int(str(form.get("rubric_id", "")))
+        rubric = db.get(AccountingRubric, rubric_id)
+        if rubric is None:
+            raise AccountingValidationError("Accounting rubric does not exist.")
+        subrubric = create_accounting_subrubric(
+            db,
+            rubric=rubric,
+            code=form.get("code", ""),
+            name=form.get("name", ""),
+            monthly_budget_amount=form.get("monthly_budget_amount", ""),
+            display_order=form.get("display_order", ""),
+            active="active" in form,
+        )
+        db.commit()
+        safe_log_audit_event(
+            module="accounting",
+            action="subrubric_created",
+            entity_type="accounting_subrubric",
+            entity_id=subrubric.id,
+            entity_label=subrubric.name,
+            request=request,
+            user=current_user,
+        )
+        return _redirect(f"/accounting/rubrics?message={quote('Subrubro creado correctamente.')}")
+    except AccountingValidationError as exc:
+        db.rollback()
+        return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")
+    except ValueError:
+        db.rollback()
+        return _redirect(f"/accounting/rubrics?error={quote('Rubro principal inválido.')}")
 
 
 @app.post("/accounting/rubrics/new")

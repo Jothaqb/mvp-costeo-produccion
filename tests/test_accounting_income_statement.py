@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base
 from app.models import (
     AccountingRubric,
+    AccountingSubrubric,
     B2BCustomer,
     B2BSalesOrder,
     B2BSalesOrderLine,
@@ -22,9 +23,12 @@ from app.services.accounting_income_statement_service import (
     AccountingValidationError,
     build_income_statement,
     create_accounting_rubric,
+    create_accounting_subrubric,
     get_accounting_sales_summary,
     save_monthly_actuals,
+    save_monthly_subrubric_actuals,
     update_accounting_rubric,
+    update_accounting_subrubric,
 )
 
 
@@ -348,9 +352,133 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         self.assertIn('action="/accounting/rubrics/new"', rubrics_template)
         self.assertIn('class="wide-form" style="width: 100%;"', actuals_template)
         self.assertIn('id="rubric_filter"', actuals_template)
-        self.assertIn('data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }}"', actuals_template)
+        self.assertIn('data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }}', actuals_template)
         self.assertIn('filterInput.addEventListener("input", applyFilter)', actuals_template)
         self.assertIn('row.hidden = !matches', actuals_template)
+
+    def test_create_edit_deactivate_and_reactivate_subrubric(self) -> None:
+        with self.Session.begin() as db:
+            rubric = db.get(AccountingRubric, self.rubrics["op_test"])
+            subrubric = create_accounting_subrubric(
+                db,
+                rubric=rubric,
+                code="op_test_person_1",
+                name="Persona 1",
+                monthly_budget_amount="200",
+                display_order="1",
+                active=True,
+            )
+            subrubric_id = subrubric.id
+            update_accounting_subrubric(
+                db,
+                subrubric,
+                name="Persona operaria 1",
+                monthly_budget_amount="225.50",
+                display_order="2",
+                active=False,
+            )
+
+        with self.Session() as db:
+            subrubric = db.get(AccountingSubrubric, subrubric_id)
+            self.assertEqual(subrubric.name, "Persona operaria 1")
+            self.assertEqual(subrubric.monthly_budget_amount, Decimal("225.5000"))
+            self.assertEqual(subrubric.display_order, 2)
+            self.assertFalse(subrubric.active)
+
+        with self.Session.begin() as db:
+            subrubric = db.get(AccountingSubrubric, subrubric_id)
+            update_accounting_subrubric(
+                db,
+                subrubric,
+                name=subrubric.name,
+                monthly_budget_amount=subrubric.monthly_budget_amount,
+                display_order=subrubric.display_order,
+                active=True,
+            )
+        with self.Session() as db:
+            self.assertTrue(db.get(AccountingSubrubric, subrubric_id).active)
+
+    def test_subrubric_actuals_and_budgets_roll_up_to_parent(self) -> None:
+        with self.Session.begin() as db:
+            rubric = db.get(AccountingRubric, self.rubrics["op_test"])
+            first = create_accounting_subrubric(
+                db,
+                rubric=rubric,
+                code="op_test_first",
+                name="Primero",
+                monthly_budget_amount="60",
+                display_order="1",
+            )
+            second = create_accounting_subrubric(
+                db,
+                rubric=rubric,
+                code="op_test_second",
+                name="Segundo",
+                monthly_budget_amount="40",
+                display_order="2",
+            )
+            first_id, second_id = first.id, second.id
+            save_monthly_subrubric_actuals(
+                db,
+                period_month=date(2026, 10, 1),
+                values_by_subrubric_id={
+                    first_id: ("35", "Primer gasto"),
+                    second_id: ("45", "Segundo gasto"),
+                },
+                user_id=None,
+            )
+
+        with self.Session() as db:
+            statement = build_income_statement(db, date(2026, 10, 1))
+            operating = next(section for section in statement.sections if section.code == "operating")
+            parent = next(line for line in operating.lines if line.rubric.id == self.rubrics["op_test"])
+
+        self.assertTrue(parent.uses_subrubrics)
+        self.assertEqual(parent.direct_actual_amount, Decimal("0.0000"))
+        self.assertEqual(parent.actual_amount, Decimal("80.0000"))
+        self.assertEqual(parent.budget_amount, Decimal("100.0000"))
+        self.assertEqual(len(parent.subrubrics), 2)
+        self.assertEqual(sum((line.actual_amount for line in parent.subrubrics), Decimal("0")), Decimal("80.0000"))
+
+    def test_existing_direct_actual_is_preserved_after_subrubrics_are_added(self) -> None:
+        rubric_id = self.rubrics["admin_test"]
+        with self.Session.begin() as db:
+            save_monthly_actuals(
+                db,
+                period_month=date(2026, 6, 1),
+                values_by_rubric_id={rubric_id: ("75", "Monto directo existente")},
+                user_id=None,
+            )
+            rubric = db.get(AccountingRubric, rubric_id)
+            create_accounting_subrubric(
+                db,
+                rubric=rubric,
+                code="admin_test_detail",
+                name="Detalle futuro",
+                monthly_budget_amount="50",
+                display_order="1",
+            )
+
+        with self.Session() as db:
+            statement = build_income_statement(db, date(2026, 6, 1))
+            administrative = next(section for section in statement.sections if section.code == "administrative")
+            parent = next(line for line in administrative.lines if line.rubric.id == rubric_id)
+
+        self.assertEqual(parent.direct_actual_amount, Decimal("75.0000"))
+        self.assertEqual(parent.actual_amount, Decimal("75.0000"))
+        self.assertEqual(parent.notes, "Monto directo existente")
+
+    def test_templates_expose_subrubric_loading_filter_and_statement_detail(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        rubrics_template = (project_root / "app/templates/accounting_rubrics.html").read_text(encoding="utf-8")
+        actuals_template = (project_root / "app/templates/accounting_monthly_actuals.html").read_text(encoding="utf-8")
+        statement_template = (project_root / "app/templates/accounting_income_statement.html").read_text(encoding="utf-8")
+
+        self.assertIn('action="/accounting/subrubrics/new"', rubrics_template)
+        self.assertIn('name="sub_name_{{ subrubric.id }}"', rubrics_template)
+        self.assertIn('name="subactual_{{ subline.subrubric.id }}"', actuals_template)
+        self.assertIn('{{ subline.subrubric.name }} {{ subline.subrubric.code }}', actuals_template)
+        self.assertIn('{% for subline in line.subrubrics %}', statement_template)
 
 
 if __name__ == "__main__":

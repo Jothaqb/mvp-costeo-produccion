@@ -10,6 +10,8 @@ from sqlalchemy.orm import Session
 from app.models import (
     AccountingMonthlyActual,
     AccountingRubric,
+    AccountingSubrubric,
+    AccountingSubrubricMonthlyActual,
     B2BSalesOrder,
     B2BSalesOrderLine,
     B2CSalesOrder,
@@ -52,14 +54,28 @@ class AccountingSalesSummary:
 
 
 @dataclass(frozen=True)
-class AccountingRubricResult:
-    rubric: AccountingRubric
+class AccountingSubrubricResult:
+    subrubric: AccountingSubrubric
     actual_amount: Decimal
     budget_amount: Decimal
     difference_amount: Decimal
     difference_percent: Decimal | None
     compliance_percent: Decimal | None
     notes: str | None
+
+
+@dataclass(frozen=True)
+class AccountingRubricResult:
+    rubric: AccountingRubric
+    actual_amount: Decimal
+    direct_actual_amount: Decimal
+    budget_amount: Decimal
+    difference_amount: Decimal
+    difference_percent: Decimal | None
+    compliance_percent: Decimal | None
+    notes: str | None
+    subrubrics: tuple[AccountingSubrubricResult, ...]
+    uses_subrubrics: bool
 
 
 @dataclass(frozen=True)
@@ -234,6 +250,19 @@ def build_income_statement(db: Session, period_month: date) -> AccountingIncomeS
         .filter(AccountingMonthlyActual.period_month == period_start)
         .all()
     }
+    subrubric_actuals = {
+        actual.subrubric_id: actual
+        for actual in db.query(AccountingSubrubricMonthlyActual)
+        .filter(AccountingSubrubricMonthlyActual.period_month == period_start)
+        .all()
+    }
+    subrubrics_by_rubric: dict[int, list[AccountingSubrubric]] = {}
+    for subrubric in (
+        db.query(AccountingSubrubric)
+        .order_by(AccountingSubrubric.display_order, AccountingSubrubric.id)
+        .all()
+    ):
+        subrubrics_by_rubric.setdefault(subrubric.rubric_id, []).append(subrubric)
     rubrics = (
         db.query(AccountingRubric)
         .order_by(AccountingRubric.display_order, AccountingRubric.id)
@@ -246,20 +275,67 @@ def build_income_statement(db: Session, period_month: date) -> AccountingIncomeS
         lines: list[AccountingRubricResult] = []
         for rubric in rubrics:
             actual_record = actuals.get(rubric.id)
-            if rubric.section != section or (not rubric.active and actual_record is None):
+            rubric_subrubrics = subrubrics_by_rubric.get(rubric.id, [])
+            relevant_subrubrics = [
+                subrubric
+                for subrubric in rubric_subrubrics
+                if subrubric.active or subrubric.id in subrubric_actuals
+            ]
+            if rubric.section != section or (
+                not rubric.active
+                and actual_record is None
+                and not any(subrubric.id in subrubric_actuals for subrubric in rubric_subrubrics)
+            ):
                 continue
-            real = (actual_record.actual_amount if actual_record is not None else ZERO).quantize(MONEY_QUANT)
-            budget = rubric.monthly_budget_amount.quantize(MONEY_QUANT)
+            direct_real = (actual_record.actual_amount if actual_record is not None else ZERO).quantize(MONEY_QUANT)
+            subrubric_lines: list[AccountingSubrubricResult] = []
+            for subrubric in relevant_subrubrics:
+                sub_actual_record = subrubric_actuals.get(subrubric.id)
+                sub_real = (
+                    sub_actual_record.actual_amount if sub_actual_record is not None else ZERO
+                ).quantize(MONEY_QUANT)
+                sub_budget = (
+                    subrubric.monthly_budget_amount if subrubric.active else ZERO
+                ).quantize(MONEY_QUANT)
+                sub_difference, sub_difference_percent, sub_compliance_percent = _comparison(
+                    sub_real,
+                    sub_budget,
+                )
+                subrubric_lines.append(
+                    AccountingSubrubricResult(
+                        subrubric=subrubric,
+                        actual_amount=sub_real,
+                        budget_amount=sub_budget,
+                        difference_amount=sub_difference,
+                        difference_percent=sub_difference_percent,
+                        compliance_percent=sub_compliance_percent,
+                        notes=sub_actual_record.notes if sub_actual_record is not None else None,
+                    )
+                )
+            active_subrubrics = [subrubric for subrubric in rubric_subrubrics if subrubric.active]
+            subrubric_real = sum(
+                (line.actual_amount for line in subrubric_lines),
+                ZERO,
+            ).quantize(MONEY_QUANT)
+            real = (direct_real + subrubric_real).quantize(MONEY_QUANT)
+            budget = (
+                sum((subrubric.monthly_budget_amount for subrubric in active_subrubrics), ZERO)
+                if active_subrubrics
+                else rubric.monthly_budget_amount
+            ).quantize(MONEY_QUANT)
             difference, difference_percent, compliance_percent = _comparison(real, budget)
             lines.append(
                 AccountingRubricResult(
                     rubric=rubric,
                     actual_amount=real,
+                    direct_actual_amount=direct_real,
                     budget_amount=budget,
                     difference_amount=difference,
                     difference_percent=difference_percent,
                     compliance_percent=compliance_percent,
                     notes=actual_record.notes if actual_record is not None else None,
+                    subrubrics=tuple(subrubric_lines),
+                    uses_subrubrics=bool(active_subrubrics),
                 )
             )
         actual_total = sum((line.actual_amount for line in lines), ZERO).quantize(MONEY_QUANT)
@@ -346,6 +422,53 @@ def save_monthly_actuals(
     db.flush()
 
 
+def save_monthly_subrubric_actuals(
+    db: Session,
+    *,
+    period_month: date,
+    values_by_subrubric_id: dict[int, tuple[object, str]],
+    user_id: int | None,
+) -> None:
+    period_start = normalize_period_month(period_month)
+    subrubric_ids = set(values_by_subrubric_id)
+    subrubrics = (
+        db.query(AccountingSubrubric).filter(AccountingSubrubric.id.in_(subrubric_ids)).all()
+        if subrubric_ids
+        else []
+    )
+    if {subrubric.id for subrubric in subrubrics} != subrubric_ids:
+        raise AccountingValidationError("One or more accounting subrubrics do not exist.")
+    existing = {
+        item.subrubric_id: item
+        for item in db.query(AccountingSubrubricMonthlyActual)
+        .filter(
+            AccountingSubrubricMonthlyActual.period_month == period_start,
+            AccountingSubrubricMonthlyActual.subrubric_id.in_(subrubric_ids),
+        )
+        .all()
+    } if subrubric_ids else {}
+    for subrubric in subrubrics:
+        raw_amount, raw_notes = values_by_subrubric_id[subrubric.id]
+        amount = parse_nonnegative_amount(raw_amount, subrubric.name)
+        notes = (raw_notes or "").strip() or None
+        actual = existing.get(subrubric.id)
+        if actual is None:
+            actual = AccountingSubrubricMonthlyActual(
+                period_month=period_start,
+                subrubric_id=subrubric.id,
+                actual_amount=amount,
+                notes=notes,
+                created_by_user_id=user_id,
+                updated_by_user_id=user_id,
+            )
+            db.add(actual)
+        else:
+            actual.actual_amount = amount
+            actual.notes = notes
+            actual.updated_by_user_id = user_id
+    db.flush()
+
+
 def create_accounting_rubric(
     db: Session,
     *,
@@ -357,7 +480,10 @@ def create_accounting_rubric(
     active: bool = True,
 ) -> AccountingRubric:
     normalized_code = _normalize_rubric_code(code)
-    if db.query(AccountingRubric).filter(AccountingRubric.code == normalized_code).first() is not None:
+    if (
+        db.query(AccountingRubric).filter(AccountingRubric.code == normalized_code).first() is not None
+        or db.query(AccountingSubrubric).filter(AccountingSubrubric.code == normalized_code).first() is not None
+    ):
         raise AccountingValidationError(f"Rubric code '{normalized_code}' already exists.")
     rubric = AccountingRubric(
         code=normalized_code,
@@ -370,6 +496,55 @@ def create_accounting_rubric(
     db.add(rubric)
     db.flush()
     return rubric
+
+
+def create_accounting_subrubric(
+    db: Session,
+    *,
+    rubric: AccountingRubric,
+    code: object,
+    name: object,
+    monthly_budget_amount: object,
+    display_order: object,
+    active: bool = True,
+) -> AccountingSubrubric:
+    normalized_code = _normalize_rubric_code(code)
+    if (
+        db.query(AccountingRubric).filter(AccountingRubric.code == normalized_code).first() is not None
+        or db.query(AccountingSubrubric).filter(AccountingSubrubric.code == normalized_code).first() is not None
+    ):
+        raise AccountingValidationError(f"Accounting code '{normalized_code}' already exists.")
+    subrubric = AccountingSubrubric(
+        rubric_id=rubric.id,
+        code=normalized_code,
+        name=_normalize_rubric_name(name),
+        monthly_budget_amount=parse_nonnegative_amount(monthly_budget_amount, "Monthly budget"),
+        display_order=_parse_display_order(display_order),
+        active=bool(active),
+    )
+    db.add(subrubric)
+    db.flush()
+    return subrubric
+
+
+def update_accounting_subrubric(
+    db: Session,
+    subrubric: AccountingSubrubric,
+    *,
+    name: object,
+    monthly_budget_amount: object,
+    display_order: object,
+    active: bool,
+) -> AccountingSubrubric:
+    subrubric.name = _normalize_rubric_name(name)
+    subrubric.monthly_budget_amount = parse_nonnegative_amount(
+        monthly_budget_amount,
+        f"Budget for {subrubric.name}",
+    )
+    subrubric.display_order = _parse_display_order(display_order)
+    subrubric.active = bool(active)
+    db.flush()
+    return subrubric
 
 
 def update_accounting_rubric(

@@ -46,16 +46,40 @@
               {% for line in section.lines %}
                 <tr
                   class="accounting-rubric-row"
-                  data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }}"
+                  data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }} {% for subline in line.subrubrics %}{{ subline.subrubric.name }} {{ subline.subrubric.code }} {% endfor %}"
                 >
                   <td>
-                    {{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}
+                    <strong>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}</strong>
                     <span class="muted-inline">{{ line.rubric.code }}</span>
                   </td>
                   <td>{{ fmt.money_crc(line.budget_amount) }}</td>
-                  <td><input name="actual_{{ line.rubric.id }}" type="number" min="0" step="0.0001" value="{{ line.actual_amount }}" required style="min-width: 160px;"></td>
-                  <td><input name="notes_{{ line.rubric.id }}" type="text" value="{{ line.notes or '' }}" maxlength="1000" style="max-width: none; min-width: 320px;"></td>
+                  {% if line.uses_subrubrics %}
+                    <td><strong>{{ fmt.money_crc(line.actual_amount) }}</strong></td>
+                    <td><span class="muted-inline">Total automático de subrubros{% if line.direct_actual_amount %} más monto directo existente{% endif %}</span></td>
+                  {% else %}
+                    <td><input name="actual_{{ line.rubric.id }}" type="number" min="0" step="0.0001" value="{{ line.direct_actual_amount }}" required style="min-width: 160px;"></td>
+                    <td><input name="notes_{{ line.rubric.id }}" type="text" value="{{ line.notes or '' }}" maxlength="1000" style="max-width: none; min-width: 320px;"></td>
+                  {% endif %}
                 </tr>
+                {% if line.uses_subrubrics and (line.direct_actual_amount or line.notes) %}
+                  <tr class="accounting-rubric-row" data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} monto directo histórico {{ section.code }} {{ section.label }}">
+                    <td>&nbsp;&nbsp;Monto directo existente</td>
+                    <td>N/A</td>
+                    <td>{{ fmt.money_crc(line.direct_actual_amount) }}</td>
+                    <td>{{ line.notes or "Conservado por compatibilidad histórica" }}</td>
+                  </tr>
+                {% endif %}
+                {% for subline in line.subrubrics %}
+                  <tr
+                    class="accounting-rubric-row accounting-subrubric-row"
+                    data-rubric-search="{{ subline.subrubric.name }} {{ subline.subrubric.code }} {{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }}"
+                  >
+                    <td>&nbsp;&nbsp;↳ {{ subline.subrubric.name }}{% if not subline.subrubric.active %} (Inactivo){% endif %} <span class="muted-inline">{{ subline.subrubric.code }}</span></td>
+                    <td>{{ fmt.money_crc(subline.budget_amount) }}</td>
+                    <td><input name="subactual_{{ subline.subrubric.id }}" type="number" min="0" step="0.0001" value="{{ subline.actual_amount }}" required style="min-width: 160px;"></td>
+                    <td><input name="subnotes_{{ subline.subrubric.id }}" type="text" value="{{ subline.notes or '' }}" maxlength="1000" style="max-width: none; min-width: 320px;"></td>
+                  </tr>
+                {% endfor %}
               {% endfor %}
             </tbody>
           </table>
@@ -95,7 +119,7 @@
         sections.forEach((section) => {
           section.hidden = !section.querySelector(".accounting-rubric-row:not([hidden])");
         });
-        countLabel.textContent = `${visibleRows} de ${rows.length} rubros visibles`;
+        countLabel.textContent = `${visibleRows} de ${rows.length} líneas visibles`;
         emptyMessage.hidden = visibleRows !== 0;
       };
 
