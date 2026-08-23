@@ -1,0 +1,314 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal, InvalidOperation
+
+from sqlalchemy.orm import Session
+
+from app.models import (
+    AccountingMonthlyActual,
+    AccountingRubric,
+    B2BSalesOrder,
+    B2BSalesOrderLine,
+    B2CSalesOrder,
+    B2CSalesOrderLine,
+)
+from app.services.accounts_receivable_service import resolve_b2b_invoice_date
+
+
+ZERO = Decimal("0")
+MONEY_QUANT = Decimal("0.0001")
+PERCENT_QUANT = Decimal("0.01")
+ACCOUNTING_SECTIONS = ("operating", "administrative", "financial", "tax")
+SECTION_LABELS = {
+    "operating": "Gastos Operativos",
+    "administrative": "Gastos Administrativos",
+    "financial": "Gastos Financieros",
+    "tax": "Impuestos pagados",
+}
+
+
+class AccountingValidationError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class AccountingSalesSummary:
+    revenue: Decimal
+    cogs: Decimal | None
+    gross_profit: Decimal | None
+    has_complete_cogs: bool
+    cogs_lines_with_value: int
+    cogs_total_lines: int
+    b2b_orders: int
+    b2c_orders: int
+
+    @property
+    def cogs_coverage_label(self) -> str:
+        return f"{self.cogs_lines_with_value}/{self.cogs_total_lines} líneas"
+
+
+@dataclass(frozen=True)
+class AccountingRubricResult:
+    rubric: AccountingRubric
+    actual_amount: Decimal
+    budget_amount: Decimal
+    difference_amount: Decimal
+    difference_percent: Decimal | None
+    compliance_percent: Decimal | None
+    notes: str | None
+
+
+@dataclass(frozen=True)
+class AccountingSectionResult:
+    code: str
+    label: str
+    lines: tuple[AccountingRubricResult, ...]
+    actual_amount: Decimal
+    budget_amount: Decimal
+    difference_amount: Decimal
+    difference_percent: Decimal | None
+    compliance_percent: Decimal | None
+
+
+@dataclass(frozen=True)
+class AccountingIncomeStatement:
+    period_month: date
+    sales: AccountingSalesSummary
+    sections: tuple[AccountingSectionResult, ...]
+    operating_expenses: Decimal
+    administrative_expenses: Decimal
+    financial_expenses: Decimal
+    taxes_paid: Decimal
+    profit_before_tax: Decimal | None
+    period_result: Decimal | None
+
+
+def normalize_period_month(value: date) -> date:
+    return value.replace(day=1)
+
+
+def parse_period_month(value: str) -> date:
+    normalized = (value or "").strip()
+    try:
+        parsed = date.fromisoformat(f"{normalized}-01")
+    except ValueError as exc:
+        raise AccountingValidationError("Month must use YYYY-MM format.") from exc
+    return normalize_period_month(parsed)
+
+
+def next_month(period_month: date) -> date:
+    return date(
+        period_month.year + (1 if period_month.month == 12 else 0),
+        1 if period_month.month == 12 else period_month.month + 1,
+        1,
+    )
+
+
+def parse_nonnegative_amount(value: object, field_name: str) -> Decimal:
+    normalized = str(value or "").strip().replace(",", "")
+    if not normalized:
+        return ZERO.quantize(MONEY_QUANT)
+    try:
+        amount = Decimal(normalized).quantize(MONEY_QUANT)
+    except (InvalidOperation, ValueError) as exc:
+        raise AccountingValidationError(f"{field_name} must be a valid number.") from exc
+    if not amount.is_finite() or amount < ZERO:
+        raise AccountingValidationError(f"{field_name} must be zero or greater.")
+    return amount
+
+
+def get_accounting_sales_summary(db: Session, period_month: date) -> AccountingSalesSummary:
+    period_start = normalize_period_month(period_month)
+    period_end = next_month(period_start)
+    revenue = ZERO
+    cogs_values: list[Decimal | None] = []
+    b2b_order_ids: set[int] = set()
+    b2c_order_ids: set[int] = set()
+
+    b2b_rows = (
+        db.query(B2BSalesOrder, B2BSalesOrderLine)
+        .join(B2BSalesOrderLine, B2BSalesOrderLine.sales_order_id == B2BSalesOrder.id)
+        .filter(B2BSalesOrder.status == "invoiced")
+        .all()
+    )
+    for order, line in b2b_rows:
+        invoice_date, _ = resolve_b2b_invoice_date(order)
+        if not period_start <= invoice_date < period_end:
+            continue
+        revenue += line.line_total
+        cogs_values.append(line.cost_total_snapshot)
+        b2b_order_ids.add(order.id)
+
+    b2c_rows = (
+        db.query(B2CSalesOrder, B2CSalesOrderLine)
+        .join(B2CSalesOrderLine, B2CSalesOrderLine.sales_order_id == B2CSalesOrder.id)
+        .filter(
+            B2CSalesOrder.status == "invoiced",
+            B2CSalesOrder.order_date >= period_start,
+            B2CSalesOrder.order_date < period_end,
+        )
+        .all()
+    )
+    for order, line in b2c_rows:
+        net_sales = line.net_line_total_snapshot if line.net_line_total_snapshot is not None else line.line_total
+        revenue += net_sales
+        cogs_values.append(line.cost_total_snapshot)
+        b2c_order_ids.add(order.id)
+
+    revenue = revenue.quantize(MONEY_QUANT)
+    cogs_lines_with_value = sum(1 for value in cogs_values if value is not None)
+    has_complete_cogs = cogs_lines_with_value == len(cogs_values)
+    cogs = None
+    gross_profit = None
+    if has_complete_cogs:
+        cogs = sum((value for value in cogs_values if value is not None), ZERO).quantize(MONEY_QUANT)
+        gross_profit = (revenue - cogs).quantize(MONEY_QUANT)
+
+    return AccountingSalesSummary(
+        revenue=revenue,
+        cogs=cogs,
+        gross_profit=gross_profit,
+        has_complete_cogs=has_complete_cogs,
+        cogs_lines_with_value=cogs_lines_with_value,
+        cogs_total_lines=len(cogs_values),
+        b2b_orders=len(b2b_order_ids),
+        b2c_orders=len(b2c_order_ids),
+    )
+
+
+def _comparison(real: Decimal, budget: Decimal) -> tuple[Decimal, Decimal | None, Decimal | None]:
+    difference = (real - budget).quantize(MONEY_QUANT)
+    if budget == ZERO:
+        return difference, None, None
+    difference_percent = ((difference / budget) * Decimal("100")).quantize(PERCENT_QUANT)
+    compliance_percent = ((real / budget) * Decimal("100")).quantize(PERCENT_QUANT)
+    return difference, difference_percent, compliance_percent
+
+
+def build_income_statement(db: Session, period_month: date) -> AccountingIncomeStatement:
+    period_start = normalize_period_month(period_month)
+    sales = get_accounting_sales_summary(db, period_start)
+    actuals = {
+        actual.rubric_id: actual
+        for actual in db.query(AccountingMonthlyActual)
+        .filter(AccountingMonthlyActual.period_month == period_start)
+        .all()
+    }
+    rubrics = (
+        db.query(AccountingRubric)
+        .order_by(AccountingRubric.display_order, AccountingRubric.id)
+        .all()
+    )
+
+    section_results: list[AccountingSectionResult] = []
+    section_actuals: dict[str, Decimal] = {}
+    for section in ACCOUNTING_SECTIONS:
+        lines: list[AccountingRubricResult] = []
+        for rubric in rubrics:
+            actual_record = actuals.get(rubric.id)
+            if rubric.section != section or (not rubric.active and actual_record is None):
+                continue
+            real = (actual_record.actual_amount if actual_record is not None else ZERO).quantize(MONEY_QUANT)
+            budget = rubric.monthly_budget_amount.quantize(MONEY_QUANT)
+            difference, difference_percent, compliance_percent = _comparison(real, budget)
+            lines.append(
+                AccountingRubricResult(
+                    rubric=rubric,
+                    actual_amount=real,
+                    budget_amount=budget,
+                    difference_amount=difference,
+                    difference_percent=difference_percent,
+                    compliance_percent=compliance_percent,
+                    notes=actual_record.notes if actual_record is not None else None,
+                )
+            )
+        actual_total = sum((line.actual_amount for line in lines), ZERO).quantize(MONEY_QUANT)
+        budget_total = sum((line.budget_amount for line in lines), ZERO).quantize(MONEY_QUANT)
+        difference, difference_percent, compliance_percent = _comparison(actual_total, budget_total)
+        section_actuals[section] = actual_total
+        section_results.append(
+            AccountingSectionResult(
+                code=section,
+                label=SECTION_LABELS[section],
+                lines=tuple(lines),
+                actual_amount=actual_total,
+                budget_amount=budget_total,
+                difference_amount=difference,
+                difference_percent=difference_percent,
+                compliance_percent=compliance_percent,
+            )
+        )
+
+    profit_before_tax = None
+    period_result = None
+    if sales.gross_profit is not None:
+        profit_before_tax = (
+            sales.gross_profit
+            - section_actuals["operating"]
+            - section_actuals["administrative"]
+            - section_actuals["financial"]
+        ).quantize(MONEY_QUANT)
+        period_result = (profit_before_tax - section_actuals["tax"]).quantize(MONEY_QUANT)
+
+    return AccountingIncomeStatement(
+        period_month=period_start,
+        sales=sales,
+        sections=tuple(section_results),
+        operating_expenses=section_actuals["operating"],
+        administrative_expenses=section_actuals["administrative"],
+        financial_expenses=section_actuals["financial"],
+        taxes_paid=section_actuals["tax"],
+        profit_before_tax=profit_before_tax,
+        period_result=period_result,
+    )
+
+
+def save_monthly_actuals(
+    db: Session,
+    *,
+    period_month: date,
+    values_by_rubric_id: dict[int, tuple[object, str]],
+    user_id: int | None,
+) -> None:
+    period_start = normalize_period_month(period_month)
+    rubric_ids = set(values_by_rubric_id)
+    rubrics = db.query(AccountingRubric).filter(AccountingRubric.id.in_(rubric_ids)).all() if rubric_ids else []
+    if {rubric.id for rubric in rubrics} != rubric_ids:
+        raise AccountingValidationError("One or more accounting rubrics do not exist.")
+    existing = {
+        item.rubric_id: item
+        for item in db.query(AccountingMonthlyActual)
+        .filter(
+            AccountingMonthlyActual.period_month == period_start,
+            AccountingMonthlyActual.rubric_id.in_(rubric_ids),
+        )
+        .all()
+    } if rubric_ids else {}
+    for rubric in rubrics:
+        raw_amount, raw_notes = values_by_rubric_id[rubric.id]
+        amount = parse_nonnegative_amount(raw_amount, rubric.name)
+        notes = (raw_notes or "").strip() or None
+        actual = existing.get(rubric.id)
+        if actual is None:
+            actual = AccountingMonthlyActual(
+                period_month=period_start,
+                rubric_id=rubric.id,
+                actual_amount=amount,
+                notes=notes,
+                created_by_user_id=user_id,
+                updated_by_user_id=user_id,
+            )
+            db.add(actual)
+        else:
+            actual.actual_amount = amount
+            actual.notes = notes
+            actual.updated_by_user_id = user_id
+    db.flush()
+
+
+def update_rubric_budget(db: Session, rubric: AccountingRubric, raw_budget: object) -> None:
+    rubric.monthly_budget_amount = parse_nonnegative_amount(raw_budget, f"Budget for {rubric.name}")
+    db.flush()
+

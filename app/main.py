@@ -20,6 +20,7 @@ from app.database import (
     Base,
     engine,
     SessionLocal,
+    ensure_accounting_tables,
     ensure_b2b_accounts_receivable_tables,
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
@@ -52,6 +53,7 @@ from app.database import (
 )
 from app.models import (
     Activity,
+    AccountingRubric,
     AppSettings,
     AuditLog,
     B2BCustomer,
@@ -121,6 +123,15 @@ from app.services.accounts_receivable_service import (
     get_accounts_receivable_order_for_manual_balance,
     record_accounts_receivable_payment,
     update_accounts_receivable_opening_balance,
+)
+from app.services.accounting_income_statement_service import (
+    AccountingValidationError,
+    ACCOUNTING_SECTIONS,
+    SECTION_LABELS as ACCOUNTING_SECTION_LABELS,
+    build_income_statement,
+    parse_period_month,
+    save_monthly_actuals,
+    update_rubric_budget,
 )
 from app.services.b2c_sales_service import (
     B2CValidationError,
@@ -422,6 +433,7 @@ from app.services.packaging_batch_close_service import (
 
 
 Base.metadata.create_all(bind=engine)
+ensure_accounting_tables()
 ensure_product_default_route_column()
 ensure_product_is_manufactured_column()
 ensure_product_loyverse_mapping_columns()
@@ -7436,6 +7448,169 @@ def b2b_customer_products(customer_id: int, request: Request, db: Session = Depe
             "submitted_add_product": None,
         },
     )
+
+
+def _accounting_period_or_default(month: str) -> date:
+    return parse_period_month(month or date.today().strftime("%Y-%m"))
+
+
+@app.get("/accounting", response_class=HTMLResponse)
+def accounting_home(request: Request) -> Response:
+    require_permission(request, "accounting.view")
+    return _redirect(f"/accounting/income-statement?month={date.today():%Y-%m}")
+
+
+@app.get("/accounting/income-statement", response_class=HTMLResponse)
+def accounting_income_statement(
+    request: Request,
+    month: str = Query(""),
+    message: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "accounting.view")
+    error = None
+    try:
+        period_month = _accounting_period_or_default(month)
+    except AccountingValidationError as exc:
+        period_month = _accounting_period_or_default("")
+        error = str(exc)
+    statement = build_income_statement(db, period_month)
+    return templates.TemplateResponse(
+        request=request,
+        name="accounting_income_statement.html",
+        context={
+            "title": "Estado de Resultados",
+            "period_value": period_month.strftime("%Y-%m"),
+            "statement": statement,
+            "error": error,
+            "message": message or None,
+        },
+    )
+
+
+@app.get("/accounting/monthly-actuals", response_class=HTMLResponse)
+def accounting_monthly_actuals(
+    request: Request,
+    month: str = Query(""),
+    error: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "accounting.edit")
+    try:
+        period_month = _accounting_period_or_default(month)
+    except AccountingValidationError as exc:
+        period_month = _accounting_period_or_default("")
+        error = str(exc)
+    statement = build_income_statement(db, period_month)
+    return templates.TemplateResponse(
+        request=request,
+        name="accounting_monthly_actuals.html",
+        context={
+            "title": "Carga mensual contable",
+            "period_value": period_month.strftime("%Y-%m"),
+            "statement": statement,
+            "error": error or None,
+        },
+    )
+
+
+@app.post("/accounting/monthly-actuals")
+async def accounting_monthly_actuals_save(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "accounting.edit")
+    form = await request.form()
+    month = str(form.get("month", ""))
+    try:
+        period_month = _accounting_period_or_default(month)
+        rubric_ids = [rubric.id for rubric in db.query(AccountingRubric).all()]
+        values = {
+            rubric_id: (
+                form.get(f"actual_{rubric_id}", ""),
+                str(form.get(f"notes_{rubric_id}", "")),
+            )
+            for rubric_id in rubric_ids
+            if f"actual_{rubric_id}" in form
+        }
+        save_monthly_actuals(
+            db,
+            period_month=period_month,
+            values_by_rubric_id=values,
+            user_id=current_user.id,
+        )
+        db.commit()
+        safe_log_audit_event(
+            module="accounting",
+            action="monthly_actuals_updated",
+            entity_type="accounting_period",
+            entity_id=period_month.strftime("%Y-%m"),
+            entity_label=period_month.strftime("%Y-%m"),
+            request=request,
+            user=current_user,
+        )
+        return _redirect(
+            f"/accounting/income-statement?month={period_month:%Y-%m}"
+            f"&message={quote('Gastos mensuales guardados correctamente.')}"
+        )
+    except AccountingValidationError as exc:
+        db.rollback()
+        return _redirect(
+            f"/accounting/monthly-actuals?month={quote(month)}&error={quote(str(exc))}"
+        )
+
+
+@app.get("/accounting/rubrics", response_class=HTMLResponse)
+def accounting_rubrics(
+    request: Request,
+    message: str = Query(""),
+    error: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "accounting.view")
+    rubrics = db.query(AccountingRubric).order_by(AccountingRubric.display_order, AccountingRubric.id).all()
+    return templates.TemplateResponse(
+        request=request,
+        name="accounting_rubrics.html",
+        context={
+            "title": "Rubros contables y Budget",
+            "rubrics": rubrics,
+            "sections": ACCOUNTING_SECTIONS,
+            "section_labels": ACCOUNTING_SECTION_LABELS,
+            "message": message or None,
+            "error": error or None,
+        },
+    )
+
+
+@app.post("/accounting/rubrics")
+async def accounting_rubrics_save(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "accounting.manage_budget")
+    form = await request.form()
+    try:
+        rubrics = db.query(AccountingRubric).all()
+        for rubric in rubrics:
+            field_name = f"budget_{rubric.id}"
+            if field_name in form:
+                update_rubric_budget(db, rubric, form.get(field_name, ""))
+        db.commit()
+        safe_log_audit_event(
+            module="accounting",
+            action="rubric_budgets_updated",
+            entity_type="accounting_rubrics",
+            entity_label="Monthly average budgets",
+            request=request,
+            user=current_user,
+        )
+        return _redirect(
+            f"/accounting/rubrics?message={quote('Budgets actualizados correctamente.')}"
+        )
+    except AccountingValidationError as exc:
+        db.rollback()
+        return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")
 
 
 @app.get("/b2b/customers/{customer_id}/products/export.csv")

@@ -2,7 +2,7 @@ from collections.abc import Generator
 import os
 import re
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 
@@ -25,12 +25,86 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+ACCOUNTING_INITIAL_RUBRICS = (
+    ("op_salary", "Salario", "operating"),
+    ("op_disability", "Incapacidades", "operating"),
+    ("op_ccss", "Cuotas CCSS", "operating"),
+    ("op_work_risk_policy", "Póliza Riesgos de Trabajo", "operating"),
+    ("op_christmas_bonus", "Aguinaldo", "operating"),
+    ("op_vacations", "Vacaciones", "operating"),
+    ("op_social_charges", "Cargas Sociales", "operating"),
+    ("op_employee_attention", "Gastos Atenciones Empleados", "operating"),
+    ("op_training", "Capacitaciones", "operating"),
+    ("op_production_utensils", "Utensilios producción", "operating"),
+    ("op_rent", "Alquiler de Local", "operating"),
+    ("op_electricity", "Servicios Eléctricos", "operating"),
+    ("op_internet", "Servicio Internet", "operating"),
+    ("op_water", "Servicio Agua", "operating"),
+    ("op_communications", "Comunicaciones", "operating"),
+    ("op_office_supplies", "Suministros de oficina", "operating"),
+    ("op_certifications", "Certificaciones", "operating"),
+    ("op_cleaning_supplies", "Suministros de Limpieza", "operating"),
+    ("op_advertising", "Publicidad y Promociones", "operating"),
+    ("op_safety_equipment", "Equipo de Seguridad", "operating"),
+    ("op_contracted_services", "Servicios Contratados", "operating"),
+    ("op_messenger_services", "Servicios de Mensajería", "operating"),
+    ("op_subscriptions", "Suscripciones", "operating"),
+    ("op_fuel_lubricants", "Lubricantes y Combustibles", "operating"),
+    ("op_furniture_maintenance", "Mant. Mob y Equipo", "operating"),
+    ("op_computer_maintenance", "Mant. Equipo de Cómputo", "operating"),
+    ("op_production_machine_maintenance", "Mant. de Maquinaria Producción", "operating"),
+    ("op_facility_maintenance", "Mant. de Local / Fumigación", "operating"),
+    ("op_municipal_taxes", "Impuestos Municipales / Servicio funcionamiento", "operating"),
+    ("op_outsourced_butter", "Pago maquila mantequillas", "operating"),
+    ("admin_salary", "Salario Administrativos", "administrative"),
+    ("admin_accounting_fees", "Honorarios Contables", "administrative"),
+    ("admin_legal_services", "Servicios Legales", "administrative"),
+    ("admin_patricia_commission", "Comisión Patricia", "administrative"),
+    ("admin_other_services", "Otros servicios contratados", "administrative"),
+    ("admin_low_value_equipment", "Gastos equipos monto bajos No activos", "administrative"),
+    ("financial_bank_fee", "Comisión Bancaria", "financial"),
+    ("tax_paid", "Impuestos pagados", "tax"),
+)
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+def ensure_accounting_tables() -> None:
+    """Seed missing Phase 1 accounting rubrics after metadata.create_all has run."""
+    with engine.begin() as connection:
+        existing_codes = {
+            row[0]
+            for row in connection.execute(text("SELECT code FROM accounting_rubrics")).fetchall()
+        }
+        insert_statement = text(
+            """
+            INSERT INTO accounting_rubrics
+                (code, name, section, monthly_budget_amount, display_order, active, created_at, updated_at)
+            VALUES
+                (:code, :name, :section, :monthly_budget_amount, :display_order, :active,
+                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """
+        )
+        for display_order, (code, name, section) in enumerate(ACCOUNTING_INITIAL_RUBRICS, start=1):
+            if code in existing_codes:
+                continue
+            connection.execute(
+                insert_statement,
+                {
+                    "code": code,
+                    "name": name,
+                    "section": section,
+                    "monthly_budget_amount": 0,
+                    "display_order": display_order,
+                    "active": True,
+                },
+            )
 
 
 def ensure_product_default_route_column() -> None:

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Contabilidad gerencial</p>
+    <h1>Estado de Resultados</h1>
+    <p class="lead">Resultado mensual vivo calculado desde ventas ERP y gastos cargados manualmente.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if message %}<p class="success">{{ message }}</p>{% endif %}
+
+  <section class="report-panel">
+    <form method="get" action="/accounting/income-statement" class="filter-form">
+      <label for="month">Mes</label>
+      <input id="month" name="month" type="month" value="{{ period_value }}" required>
+      <div class="report-actions">
+        <button type="submit">Recalcular</button>
+        {% if can(request, "accounting.edit") %}
+          <a class="button secondary" href="/accounting/monthly-actuals?month={{ period_value }}">Cargar gastos</a>
+        {% endif %}
+        <a class="button secondary" href="/accounting/rubrics">Rubros y Budget</a>
+      </div>
+    </form>
+    <p class="muted-inline">
+      {{ statement.sales.b2b_orders }} órdenes B2B y {{ statement.sales.b2c_orders }} órdenes B2C facturadas.
+      Cobertura COGS: {{ statement.sales.cogs_coverage_label }}.
+    </p>
+    {% if not statement.sales.has_complete_cogs %}
+      <p class="error">COGS incompleto: existen líneas facturadas sin cost_total_snapshot. La utilidad y el resultado no pueden calcularse de forma confiable.</p>
+    {% endif %}
+  </section>
+
+  <section class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Concepto</th><th>Real</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Ingresos por ventas</td><td>{{ fmt.money_crc(statement.sales.revenue) }}</td></tr>
+        <tr><td>- Costo de mercadería vendida</td><td>{{ fmt.money_crc(statement.sales.cogs) if statement.sales.cogs is not none else "N/A" }}</td></tr>
+        <tr><th>= Utilidad Bruta</th><th>{{ fmt.money_crc(statement.sales.gross_profit) if statement.sales.gross_profit is not none else "N/A" }}</th></tr>
+        <tr><td>- Gastos Operativos</td><td>{{ fmt.money_crc(statement.operating_expenses) }}</td></tr>
+        <tr><td>- Gastos Administrativos</td><td>{{ fmt.money_crc(statement.administrative_expenses) }}</td></tr>
+        <tr><td>- Gastos Financieros</td><td>{{ fmt.money_crc(statement.financial_expenses) }}</td></tr>
+        <tr><th>= Utilidad antes de impuestos</th><th>{{ fmt.money_crc(statement.profit_before_tax) if statement.profit_before_tax is not none else "N/A" }}</th></tr>
+        <tr><td>- Impuestos pagados</td><td>{{ fmt.money_crc(statement.taxes_paid) }}</td></tr>
+        <tr><th>= Resultado del período</th><th>{{ fmt.money_crc(statement.period_result) if statement.period_result is not none else "N/A" }}</th></tr>
+      </tbody>
+    </table>
+  </section>
+
+  {% for section in statement.sections %}
+    <section>
+      <h2>{{ section.label }}</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Rubro</th><th>Real</th><th>Budget</th><th>Diferencia ₡</th><th>Diferencia %</th><th>Cumplimiento</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for line in section.lines %}
+              <tr>
+                <td>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}</td>
+                <td>{{ fmt.money_crc(line.actual_amount) }}</td>
+                <td>{{ fmt.money_crc(line.budget_amount) }}</td>
+                <td>{{ fmt.money_crc(line.difference_amount) }}</td>
+                <td>{{ "{:.2f}%".format(line.difference_percent) if line.difference_percent is not none else "N/A" }}</td>
+                <td>{{ "{:.2f}%".format(line.compliance_percent) if line.compliance_percent is not none else "N/A" }}</td>
+              </tr>
+            {% endfor %}
+            <tr>
+              <th>Total {{ section.label }}</th>
+              <th>{{ fmt.money_crc(section.actual_amount) }}</th>
+              <th>{{ fmt.money_crc(section.budget_amount) }}</th>
+              <th>{{ fmt.money_crc(section.difference_amount) }}</th>
+              <th>{{ "{:.2f}%".format(section.difference_percent) if section.difference_percent is not none else "N/A" }}</th>
+              <th>{{ "{:.2f}%".format(section.compliance_percent) if section.compliance_percent is not none else "N/A" }}</th>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endfor %}
+
+  <p class="muted-inline">Fase 1: este reporte permanece abierto y recalculable. No existe cierre ni congelamiento contable.</p>
+{% endblock %}

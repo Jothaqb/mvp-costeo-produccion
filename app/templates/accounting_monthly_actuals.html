@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Contabilidad gerencial</p>
+    <h1>Carga mensual de gastos</h1>
+    <p class="lead">Registre un monto real mensual por rubro. Los importes deben ingresarse como valores positivos.</p>
+  </section>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <section class="report-panel">
+    <form method="get" action="/accounting/monthly-actuals" class="filter-form">
+      <label for="month_filter">Mes</label>
+      <input id="month_filter" name="month" type="month" value="{{ period_value }}" required>
+      <button type="submit">Cambiar mes</button>
+    </form>
+  </section>
+
+  <form method="post" action="/accounting/monthly-actuals">
+    <input type="hidden" name="month" value="{{ period_value }}">
+    {% for section in statement.sections %}
+      <section>
+        <h2>{{ section.label }}</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Rubro</th><th>Budget mensual</th><th>Real</th><th>Notas</th></tr></thead>
+            <tbody>
+              {% for line in section.lines %}
+                <tr>
+                  <td>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}</td>
+                  <td>{{ fmt.money_crc(line.budget_amount) }}</td>
+                  <td><input name="actual_{{ line.rubric.id }}" type="number" min="0" step="0.0001" value="{{ line.actual_amount }}" required></td>
+                  <td><input name="notes_{{ line.rubric.id }}" type="text" value="{{ line.notes or '' }}" maxlength="1000"></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% endfor %}
+    <div class="report-actions">
+      <button type="submit">Guardar gastos mensuales</button>
+      <a class="button secondary" href="/accounting/income-statement?month={{ period_value }}">Cancelar</a>
+    </div>
+  </form>
+{% endblock %}
