@@ -32,7 +32,7 @@ BASE_PERMISSION_DEFINITIONS = (
     ("reporting.export", "reporting", "export", "Export reporting data."),
     ("accounting.view", "accounting", "view", "View monthly management income statements."),
     ("accounting.edit", "accounting", "edit", "Enter monthly accounting actual amounts."),
-    ("accounting.manage_budget", "accounting", "manage_budget", "Manage accounting rubric budgets."),
+    ("accounting.manage_budget", "accounting", "manage_budget", "Administrar cuentas contables y presupuestos."),
     ("product.view", "product", "view", "View product master data."),
     ("product.create", "product", "create", "Create products."),
     ("product.edit", "product", "edit", "Edit product master data."),

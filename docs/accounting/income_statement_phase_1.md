@@ -6,10 +6,10 @@ Esta fase incorpora un Estado de Resultados mensual abierto y recalculable. No e
 
 Incluye:
 
-- catálogo inicial de rubros contables;
-- budget mensual promedio por rubro, aplicable por igual a cualquier mes;
-- carga manual de gastos e impuestos reales por mes y rubro;
-- comparación Real vs Budget;
+- catálogo inicial de cuentas contables;
+- presupuesto mensual promedio por cuenta o subcuenta, aplicable por igual a cualquier mes;
+- carga manual de gastos e impuestos reales por mes y cuenta o subcuenta;
+- comparación Real vs Presupuesto;
 - ingresos y COGS calculados en vivo desde ventas facturadas del ERP.
 
 ## Fuentes de ventas
@@ -28,23 +28,31 @@ El módulo no consulta costo estándar actual, Kardex, `InventoryTransaction` ni
 
 Si al menos una línea facturada del período carece de `cost_total_snapshot`, se muestra la cobertura incompleta y no se calculan COGS, utilidad bruta, utilidad antes de impuestos ni resultado del período. Un costo ausente nunca se trata como cero.
 
+## Nomenclatura funcional
+
+- **Grupo:** sección principal del Estado de Resultados, como Gastos Operativos o Gastos Administrativos.
+- **Cuenta:** línea contable principal dentro de un grupo.
+- **Subcuenta:** detalle opcional dentro de una cuenta.
+
+Los nombres técnicos internos y las tablas existentes, como `accounting_rubrics` y `accounting_subrubrics`, se conservan para evitar migraciones de riesgo.
+
 ## Comparación presupuestaria
 
-Por rubro y sección:
+Por cuenta, subcuenta y grupo:
 
 ```text
-Diferencia ₡ = Real - Budget
-Diferencia % = (Real - Budget) / Budget × 100
-Cumplimiento = Real / Budget × 100
+Diferencia ₡ = Real - Presupuesto
+Diferencia % = (Real - Presupuesto) / Presupuesto × 100
+Cumplimiento = Real / Presupuesto × 100
 ```
 
-Cuando Budget es cero, Diferencia % y Cumplimiento muestran `N/A`.
+Cuando el Presupuesto es cero, Diferencia % y Cumplimiento muestran `N/A`.
 
 ## Pantallas
 
 - `/accounting/income-statement`: Estado de Resultados mensual.
 - `/accounting/monthly-actuals`: carga manual mensual.
-- `/accounting/rubrics`: catálogo inicial y mantenimiento de budget.
+- `/accounting/rubrics`: catálogo y mantenimiento de cuentas, subcuentas y presupuestos.
 
 ## Permisos
 
@@ -58,7 +66,7 @@ Los permisos se asignan automáticamente al rol administrador. Otros roles deben
 
 - cierre o congelamiento mensual;
 - reaperturas y revisiones;
-- budget específico por mes;
+- presupuesto específico por mes;
 - PDF;
 - libro diario, doble partida y balance general;
 - integración con inventario, producción o Loyverse.

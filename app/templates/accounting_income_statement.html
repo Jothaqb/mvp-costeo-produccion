@@ -20,7 +20,7 @@
         {% if can(request, "accounting.edit") %}
           <a class="button secondary" href="/accounting/monthly-actuals?month={{ period_value }}">Cargar gastos</a>
         {% endif %}
-        <a class="button secondary" href="/accounting/rubrics">Rubros y Budget</a>
+        <a class="button secondary" href="/accounting/rubrics">Cuentas y presupuesto</a>
       </div>
     </form>
     <p class="muted-inline">
@@ -53,12 +53,12 @@
 
   {% for section in statement.sections %}
     <section>
-      <h2>{{ section.label }}</h2>
+      <h2>Grupo: {{ section.label }}</h2>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Rubro</th><th>Real</th><th>Budget</th><th>Diferencia ₡</th><th>Diferencia %</th><th>Cumplimiento</th>
+              <th>Cuenta / Subcuenta</th><th>Real</th><th>Presupuesto</th><th>Diferencia ₡</th><th>Diferencia %</th><th>Cumplimiento</th>
             </tr>
           </thead>
           <tbody>

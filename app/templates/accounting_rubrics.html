@@ -4,8 +4,8 @@
 {% block content %}
   <section class="page-hero">
     <p class="eyebrow">Contabilidad gerencial</p>
-    <h1>Rubros contables y Budget</h1>
-    <p class="lead">El budget es un promedio mensual por rubro y aplica por igual a cualquier mes.</p>
+    <h1>Cuentas contables y presupuesto</h1>
+    <p class="lead">El presupuesto es un promedio mensual por cuenta y aplica por igual a cualquier mes.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -14,7 +14,7 @@
   <form method="post" action="/accounting/rubrics" class="wide-form" style="width: 100%;">
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Orden</th><th>Código</th><th>Rubro</th><th>Sección</th><th>Estado</th><th>Budget directo</th><th>Budget efectivo</th></tr></thead>
+        <thead><tr><th>Orden</th><th>Código</th><th>Cuenta</th><th>Grupo</th><th>Estado</th><th>Presupuesto directo</th><th>Presupuesto efectivo</th></tr></thead>
         <tbody>
           {% for rubric in rubrics %}
             <tr>
@@ -52,10 +52,10 @@
                 {% set active_subrubrics = rubric.subrubrics | selectattr("active") | list %}
                 {% if active_subrubrics %}
                   {{ fmt.money_crc(active_subrubrics | sum(attribute="monthly_budget_amount")) }}
-                  <span class="muted-inline">Suma de {{ active_subrubrics | length }} subrubros activos</span>
+                  <span class="muted-inline">Suma de {{ active_subrubrics | length }} subcuentas activas</span>
                 {% else %}
                   {{ fmt.money_crc(rubric.monthly_budget_amount) }}
-                  <span class="muted-inline">Budget directo</span>
+                  <span class="muted-inline">Presupuesto directo</span>
                 {% endif %}
               </td>
             </tr>
@@ -70,12 +70,12 @@
   </form>
 
   <section>
-    <h2>Subrubros</h2>
-    <p class="muted-inline">Los subrubros se conservan cuando tienen histórico; para dejar de usarlos, desactívelos.</p>
+    <h2>Subcuentas</h2>
+    <p class="muted-inline">Las subcuentas se conservan cuando tienen histórico; para dejar de usarlas, desactívelas.</p>
     <form method="post" action="/accounting/subrubrics" class="wide-form" style="width: 100%;">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Rubro principal</th><th>Orden</th><th>Código</th><th>Subrubro</th><th>Estado</th><th>Budget mensual</th></tr></thead>
+          <thead><tr><th>Cuenta principal</th><th>Orden</th><th>Código</th><th>Subcuenta</th><th>Estado</th><th>Presupuesto mensual</th></tr></thead>
           <tbody>
             {% for rubric in rubrics %}
               {% for subrubric in rubric.subrubrics %}
@@ -89,44 +89,44 @@
                 </tr>
               {% endfor %}
             {% endfor %}
-            {% if not rubrics | map(attribute="subrubrics") | map("length") | sum %}<tr><td colspan="6">No hay subrubros configurados.</td></tr>{% endif %}
+            {% if not rubrics | map(attribute="subrubrics") | map("length") | sum %}<tr><td colspan="6">No hay subcuentas configuradas.</td></tr>{% endif %}
           </tbody>
         </table>
       </div>
-      {% if can(request, "accounting.manage_budget") %}<button type="submit">Guardar subrubros</button>{% endif %}
+      {% if can(request, "accounting.manage_budget") %}<button type="submit">Guardar subcuentas</button>{% endif %}
     </form>
   </section>
 
   {% if can(request, "accounting.manage_budget") %}
     <section class="report-panel">
-      <h2>Agregar subrubro</h2>
+      <h2>Agregar subcuenta</h2>
       <form method="post" action="/accounting/subrubrics/new" class="wide-form">
         <div class="form-grid">
-          <div><label for="new_sub_rubric">Rubro principal</label><select id="new_sub_rubric" name="rubric_id" required>{% for rubric in rubrics %}<option value="{{ rubric.id }}">{{ rubric.name }}</option>{% endfor %}</select></div>
+          <div><label for="new_sub_rubric">Cuenta principal</label><select id="new_sub_rubric" name="rubric_id" required>{% for rubric in rubrics %}<option value="{{ rubric.id }}">{{ rubric.name }}</option>{% endfor %}</select></div>
           <div><label for="new_sub_code">Código único</label><input id="new_sub_code" name="code" type="text" maxlength="100" pattern="[a-z0-9][a-z0-9_-]{1,99}" required></div>
           <div><label for="new_sub_name">Nombre</label><input id="new_sub_name" name="name" type="text" maxlength="255" required></div>
-          <div><label for="new_sub_budget">Budget mensual</label><input id="new_sub_budget" name="monthly_budget_amount" type="number" min="0" step="0.0001" value="0" required></div>
+          <div><label for="new_sub_budget">Presupuesto mensual</label><input id="new_sub_budget" name="monthly_budget_amount" type="number" min="0" step="0.0001" value="0" required></div>
           <div><label for="new_sub_order">Orden</label><input id="new_sub_order" name="display_order" type="number" min="0" step="1" value="0" required></div>
           <div><label class="checkbox-label"><input name="active" type="checkbox" checked> Activo</label></div>
         </div>
-        <button type="submit">Agregar subrubro</button>
+        <button type="submit">Agregar subcuenta</button>
       </form>
     </section>
 
     <section class="report-panel">
-      <h2>Agregar rubro contable</h2>
+      <h2>Agregar cuenta contable</h2>
       <form method="post" action="/accounting/rubrics/new" class="wide-form">
         <div class="form-grid">
           <div><label for="new_code">Código único</label><input id="new_code" name="code" type="text" maxlength="100" pattern="[a-z0-9][a-z0-9_-]{1,99}" required></div>
           <div><label for="new_name">Nombre</label><input id="new_name" name="name" type="text" maxlength="255" required></div>
-          <div><label for="new_section">Sección</label><select id="new_section" name="section" required>{% for section in sections %}<option value="{{ section }}">{{ section_labels[section] }}</option>{% endfor %}</select></div>
-          <div><label for="new_budget">Budget mensual</label><input id="new_budget" name="monthly_budget_amount" type="number" min="0" step="0.0001" value="0" required></div>
+          <div><label for="new_section">Grupo</label><select id="new_section" name="section" required>{% for section in sections %}<option value="{{ section }}">{{ section_labels[section] }}</option>{% endfor %}</select></div>
+          <div><label for="new_budget">Presupuesto mensual</label><input id="new_budget" name="monthly_budget_amount" type="number" min="0" step="0.0001" value="0" required></div>
           <div><label for="new_order">Orden</label><input id="new_order" name="display_order" type="number" min="0" step="1" value="0" required></div>
           <div><label class="checkbox-label"><input name="active" type="checkbox" checked> Activo</label></div>
         </div>
-        <button type="submit">Agregar rubro</button>
+        <button type="submit">Agregar cuenta</button>
       </form>
     </section>
   {% endif %}
-  <p class="muted-inline">Los rubros con movimientos históricos no se eliminan: pueden desactivarse para conservar su trazabilidad.</p>
+  <p class="muted-inline">Las cuentas y subcuentas con movimientos históricos no se eliminan: pueden desactivarse para conservar su trazabilidad.</p>
 {% endblock %}

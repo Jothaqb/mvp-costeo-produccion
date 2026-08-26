@@ -7598,7 +7598,7 @@ def accounting_rubrics(
         request=request,
         name="accounting_rubrics.html",
         context={
-            "title": "Rubros contables y Budget",
+            "title": "Cuentas contables y presupuesto",
             "rubrics": rubrics,
             "sections": ACCOUNTING_SECTIONS,
             "section_labels": ACCOUNTING_SECTION_LABELS,
@@ -7634,12 +7634,12 @@ async def accounting_rubrics_save(
             module="accounting",
             action="rubrics_updated",
             entity_type="accounting_rubrics",
-            entity_label="Monthly average budgets",
+            entity_label="Presupuestos mensuales de cuentas",
             request=request,
             user=current_user,
         )
         return _redirect(
-            f"/accounting/rubrics?message={quote('Budgets actualizados correctamente.')}"
+            f"/accounting/rubrics?message={quote('Cuentas y presupuestos actualizados correctamente.')}"
         )
     except AccountingValidationError as exc:
         db.rollback()
@@ -7671,11 +7671,11 @@ async def accounting_subrubrics_save(
             module="accounting",
             action="subrubrics_updated",
             entity_type="accounting_subrubrics",
-            entity_label="Accounting subrubrics",
+            entity_label="Subcuentas contables",
             request=request,
             user=current_user,
         )
-        return _redirect(f"/accounting/rubrics?message={quote('Subrubros actualizados correctamente.')}")
+        return _redirect(f"/accounting/rubrics?message={quote('Subcuentas actualizadas correctamente.')}")
     except AccountingValidationError as exc:
         db.rollback()
         return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")
@@ -7692,7 +7692,7 @@ async def accounting_subrubric_create(
         rubric_id = int(str(form.get("rubric_id", "")))
         rubric = db.get(AccountingRubric, rubric_id)
         if rubric is None:
-            raise AccountingValidationError("Accounting rubric does not exist.")
+            raise AccountingValidationError("La cuenta contable no existe.")
         subrubric = create_accounting_subrubric(
             db,
             rubric=rubric,
@@ -7712,13 +7712,13 @@ async def accounting_subrubric_create(
             request=request,
             user=current_user,
         )
-        return _redirect(f"/accounting/rubrics?message={quote('Subrubro creado correctamente.')}")
+        return _redirect(f"/accounting/rubrics?message={quote('Subcuenta creada correctamente.')}")
     except AccountingValidationError as exc:
         db.rollback()
         return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")
     except ValueError:
         db.rollback()
-        return _redirect(f"/accounting/rubrics?error={quote('Rubro principal inválido.')}")
+        return _redirect(f"/accounting/rubrics?error={quote('Cuenta principal inválida.')}")
 
 
 @app.post("/accounting/rubrics/new")
@@ -7748,7 +7748,7 @@ async def accounting_rubric_create(
             request=request,
             user=current_user,
         )
-        return _redirect(f"/accounting/rubrics?message={quote('Rubro creado correctamente.')}")
+        return _redirect(f"/accounting/rubrics?message={quote('Cuenta creada correctamente.')}")
     except AccountingValidationError as exc:
         db.rollback()
         return _redirect(f"/accounting/rubrics?error={quote(str(exc))}")

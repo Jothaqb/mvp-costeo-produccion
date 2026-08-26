@@ -480,6 +480,15 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         self.assertIn('{{ subline.subrubric.name }} {{ subline.subrubric.code }}', actuals_template)
         self.assertIn('{% for subline in line.subrubrics %}', statement_template)
 
+        self.assertIn("Cuentas contables y presupuesto", rubrics_template)
+        self.assertIn("Cuenta principal", rubrics_template)
+        self.assertIn("Agregar subcuenta", rubrics_template)
+        self.assertIn("Presupuesto efectivo", rubrics_template)
+        self.assertIn("Buscar cuenta o subcuenta", actuals_template)
+        self.assertIn("<th>Grupo</th><th>Cuenta</th><th>Subcuenta</th>", actuals_template)
+        self.assertIn("Grupo: {{ section.label }}", statement_template)
+        self.assertIn("Cuenta / Subcuenta", statement_template)
+
 
 if __name__ == "__main__":
     unittest.main()

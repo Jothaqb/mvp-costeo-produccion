@@ -141,7 +141,7 @@ def _normalize_rubric_code(value: object) -> str:
     code = str(value or "").strip().lower()
     if not ACCOUNTING_RUBRIC_CODE_PATTERN.fullmatch(code):
         raise AccountingValidationError(
-            "Rubric code must contain 2 to 100 lowercase letters, numbers, underscores, or hyphens."
+            "El código contable debe contener de 2 a 100 letras minúsculas, números, guiones bajos o guiones."
         )
     return code
 
@@ -149,16 +149,16 @@ def _normalize_rubric_code(value: object) -> str:
 def _normalize_rubric_name(value: object) -> str:
     name = str(value or "").strip()
     if not name:
-        raise AccountingValidationError("Rubric name is required.")
+        raise AccountingValidationError("El nombre de la cuenta o subcuenta es obligatorio.")
     if len(name) > 255:
-        raise AccountingValidationError("Rubric name cannot exceed 255 characters.")
+        raise AccountingValidationError("El nombre de la cuenta o subcuenta no puede exceder 255 caracteres.")
     return name
 
 
 def _normalize_rubric_section(value: object) -> str:
     section = str(value or "").strip().lower()
     if section not in ACCOUNTING_SECTIONS:
-        raise AccountingValidationError("Rubric section is invalid.")
+        raise AccountingValidationError("El grupo contable no es válido.")
     return section
 
 
@@ -390,7 +390,7 @@ def save_monthly_actuals(
     rubric_ids = set(values_by_rubric_id)
     rubrics = db.query(AccountingRubric).filter(AccountingRubric.id.in_(rubric_ids)).all() if rubric_ids else []
     if {rubric.id for rubric in rubrics} != rubric_ids:
-        raise AccountingValidationError("One or more accounting rubrics do not exist.")
+        raise AccountingValidationError("Una o más cuentas contables no existen.")
     existing = {
         item.rubric_id: item
         for item in db.query(AccountingMonthlyActual)
@@ -437,7 +437,7 @@ def save_monthly_subrubric_actuals(
         else []
     )
     if {subrubric.id for subrubric in subrubrics} != subrubric_ids:
-        raise AccountingValidationError("One or more accounting subrubrics do not exist.")
+        raise AccountingValidationError("Una o más subcuentas contables no existen.")
     existing = {
         item.subrubric_id: item
         for item in db.query(AccountingSubrubricMonthlyActual)
@@ -484,12 +484,12 @@ def create_accounting_rubric(
         db.query(AccountingRubric).filter(AccountingRubric.code == normalized_code).first() is not None
         or db.query(AccountingSubrubric).filter(AccountingSubrubric.code == normalized_code).first() is not None
     ):
-        raise AccountingValidationError(f"Rubric code '{normalized_code}' already exists.")
+        raise AccountingValidationError(f"El código contable '{normalized_code}' ya existe.")
     rubric = AccountingRubric(
         code=normalized_code,
         name=_normalize_rubric_name(name),
         section=_normalize_rubric_section(section),
-        monthly_budget_amount=parse_nonnegative_amount(monthly_budget_amount, "Monthly budget"),
+        monthly_budget_amount=parse_nonnegative_amount(monthly_budget_amount, "Presupuesto mensual"),
         display_order=_parse_display_order(display_order),
         active=bool(active),
     )
@@ -513,12 +513,12 @@ def create_accounting_subrubric(
         db.query(AccountingRubric).filter(AccountingRubric.code == normalized_code).first() is not None
         or db.query(AccountingSubrubric).filter(AccountingSubrubric.code == normalized_code).first() is not None
     ):
-        raise AccountingValidationError(f"Accounting code '{normalized_code}' already exists.")
+        raise AccountingValidationError(f"El código contable '{normalized_code}' ya existe.")
     subrubric = AccountingSubrubric(
         rubric_id=rubric.id,
         code=normalized_code,
         name=_normalize_rubric_name(name),
-        monthly_budget_amount=parse_nonnegative_amount(monthly_budget_amount, "Monthly budget"),
+        monthly_budget_amount=parse_nonnegative_amount(monthly_budget_amount, "Presupuesto mensual"),
         display_order=_parse_display_order(display_order),
         active=bool(active),
     )
@@ -539,7 +539,7 @@ def update_accounting_subrubric(
     subrubric.name = _normalize_rubric_name(name)
     subrubric.monthly_budget_amount = parse_nonnegative_amount(
         monthly_budget_amount,
-        f"Budget for {subrubric.name}",
+        f"Presupuesto de {subrubric.name}",
     )
     subrubric.display_order = _parse_display_order(display_order)
     subrubric.active = bool(active)
@@ -561,7 +561,7 @@ def update_accounting_rubric(
     rubric.section = _normalize_rubric_section(section)
     rubric.monthly_budget_amount = parse_nonnegative_amount(
         monthly_budget_amount,
-        f"Budget for {rubric.name}",
+        f"Presupuesto de {rubric.name}",
     )
     rubric.display_order = _parse_display_order(display_order)
     rubric.active = bool(active)

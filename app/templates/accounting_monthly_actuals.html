@@ -5,7 +5,7 @@
   <section class="page-hero">
     <p class="eyebrow">Contabilidad gerencial</p>
     <h1>Carga mensual de gastos</h1>
-    <p class="lead">Registre un monto real mensual por rubro. Los importes deben ingresarse como valores positivos.</p>
+    <p class="lead">Registre el monto real mensual por cuenta o subcuenta. Los importes deben ingresarse como valores positivos.</p>
   </section>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
@@ -19,11 +19,11 @@
   </section>
 
   <section class="report-panel">
-    <label for="rubric_filter">Buscar rubro</label>
+    <label for="rubric_filter">Buscar cuenta o subcuenta</label>
     <input
       id="rubric_filter"
       type="search"
-      placeholder="Nombre, código o sección (ej. internet, salario, operativo)"
+      placeholder="Nombre, código o grupo (ej. internet, salario, operativo)"
       autocomplete="off"
       style="max-width: none; width: 100%;"
     >
@@ -31,17 +31,17 @@
       <button id="rubric_filter_clear" type="button" class="secondary">Limpiar filtro</button>
       <span id="rubric_filter_count" class="muted-inline" aria-live="polite"></span>
     </div>
-    <p id="rubric_filter_empty" class="muted-inline" hidden>No se encontraron rubros para este filtro.</p>
+    <p id="rubric_filter_empty" class="muted-inline" hidden>No se encontraron cuentas ni subcuentas para este filtro.</p>
   </section>
 
   <form method="post" action="/accounting/monthly-actuals" class="wide-form" style="width: 100%;">
     <input type="hidden" name="month" value="{{ period_value }}">
     {% for section in statement.sections %}
       <section class="accounting-actuals-section">
-        <h2>{{ section.label }}</h2>
+        <h2>Grupo: {{ section.label }}</h2>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Rubro</th><th>Budget mensual</th><th>Real</th><th>Notas</th></tr></thead>
+            <thead><tr><th>Grupo</th><th>Cuenta</th><th>Subcuenta</th><th>Presupuesto mensual</th><th>Monto real</th><th>Observación</th></tr></thead>
             <tbody>
               {% for line in section.lines %}
                 <tr
@@ -49,13 +49,17 @@
                   data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }} {% for subline in line.subrubrics %}{{ subline.subrubric.name }} {{ subline.subrubric.code }} {% endfor %}"
                 >
                   <td>
-                    <strong>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactivo){% endif %}</strong>
+                    {{ section.label }}
+                  </td>
+                  <td>
+                    <strong>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactiva){% endif %}</strong>
                     <span class="muted-inline">{{ line.rubric.code }}</span>
                   </td>
+                  <td>{{ "Total de la cuenta" if line.uses_subrubrics else "—" }}</td>
                   <td>{{ fmt.money_crc(line.budget_amount) }}</td>
                   {% if line.uses_subrubrics %}
                     <td><strong>{{ fmt.money_crc(line.actual_amount) }}</strong></td>
-                    <td><span class="muted-inline">Total automático de subrubros{% if line.direct_actual_amount %} más monto directo existente{% endif %}</span></td>
+                    <td><span class="muted-inline">Total automático de subcuentas{% if line.direct_actual_amount %} más monto directo existente{% endif %}</span></td>
                   {% else %}
                     <td><input name="actual_{{ line.rubric.id }}" type="number" min="0" step="0.0001" value="{{ line.direct_actual_amount }}" required style="min-width: 160px;"></td>
                     <td><input name="notes_{{ line.rubric.id }}" type="text" value="{{ line.notes or '' }}" maxlength="1000" style="max-width: none; min-width: 320px;"></td>
@@ -63,7 +67,9 @@
                 </tr>
                 {% if line.uses_subrubrics and (line.direct_actual_amount or line.notes) %}
                   <tr class="accounting-rubric-row" data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} monto directo histórico {{ section.code }} {{ section.label }}">
-                    <td>&nbsp;&nbsp;Monto directo existente</td>
+                    <td>{{ section.label }}</td>
+                    <td>{{ line.rubric.name }}</td>
+                    <td>Monto directo existente</td>
                     <td>N/A</td>
                     <td>{{ fmt.money_crc(line.direct_actual_amount) }}</td>
                     <td>{{ line.notes or "Conservado por compatibilidad histórica" }}</td>
@@ -74,7 +80,9 @@
                     class="accounting-rubric-row accounting-subrubric-row"
                     data-rubric-search="{{ subline.subrubric.name }} {{ subline.subrubric.code }} {{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }}"
                   >
-                    <td>&nbsp;&nbsp;↳ {{ subline.subrubric.name }}{% if not subline.subrubric.active %} (Inactivo){% endif %} <span class="muted-inline">{{ subline.subrubric.code }}</span></td>
+                    <td>{{ section.label }}</td>
+                    <td>{{ line.rubric.name }}</td>
+                    <td>↳ {{ subline.subrubric.name }}{% if not subline.subrubric.active %} (Inactiva){% endif %} <span class="muted-inline">{{ subline.subrubric.code }}</span></td>
                     <td>{{ fmt.money_crc(subline.budget_amount) }}</td>
                     <td><input name="subactual_{{ subline.subrubric.id }}" type="number" min="0" step="0.0001" value="{{ subline.actual_amount }}" required style="min-width: 160px;"></td>
                     <td><input name="subnotes_{{ subline.subrubric.id }}" type="text" value="{{ subline.notes or '' }}" maxlength="1000" style="max-width: none; min-width: 320px;"></td>
