@@ -29,7 +29,7 @@ SECTION_LABELS = {
     "operating": "Gastos Operativos",
     "administrative": "Gastos Administrativos",
     "financial": "Gastos Financieros",
-    "tax": "Impuestos pagados",
+    "tax": "Impuestos",
 }
 
 
@@ -91,6 +91,14 @@ class AccountingSectionResult:
 
 
 @dataclass(frozen=True)
+class AccountingExpenseTotals:
+    actual_amount: Decimal
+    budget_amount: Decimal
+    difference_amount: Decimal
+    compliance_percent: Decimal | None
+
+
+@dataclass(frozen=True)
 class AccountingIncomeStatement:
     period_month: date
     sales: AccountingSalesSummary
@@ -99,6 +107,7 @@ class AccountingIncomeStatement:
     administrative_expenses: Decimal
     financial_expenses: Decimal
     taxes_paid: Decimal
+    expense_totals: AccountingExpenseTotals
     profit_before_tax: Decimal | None
     period_result: Decimal | None
 
@@ -366,6 +375,11 @@ def build_income_statement(db: Session, period_month: date) -> AccountingIncomeS
         ).quantize(MONEY_QUANT)
         period_result = (profit_before_tax - section_actuals["tax"]).quantize(MONEY_QUANT)
 
+    expense_sections = [section for section in section_results if section.code != "tax"]
+    expense_actual = sum((section.actual_amount for section in expense_sections), ZERO).quantize(MONEY_QUANT)
+    expense_budget = sum((section.budget_amount for section in expense_sections), ZERO).quantize(MONEY_QUANT)
+    expense_difference, _, expense_compliance = _comparison(expense_actual, expense_budget)
+
     return AccountingIncomeStatement(
         period_month=period_start,
         sales=sales,
@@ -374,9 +388,91 @@ def build_income_statement(db: Session, period_month: date) -> AccountingIncomeS
         administrative_expenses=section_actuals["administrative"],
         financial_expenses=section_actuals["financial"],
         taxes_paid=section_actuals["tax"],
+        expense_totals=AccountingExpenseTotals(
+            actual_amount=expense_actual,
+            budget_amount=expense_budget,
+            difference_amount=expense_difference,
+            compliance_percent=expense_compliance,
+        ),
         profit_before_tax=profit_before_tax,
         period_result=period_result,
     )
+
+
+def build_monthly_expense_export_rows(
+    statement: AccountingIncomeStatement,
+) -> list[tuple[object, ...]]:
+    period_value = statement.period_month.strftime("%Y-%m")
+    rows: list[tuple[object, ...]] = []
+
+    def number(value: Decimal) -> str:
+        return format(value, "f")
+
+    def percent(value: Decimal | None) -> str:
+        return "N/A" if value is None else format(value, "f")
+
+    for section in statement.sections:
+        for line in section.lines:
+            rows.append(
+                (
+                    period_value,
+                    section.label,
+                    line.rubric.name,
+                    "",
+                    number(line.budget_amount),
+                    number(line.actual_amount),
+                    number(line.difference_amount),
+                    percent(line.compliance_percent),
+                    line.notes or "",
+                    "cuenta",
+                )
+            )
+            for subline in line.subrubrics:
+                rows.append(
+                    (
+                        period_value,
+                        section.label,
+                        line.rubric.name,
+                        subline.subrubric.name,
+                        number(subline.budget_amount),
+                        number(subline.actual_amount),
+                        number(subline.difference_amount),
+                        percent(subline.compliance_percent),
+                        subline.notes or "",
+                        "subcuenta",
+                    )
+                )
+        rows.append(
+            (
+                period_value,
+                section.label,
+                "",
+                "",
+                number(section.budget_amount),
+                number(section.actual_amount),
+                number(section.difference_amount),
+                percent(section.compliance_percent),
+                "",
+                "total_grupo",
+            )
+        )
+
+    totals = statement.expense_totals
+    rows.append(
+        (
+            period_value,
+            "Gastos Totales",
+            "",
+            "",
+            number(totals.budget_amount),
+            number(totals.actual_amount),
+            number(totals.difference_amount),
+            percent(totals.compliance_percent),
+            "No incluye impuestos.",
+            "gastos_totales",
+        )
+    )
+    return rows
 
 
 def save_monthly_actuals(

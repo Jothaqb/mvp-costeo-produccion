@@ -130,6 +130,7 @@ from app.services.accounting_income_statement_service import (
     ACCOUNTING_SECTIONS,
     SECTION_LABELS as ACCOUNTING_SECTION_LABELS,
     build_income_statement,
+    build_monthly_expense_export_rows,
     create_accounting_rubric,
     create_accounting_subrubric,
     parse_period_month,
@@ -7516,6 +7517,36 @@ def accounting_monthly_actuals(
             "statement": statement,
             "error": error or None,
         },
+    )
+
+
+@app.get("/accounting/monthly-actuals/export.csv")
+def accounting_monthly_actuals_export_csv(
+    request: Request,
+    period: str = Query(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "accounting.edit")
+    try:
+        period_month = _accounting_period_or_default(period)
+    except AccountingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    statement = build_income_statement(db, period_month)
+    return _csv_report_response(
+        filename=f"accounting_monthly_expenses_{period_month:%Y-%m}.csv",
+        headers=(
+            "Periodo",
+            "Grupo",
+            "Cuenta",
+            "Subcuenta",
+            "Presupuesto mensual",
+            "Monto real",
+            "Diferencia",
+            "% ejecución",
+            "Observación",
+            "Tipo de fila",
+        ),
+        rows=build_monthly_expense_export_rows(statement),
     )
 
 

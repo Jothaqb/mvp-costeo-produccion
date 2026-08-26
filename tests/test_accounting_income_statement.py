@@ -22,6 +22,7 @@ from app.models import (
 from app.services.accounting_income_statement_service import (
     AccountingValidationError,
     build_income_statement,
+    build_monthly_expense_export_rows,
     create_accounting_rubric,
     create_accounting_subrubric,
     get_accounting_sales_summary,
@@ -251,6 +252,64 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         self.assertIsNone(financial.difference_percent)
         self.assertIsNone(financial.compliance_percent)
 
+    def test_expense_group_totals_exclude_taxes_and_export_all_row_types(self) -> None:
+        with self.Session.begin() as db:
+            operating = db.get(AccountingRubric, self.rubrics["op_test"])
+            detail = create_accounting_subrubric(
+                db,
+                rubric=operating,
+                code="op_test_detail",
+                name="Detalle operativo",
+                monthly_budget_amount="100",
+                display_order="1",
+            )
+            detail_id = detail.id
+            save_monthly_actuals(
+                db,
+                period_month=date(2026, 11, 1),
+                values_by_rubric_id={
+                    self.rubrics["admin_test"]: ("30", "Administración"),
+                    self.rubrics["financial_test"]: ("10", "Banco"),
+                    self.rubrics["tax_test"]: ("5", "Impuesto"),
+                },
+                user_id=None,
+            )
+            save_monthly_subrubric_actuals(
+                db,
+                period_month=date(2026, 11, 1),
+                values_by_subrubric_id={detail_id: ("80", "Detalle mensual")},
+                user_id=None,
+            )
+
+        with self.Session() as db:
+            statement = build_income_statement(db, date(2026, 11, 1))
+            rows = build_monthly_expense_export_rows(statement)
+
+        sections = {section.code: section for section in statement.sections}
+        self.assertEqual(sections["operating"].budget_amount, Decimal("100.0000"))
+        self.assertEqual(sections["operating"].actual_amount, Decimal("80.0000"))
+        self.assertEqual(sections["administrative"].actual_amount, Decimal("30.0000"))
+        self.assertEqual(sections["financial"].actual_amount, Decimal("10.0000"))
+        self.assertEqual(sections["tax"].actual_amount, Decimal("5.0000"))
+        self.assertEqual(statement.expense_totals.budget_amount, Decimal("150.0000"))
+        self.assertEqual(statement.expense_totals.actual_amount, Decimal("120.0000"))
+        self.assertEqual(statement.expense_totals.difference_amount, Decimal("-30.0000"))
+        self.assertEqual(statement.expense_totals.compliance_percent, Decimal("80.00"))
+
+        row_types = [row[9] for row in rows]
+        self.assertIn("cuenta", row_types)
+        self.assertIn("subcuenta", row_types)
+        self.assertEqual(row_types.count("total_grupo"), 4)
+        self.assertEqual(row_types[-1], "gastos_totales")
+        self.assertNotIn("op_test", " ".join(str(value) for row in rows for value in row))
+        detail_row = next(row for row in rows if row[9] == "subcuenta")
+        self.assertEqual(detail_row[2:4], ("Operativo", "Detalle operativo"))
+        financial_total = next(row for row in rows if row[1] == "Gastos Financieros" and row[9] == "total_grupo")
+        self.assertEqual(financial_total[7], "N/A")
+        total_row = rows[-1]
+        self.assertEqual(total_row[4:8], ("150.0000", "120.0000", "-30.0000", "80.00"))
+        self.assertEqual(total_row[8], "No incluye impuestos.")
+
     def test_building_statement_does_not_touch_inventory_tables(self) -> None:
         with self.Session() as db:
             balances_before = db.query(InventoryBalance).count()
@@ -355,6 +414,18 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         self.assertIn('data-rubric-search="{{ line.rubric.name }} {{ line.rubric.code }} {{ section.code }} {{ section.label }}', actuals_template)
         self.assertIn('filterInput.addEventListener("input", applyFilter)', actuals_template)
         self.assertIn('row.hidden = !matches', actuals_template)
+        self.assertNotIn('<span class="muted-inline">{{ line.rubric.code }}</span>', actuals_template)
+        self.assertNotIn('<span class="muted-inline">{{ subline.subrubric.code }}</span>', actuals_template)
+        self.assertIn('padding-left: 1.5rem;', actuals_template)
+        self.assertIn('Resumen mensual por grupo', actuals_template)
+        self.assertIn('statement.expense_totals', actuals_template)
+        self.assertIn('/accounting/monthly-actuals/export.csv?period={{ period_value }}', actuals_template)
+
+        main_source = (project_root / "app/main.py").read_text(encoding="utf-8")
+        self.assertIn('@app.get("/accounting/monthly-actuals/export.csv")', main_source)
+        self.assertIn('"Tipo de fila"', main_source)
+        self.assertIn('build_monthly_expense_export_rows(statement)', main_source)
+        self.assertIn('content=buffer.getvalue().encode("utf-8-sig")', main_source)
 
     def test_create_edit_deactivate_and_reactivate_subrubric(self) -> None:
         with self.Session.begin() as db:

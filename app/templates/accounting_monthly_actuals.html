@@ -15,6 +15,7 @@
       <label for="month_filter">Mes</label>
       <input id="month_filter" name="month" type="month" value="{{ period_value }}" required>
       <button type="submit">Cambiar mes</button>
+      <a class="button secondary" href="/accounting/monthly-actuals/export.csv?period={{ period_value }}">Descargar CSV</a>
     </form>
   </section>
 
@@ -53,7 +54,6 @@
                   </td>
                   <td>
                     <strong>{{ line.rubric.name }}{% if not line.rubric.active %} (Inactiva){% endif %}</strong>
-                    <span class="muted-inline">{{ line.rubric.code }}</span>
                   </td>
                   <td>{{ "Total de la cuenta" if line.uses_subrubrics else "—" }}</td>
                   <td>{{ fmt.money_crc(line.budget_amount) }}</td>
@@ -82,7 +82,7 @@
                   >
                     <td>{{ section.label }}</td>
                     <td>{{ line.rubric.name }}</td>
-                    <td>↳ {{ subline.subrubric.name }}{% if not subline.subrubric.active %} (Inactiva){% endif %} <span class="muted-inline">{{ subline.subrubric.code }}</span></td>
+                    <td><span style="display: inline-block; padding-left: 1.5rem;">↳ {{ subline.subrubric.name }}{% if not subline.subrubric.active %} (Inactiva){% endif %}</span></td>
                     <td>{{ fmt.money_crc(subline.budget_amount) }}</td>
                     <td><input name="subactual_{{ subline.subrubric.id }}" type="number" min="0" step="0.0001" value="{{ subline.actual_amount }}" required style="min-width: 160px;"></td>
                     <td><input name="subnotes_{{ subline.subrubric.id }}" type="text" value="{{ subline.notes or '' }}" maxlength="1000" style="max-width: none; min-width: 320px;"></td>
@@ -99,6 +99,35 @@
       <a class="button secondary" href="/accounting/income-statement?month={{ period_value }}">Cancelar</a>
     </div>
   </form>
+
+  <section class="report-panel" style="width: 100%;">
+    <h2>Resumen mensual por grupo</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Grupo</th><th>Presupuesto</th><th>Real</th><th>Diferencia ₡</th><th>% ejecución</th></tr>
+        </thead>
+        <tbody>
+          {% for section in statement.sections %}
+            <tr>
+              <td>{{ section.label }}</td>
+              <td>{{ fmt.money_crc(section.budget_amount) }}</td>
+              <td>{{ fmt.money_crc(section.actual_amount) }}</td>
+              <td>{{ fmt.money_crc(section.difference_amount) }}</td>
+              <td>{% if section.compliance_percent is none %}N/A{% else %}{{ section.compliance_percent }}%{% endif %}</td>
+            </tr>
+          {% endfor %}
+          <tr>
+            <td><strong>Gastos Totales</strong><br><span class="muted-inline">No incluye impuestos</span></td>
+            <td><strong>{{ fmt.money_crc(statement.expense_totals.budget_amount) }}</strong></td>
+            <td><strong>{{ fmt.money_crc(statement.expense_totals.actual_amount) }}</strong></td>
+            <td><strong>{{ fmt.money_crc(statement.expense_totals.difference_amount) }}</strong></td>
+            <td><strong>{% if statement.expense_totals.compliance_percent is none %}N/A{% else %}{{ statement.expense_totals.compliance_percent }}%{% endif %}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
   <script>
     (() => {
