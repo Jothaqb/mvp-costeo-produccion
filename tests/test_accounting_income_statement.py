@@ -1,3 +1,5 @@
+import csv
+import io
 import unittest
 from datetime import date, datetime
 from decimal import Decimal
@@ -9,8 +11,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.models import (
+    AccountingMonthlyActual,
     AccountingRubric,
     AccountingSubrubric,
+    AccountingSubrubricMonthlyActual,
     B2BCustomer,
     B2BSalesOrder,
     B2BSalesOrderLine,
@@ -21,11 +25,14 @@ from app.models import (
 )
 from app.services.accounting_income_statement_service import (
     AccountingValidationError,
+    MONTHLY_ACTUALS_TEMPLATE_HEADERS,
     build_income_statement,
+    build_monthly_actuals_template_rows,
     build_monthly_expense_export_rows,
     create_accounting_rubric,
     create_accounting_subrubric,
     get_accounting_sales_summary,
+    import_monthly_actuals_csv,
     save_monthly_actuals,
     save_monthly_subrubric_actuals,
     update_accounting_rubric,
@@ -71,6 +78,28 @@ class AccountingIncomeStatementTests(unittest.TestCase):
     def tearDown(self) -> None:
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
+
+    def _monthly_csv(self, rows: list[dict[str, object]], headers=None) -> bytes:
+        buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(buffer, fieldnames=headers or MONTHLY_ACTUALS_TEMPLATE_HEADERS)
+        writer.writeheader()
+        writer.writerows(rows)
+        return buffer.getvalue().encode("utf-8-sig")
+
+    def _monthly_row(self, **overrides: object) -> dict[str, object]:
+        row: dict[str, object] = {
+            "Periodo": "2026-11",
+            "Grupo": "Gastos Operativos",
+            "Cuenta": "Operativo",
+            "Subcuenta": "",
+            "Codigo Cuenta": "op_test",
+            "Codigo Subcuenta": "",
+            "Presupuesto mensual": "100.0000",
+            "Monto real": "25",
+            "Observacion": "Carga CSV",
+        }
+        row.update(overrides)
+        return row
 
     def _add_b2b(
         self,
@@ -310,6 +339,286 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         self.assertEqual(total_row[4:8], ("150.0000", "120.0000", "-30.0000", "80.00"))
         self.assertEqual(total_row[8], "No incluye impuestos.")
 
+    def test_monthly_actuals_template_contains_required_columns_and_active_targets(self) -> None:
+        with self.Session.begin() as db:
+            rubric = db.get(AccountingRubric, self.rubrics["op_test"])
+            active = create_accounting_subrubric(
+                db,
+                rubric=rubric,
+                code="op_active_detail",
+                name="Detalle activo",
+                monthly_budget_amount="75",
+                display_order="1",
+            )
+            create_accounting_subrubric(
+                db,
+                rubric=rubric,
+                code="op_inactive_detail",
+                name="Detalle inactivo",
+                monthly_budget_amount="25",
+                display_order="2",
+                active=False,
+            )
+            active_id = active.id
+            save_monthly_subrubric_actuals(
+                db,
+                period_month=date(2026, 11, 1),
+                values_by_subrubric_id={active_id: ("12", "Precargado")},
+                user_id=None,
+            )
+
+        with self.Session() as db:
+            statement = build_income_statement(db, date(2026, 11, 1))
+            rows = build_monthly_actuals_template_rows(statement)
+
+        self.assertEqual(
+            MONTHLY_ACTUALS_TEMPLATE_HEADERS,
+            (
+                "Periodo",
+                "Grupo",
+                "Cuenta",
+                "Subcuenta",
+                "Codigo Cuenta",
+                "Codigo Subcuenta",
+                "Presupuesto mensual",
+                "Monto real",
+                "Observacion",
+            ),
+        )
+        active_row = next(row for row in rows if row[5] == "op_active_detail")
+        self.assertEqual(active_row, (
+            "2026-11",
+            "Gastos Operativos",
+            "Operativo",
+            "Detalle activo",
+            "op_test",
+            "op_active_detail",
+            "75.0000",
+            "12.0000",
+            "Precargado",
+        ))
+        self.assertFalse(any(row[5] == "op_inactive_detail" for row in rows))
+        self.assertFalse(any(row[4] == "op_test" and not row[5] for row in rows))
+        self.assertTrue(any(row[4] == "admin_test" and not row[5] for row in rows))
+
+    def test_csv_import_replaces_direct_amount_note_and_blank_amount_becomes_zero(self) -> None:
+        with self.Session.begin() as db:
+            save_monthly_actuals(
+                db,
+                period_month=date(2026, 11, 1),
+                values_by_rubric_id={self.rubrics["op_test"]: ("125", "Anterior")},
+                user_id=None,
+            )
+            save_monthly_actuals(
+                db,
+                period_month=date(2026, 12, 1),
+                values_by_rubric_id={self.rubrics["op_test"]: ("77", "Otro mes")},
+                user_id=None,
+            )
+        with self.Session.begin() as db:
+            result = import_monthly_actuals_csv(
+                db,
+                period_month=date(2026, 11, 1),
+                filename="gastos.csv",
+                content=self._monthly_csv([self._monthly_row(**{"Monto real": "150", "Observacion": "Reemplazado"})]),
+                user_id=None,
+            )
+            self.assertEqual(result.updated_rows, 1)
+        with self.Session() as db:
+            actual = db.query(AccountingMonthlyActual).filter_by(
+                period_month=date(2026, 11, 1),
+                rubric_id=self.rubrics["op_test"],
+            ).one()
+            self.assertEqual(actual.actual_amount, Decimal("150.0000"))
+            self.assertEqual(actual.notes, "Reemplazado")
+
+        with self.Session.begin() as db:
+            import_monthly_actuals_csv(
+                db,
+                period_month=date(2026, 11, 1),
+                filename="gastos.csv",
+                content=self._monthly_csv([self._monthly_row(**{"Monto real": "", "Observacion": ""})]),
+                user_id=None,
+            )
+        with self.Session() as db:
+            actual = db.query(AccountingMonthlyActual).filter_by(
+                period_month=date(2026, 11, 1),
+                rubric_id=self.rubrics["op_test"],
+            ).one()
+            other_month = db.query(AccountingMonthlyActual).filter_by(
+                period_month=date(2026, 12, 1),
+                rubric_id=self.rubrics["op_test"],
+            ).one()
+            self.assertEqual(actual.actual_amount, Decimal("0.0000"))
+            self.assertIsNone(actual.notes)
+            self.assertEqual(other_month.actual_amount, Decimal("77.0000"))
+            self.assertEqual(other_month.notes, "Otro mes")
+
+    def test_csv_import_replaces_subrubric_amount_and_note(self) -> None:
+        with self.Session.begin() as db:
+            rubric = db.get(AccountingRubric, self.rubrics["op_test"])
+            subrubric = create_accounting_subrubric(
+                db,
+                rubric=rubric,
+                code="op_pauta_meta",
+                name="Pauta Meta",
+                monthly_budget_amount="200",
+                display_order="1",
+            )
+            subrubric_id = subrubric.id
+            save_monthly_subrubric_actuals(
+                db,
+                period_month=date(2026, 11, 1),
+                values_by_subrubric_id={subrubric_id: ("125", "Anterior")},
+                user_id=None,
+            )
+        row = self._monthly_row(**{
+            "Subcuenta": "Pauta Meta",
+            "Codigo Subcuenta": "op_pauta_meta",
+            "Monto real": "150",
+            "Observacion": "Actualizado",
+        })
+        with self.Session.begin() as db:
+            import_monthly_actuals_csv(
+                db,
+                period_month=date(2026, 11, 1),
+                filename="gastos.csv",
+                content=self._monthly_csv([row]),
+                user_id=None,
+            )
+        with self.Session() as db:
+            actual = db.query(AccountingSubrubricMonthlyActual).filter_by(
+                period_month=date(2026, 11, 1),
+                subrubric_id=subrubric_id,
+            ).one()
+            self.assertEqual(actual.actual_amount, Decimal("150.0000"))
+            self.assertEqual(actual.notes, "Actualizado")
+
+    def test_csv_import_rejects_period_missing_targets_duplicates_and_invalid_amounts(self) -> None:
+        cases = (
+            ([self._monthly_row(Periodo="2026-13")], "no es válido"),
+            ([self._monthly_row(Periodo="2026-12")], "no coincide"),
+            ([self._monthly_row(**{"Codigo Cuenta": "missing"})], "no existe"),
+            ([self._monthly_row(**{"Codigo Subcuenta": "missing_sub"})], "subcuenta 'missing_sub' no existe"),
+            ([self._monthly_row(), self._monthly_row()], "duplicada"),
+            ([self._monthly_row(**{"Monto real": "abc"})], "valid number"),
+            ([self._monthly_row(**{"Monto real": "-1"})], "zero or greater"),
+        )
+        for rows, expected in cases:
+            with self.subTest(expected=expected), self.Session() as db:
+                with self.assertRaisesRegex(AccountingValidationError, expected):
+                    import_monthly_actuals_csv(
+                        db,
+                        period_month=date(2026, 11, 1),
+                        filename="gastos.csv",
+                        content=self._monthly_csv(rows),
+                        user_id=None,
+                    )
+
+    def test_csv_import_rejects_wrong_parent_inactive_targets_file_and_headers(self) -> None:
+        with self.Session.begin() as db:
+            operating = db.get(AccountingRubric, self.rubrics["op_test"])
+            administrative = db.get(AccountingRubric, self.rubrics["admin_test"])
+            foreign_subrubric = create_accounting_subrubric(
+                db,
+                rubric=administrative,
+                code="admin_foreign",
+                name="Otra cuenta",
+                monthly_budget_amount="1",
+                display_order="1",
+            )
+            inactive_subrubric = create_accounting_subrubric(
+                db,
+                rubric=operating,
+                code="op_inactive",
+                name="Inactiva",
+                monthly_budget_amount="1",
+                display_order="1",
+                active=False,
+            )
+            foreign_code = foreign_subrubric.code
+            inactive_code = inactive_subrubric.code
+            db.get(AccountingRubric, self.rubrics["financial_test"]).active = False
+
+        cases = (
+            ("gastos.txt", self._monthly_csv([self._monthly_row()]), "extensión .csv"),
+            ("", self._monthly_csv([self._monthly_row()]), "extensión .csv"),
+            (
+                "gastos.csv",
+                self._monthly_csv([{"Periodo": "2026-11"}], headers=("Periodo",)),
+                "Faltan columnas",
+            ),
+            (
+                "gastos.csv",
+                self._monthly_csv([self._monthly_row(**{"Codigo Subcuenta": foreign_code})]),
+                "no pertenece",
+            ),
+            (
+                "gastos.csv",
+                self._monthly_csv([self._monthly_row(**{"Codigo Subcuenta": inactive_code})]),
+                "está inactiva",
+            ),
+            (
+                "gastos.csv",
+                self._monthly_csv([self._monthly_row(**{"Codigo Cuenta": "financial_test"})]),
+                "está inactiva",
+            ),
+        )
+        for filename, content, expected in cases:
+            with self.subTest(expected=expected), self.Session() as db:
+                with self.assertRaisesRegex(AccountingValidationError, expected):
+                    import_monthly_actuals_csv(
+                        db,
+                        period_month=date(2026, 11, 1),
+                        filename=filename,
+                        content=content,
+                        user_id=None,
+                    )
+
+    def test_csv_import_is_atomic_and_does_not_change_sales_or_cogs(self) -> None:
+        with self.Session.begin() as db:
+            save_monthly_actuals(
+                db,
+                period_month=date(2026, 11, 1),
+                values_by_rubric_id={self.rubrics["admin_test"]: ("30", "Original")},
+                user_id=None,
+            )
+            self._add_b2b(
+                db,
+                number="B2B-CSV-SAFETY",
+                delivery_date=date(2026, 11, 10),
+                invoice_date=date(2026, 11, 10),
+                line_total=Decimal("200"),
+                cogs=Decimal("75"),
+            )
+        with self.Session() as db:
+            sales_before = get_accounting_sales_summary(db, date(2026, 11, 1))
+            valid = self._monthly_row(**{
+                "Grupo": "Gastos Administrativos",
+                "Cuenta": "Administrativo",
+                "Codigo Cuenta": "admin_test",
+                "Monto real": "99",
+            })
+            invalid = self._monthly_row(**{"Codigo Cuenta": "missing"})
+            with self.assertRaises(AccountingValidationError):
+                import_monthly_actuals_csv(
+                    db,
+                    period_month=date(2026, 11, 1),
+                    filename="gastos.csv",
+                    content=self._monthly_csv([valid, invalid]),
+                    user_id=None,
+                )
+            db.rollback()
+        with self.Session() as db:
+            actual = db.query(AccountingMonthlyActual).filter_by(
+                period_month=date(2026, 11, 1),
+                rubric_id=self.rubrics["admin_test"],
+            ).one()
+            sales_after = get_accounting_sales_summary(db, date(2026, 11, 1))
+            self.assertEqual(actual.actual_amount, Decimal("30.0000"))
+            self.assertEqual(actual.notes, "Original")
+            self.assertEqual(sales_after, sales_before)
+
     def test_building_statement_does_not_touch_inventory_tables(self) -> None:
         with self.Session() as db:
             balances_before = db.query(InventoryBalance).count()
@@ -420,9 +729,16 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         self.assertIn('Resumen mensual por grupo', actuals_template)
         self.assertIn('statement.expense_totals', actuals_template)
         self.assertIn('/accounting/monthly-actuals/export.csv?period={{ period_value }}', actuals_template)
+        self.assertIn('/accounting/monthly-actuals/template.csv?period={{ period_value }}', actuals_template)
+        self.assertIn('action="/accounting/monthly-actuals/import"', actuals_template)
+        self.assertIn('enctype="multipart/form-data"', actuals_template)
+        self.assertIn('name="file" type="file"', actuals_template)
 
         main_source = (project_root / "app/main.py").read_text(encoding="utf-8")
         self.assertIn('@app.get("/accounting/monthly-actuals/export.csv")', main_source)
+        self.assertIn('@app.get("/accounting/monthly-actuals/template.csv")', main_source)
+        self.assertIn('@app.post("/accounting/monthly-actuals/import")', main_source)
+        self.assertIn('db.rollback()', main_source)
         self.assertIn('"Tipo de fila"', main_source)
         self.assertIn('build_monthly_expense_export_rows(statement)', main_source)
         self.assertIn('content=buffer.getvalue().encode("utf-8-sig")', main_source)

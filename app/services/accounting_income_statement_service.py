@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import io
 import re
 
 from sqlalchemy.orm import Session
@@ -25,6 +27,17 @@ MONEY_QUANT = Decimal("0.0001")
 PERCENT_QUANT = Decimal("0.01")
 ACCOUNTING_SECTIONS = ("operating", "administrative", "financial", "tax")
 ACCOUNTING_RUBRIC_CODE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,99}$")
+MONTHLY_ACTUALS_TEMPLATE_HEADERS = (
+    "Periodo",
+    "Grupo",
+    "Cuenta",
+    "Subcuenta",
+    "Codigo Cuenta",
+    "Codigo Subcuenta",
+    "Presupuesto mensual",
+    "Monto real",
+    "Observacion",
+)
 SECTION_LABELS = {
     "operating": "Gastos Operativos",
     "administrative": "Gastos Administrativos",
@@ -96,6 +109,11 @@ class AccountingExpenseTotals:
     budget_amount: Decimal
     difference_amount: Decimal
     compliance_percent: Decimal | None
+
+
+@dataclass(frozen=True)
+class AccountingMonthlyActualsImportResult:
+    updated_rows: int
 
 
 @dataclass(frozen=True)
@@ -473,6 +491,167 @@ def build_monthly_expense_export_rows(
         )
     )
     return rows
+
+
+def build_monthly_actuals_template_rows(
+    statement: AccountingIncomeStatement,
+) -> list[tuple[object, ...]]:
+    period_value = statement.period_month.strftime("%Y-%m")
+    rows: list[tuple[object, ...]] = []
+    for section in statement.sections:
+        for line in section.lines:
+            if not line.rubric.active:
+                continue
+            active_subrubrics = [subline for subline in line.subrubrics if subline.subrubric.active]
+            if active_subrubrics:
+                for subline in active_subrubrics:
+                    rows.append(
+                        (
+                            period_value,
+                            section.label,
+                            line.rubric.name,
+                            subline.subrubric.name,
+                            line.rubric.code,
+                            subline.subrubric.code,
+                            format(subline.budget_amount, "f"),
+                            format(subline.actual_amount, "f"),
+                            subline.notes or "",
+                        )
+                    )
+            else:
+                rows.append(
+                    (
+                        period_value,
+                        section.label,
+                        line.rubric.name,
+                        "",
+                        line.rubric.code,
+                        "",
+                        format(line.budget_amount, "f"),
+                        format(line.direct_actual_amount, "f"),
+                        line.notes or "",
+                    )
+                )
+    return rows
+
+
+def import_monthly_actuals_csv(
+    db: Session,
+    *,
+    period_month: date,
+    filename: str,
+    content: bytes,
+    user_id: int | None,
+) -> AccountingMonthlyActualsImportResult:
+    if not filename or not filename.lower().endswith(".csv"):
+        raise AccountingValidationError("Debe seleccionar un archivo con extensión .csv.")
+    try:
+        decoded = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise AccountingValidationError("El archivo debe estar codificado en UTF-8.") from exc
+
+    reader = csv.DictReader(io.StringIO(decoded, newline=""))
+    fieldnames = tuple(reader.fieldnames or ())
+    missing_headers = [header for header in MONTHLY_ACTUALS_TEMPLATE_HEADERS if header not in fieldnames]
+    if missing_headers:
+        raise AccountingValidationError(
+            "Faltan columnas requeridas: " + ", ".join(missing_headers) + "."
+        )
+
+    period_start = normalize_period_month(period_month)
+    rubrics = db.query(AccountingRubric).all()
+    subrubrics = db.query(AccountingSubrubric).all()
+    rubrics_by_code = {rubric.code.lower(): rubric for rubric in rubrics}
+    subrubrics_by_code = {subrubric.code.lower(): subrubric for subrubric in subrubrics}
+    active_subrubrics_by_rubric: dict[int, list[AccountingSubrubric]] = {}
+    for subrubric in subrubrics:
+        if subrubric.active:
+            active_subrubrics_by_rubric.setdefault(subrubric.rubric_id, []).append(subrubric)
+
+    direct_values: dict[int, tuple[Decimal, str]] = {}
+    subrubric_values: dict[int, tuple[Decimal, str]] = {}
+    seen_targets: set[tuple[int, int | None]] = set()
+    errors: list[str] = []
+    valid_rows = 0
+
+    for row_number, row in enumerate(reader, start=2):
+        if not any(str(value or "").strip() for key, value in row.items() if key is not None):
+            continue
+        row_errors: list[str] = []
+        raw_period = str(row.get("Periodo") or "").strip()
+        try:
+            row_period = parse_period_month(raw_period)
+            if row_period != period_start:
+                row_errors.append(
+                    f"el periodo {raw_period or '(vacío)'} no coincide con {period_start:%Y-%m}"
+                )
+        except AccountingValidationError:
+            row_errors.append(f"el periodo '{raw_period}' no es válido")
+
+        rubric_code = str(row.get("Codigo Cuenta") or "").strip().lower()
+        subrubric_code = str(row.get("Codigo Subcuenta") or "").strip().lower()
+        rubric = rubrics_by_code.get(rubric_code)
+        subrubric = subrubrics_by_code.get(subrubric_code) if subrubric_code else None
+        if rubric is None:
+            row_errors.append(f"la cuenta '{rubric_code or '(vacía)'}' no existe")
+        elif not rubric.active:
+            row_errors.append(f"la cuenta '{rubric.code}' está inactiva")
+
+        if subrubric_code:
+            if subrubric is None:
+                row_errors.append(f"la subcuenta '{subrubric_code}' no existe")
+            elif rubric is not None and subrubric.rubric_id != rubric.id:
+                row_errors.append(
+                    f"la subcuenta '{subrubric.code}' no pertenece a la cuenta '{rubric.code}'"
+                )
+            elif not subrubric.active:
+                row_errors.append(f"la subcuenta '{subrubric.code}' está inactiva")
+        elif rubric is not None and active_subrubrics_by_rubric.get(rubric.id):
+            row_errors.append(
+                f"la cuenta '{rubric.code}' tiene subcuentas activas; debe indicar Codigo Subcuenta"
+            )
+
+        amount: Decimal | None = None
+        try:
+            amount = parse_nonnegative_amount(row.get("Monto real"), "Monto real")
+        except AccountingValidationError as exc:
+            row_errors.append(str(exc))
+
+        target: tuple[int, int | None] | None = None
+        if rubric is not None and (not subrubric_code or subrubric is not None):
+            target = (rubric.id, subrubric.id if subrubric is not None else None)
+            if target in seen_targets:
+                row_errors.append("la cuenta/subcuenta está duplicada dentro del CSV")
+            else:
+                seen_targets.add(target)
+
+        if row_errors:
+            errors.extend(f"Fila {row_number}: {message}." for message in row_errors)
+            continue
+
+        notes = str(row.get("Observacion") or "").strip()
+        if subrubric is not None:
+            subrubric_values[subrubric.id] = (amount or ZERO, notes)
+        else:
+            direct_values[rubric.id] = (amount or ZERO, notes)
+        valid_rows += 1
+
+    if errors:
+        raise AccountingValidationError("Importación rechazada:\n" + "\n".join(errors))
+
+    save_monthly_actuals(
+        db,
+        period_month=period_start,
+        values_by_rubric_id=direct_values,
+        user_id=user_id,
+    )
+    save_monthly_subrubric_actuals(
+        db,
+        period_month=period_start,
+        values_by_subrubric_id=subrubric_values,
+        user_id=user_id,
+    )
+    return AccountingMonthlyActualsImportResult(updated_rows=valid_rows)
 
 
 def save_monthly_actuals(

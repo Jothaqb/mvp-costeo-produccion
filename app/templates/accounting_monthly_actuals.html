@@ -8,14 +8,27 @@
     <p class="lead">Registre el monto real mensual por cuenta o subcuenta. Los importes deben ingresarse como valores positivos.</p>
   </section>
 
-  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  {% if error %}<p class="error" style="white-space: pre-line;">{{ error }}</p>{% endif %}
+  {% if message %}<p class="success">{{ message }}</p>{% endif %}
 
   <section class="report-panel">
     <form method="get" action="/accounting/monthly-actuals" class="filter-form">
       <label for="month_filter">Mes</label>
       <input id="month_filter" name="month" type="month" value="{{ period_value }}" required>
       <button type="submit">Cambiar mes</button>
-      <a class="button secondary" href="/accounting/monthly-actuals/export.csv?period={{ period_value }}">Descargar CSV</a>
+      <a class="button secondary" href="/accounting/monthly-actuals/template.csv?period={{ period_value }}">Descargar machote CSV</a>
+      <a class="button secondary" href="/accounting/monthly-actuals/export.csv?period={{ period_value }}">Descargar reporte CSV</a>
+    </form>
+  </section>
+
+  <section class="report-panel">
+    <h2>Carga masiva CSV</h2>
+    <p class="muted-inline">El archivo reemplaza los montos reales y observaciones de las filas incluidas para {{ period_value }}; no suma valores.</p>
+    <form method="post" action="/accounting/monthly-actuals/import" enctype="multipart/form-data" class="filter-form">
+      <input type="hidden" name="period" value="{{ period_value }}">
+      <label for="monthly_actuals_csv">Archivo CSV</label>
+      <input id="monthly_actuals_csv" name="file" type="file" accept=".csv,text/csv" required>
+      <button type="submit">Subir CSV</button>
     </form>
   </section>
 

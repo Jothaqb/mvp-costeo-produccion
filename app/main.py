@@ -128,11 +128,14 @@ from app.services.accounts_receivable_service import (
 from app.services.accounting_income_statement_service import (
     AccountingValidationError,
     ACCOUNTING_SECTIONS,
+    MONTHLY_ACTUALS_TEMPLATE_HEADERS,
     SECTION_LABELS as ACCOUNTING_SECTION_LABELS,
     build_income_statement,
+    build_monthly_actuals_template_rows,
     build_monthly_expense_export_rows,
     create_accounting_rubric,
     create_accounting_subrubric,
+    import_monthly_actuals_csv,
     parse_period_month,
     save_monthly_actuals,
     save_monthly_subrubric_actuals,
@@ -7499,6 +7502,7 @@ def accounting_monthly_actuals(
     request: Request,
     month: str = Query(""),
     error: str = Query(""),
+    message: str = Query(""),
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     require_permission(request, "accounting.edit")
@@ -7516,7 +7520,27 @@ def accounting_monthly_actuals(
             "period_value": period_month.strftime("%Y-%m"),
             "statement": statement,
             "error": error or None,
+            "message": message or None,
         },
+    )
+
+
+@app.get("/accounting/monthly-actuals/template.csv")
+def accounting_monthly_actuals_template_csv(
+    request: Request,
+    period: str = Query(""),
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "accounting.edit")
+    try:
+        period_month = _accounting_period_or_default(period)
+    except AccountingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    statement = build_income_statement(db, period_month)
+    return _csv_report_response(
+        filename=f"accounting_monthly_actuals_template_{period_month:%Y-%m}.csv",
+        headers=MONTHLY_ACTUALS_TEMPLATE_HEADERS,
+        rows=build_monthly_actuals_template_rows(statement),
     )
 
 
@@ -7548,6 +7572,47 @@ def accounting_monthly_actuals_export_csv(
         ),
         rows=build_monthly_expense_export_rows(statement),
     )
+
+
+@app.post("/accounting/monthly-actuals/import")
+async def accounting_monthly_actuals_import(
+    request: Request,
+    period: str = Form(""),
+    file: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "accounting.edit")
+    try:
+        period_month = _accounting_period_or_default(period)
+        if file is None:
+            raise AccountingValidationError("Debe seleccionar un archivo CSV.")
+        result = import_monthly_actuals_csv(
+            db,
+            period_month=period_month,
+            filename=file.filename or "",
+            content=await file.read(),
+            user_id=current_user.id,
+        )
+        db.commit()
+        safe_log_audit_event(
+            module="accounting",
+            action="monthly_actuals_csv_imported",
+            entity_type="accounting_period",
+            entity_id=period_month.strftime("%Y-%m"),
+            entity_label=period_month.strftime("%Y-%m"),
+            new_values={"updated_rows": result.updated_rows},
+            request=request,
+            user=current_user,
+        )
+        message = f"CSV importado correctamente: {result.updated_rows} filas actualizadas."
+        return _redirect(
+            f"/accounting/monthly-actuals?month={period_month:%Y-%m}&message={quote(message)}"
+        )
+    except AccountingValidationError as exc:
+        db.rollback()
+        return _redirect(
+            f"/accounting/monthly-actuals?month={quote(period)}&error={quote(str(exc))}"
+        )
 
 
 @app.post("/accounting/monthly-actuals")
