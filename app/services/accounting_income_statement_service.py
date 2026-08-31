@@ -6,6 +6,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 import io
 import re
+import unicodedata
 
 from sqlalchemy.orm import Session
 
@@ -38,6 +39,7 @@ MONTHLY_ACTUALS_TEMPLATE_HEADERS = (
     "Monto real",
     "Observacion",
 )
+MONTHLY_ACTUALS_IMPORT_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
 SECTION_LABELS = {
     "operating": "Gastos Operativos",
     "administrative": "Gastos Administrativos",
@@ -535,6 +537,48 @@ def build_monthly_actuals_template_rows(
     return rows
 
 
+def _decode_monthly_actuals_csv(content: bytes) -> str:
+    for encoding in MONTHLY_ACTUALS_IMPORT_ENCODINGS:
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise AccountingValidationError(
+        "El archivo debe usar una codificación compatible: UTF-8, UTF-8 con BOM, CP1252 o Latin-1."
+    )
+
+
+def _normalize_monthly_actuals_header(value: object) -> str:
+    text = " ".join(str(value or "").strip().split())
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFD", text)
+        if unicodedata.category(character) != "Mn"
+    ).casefold()
+
+
+def _parse_monthly_actuals_import_amount(value: object) -> Decimal:
+    raw = str(value or "").strip()
+    if raw in {"", "-"}:
+        return ZERO.quantize(MONEY_QUANT)
+    normalized = raw.replace("₡", "").replace("\u00a0", "").replace(" ", "")
+    if normalized.startswith("-"):
+        raise AccountingValidationError("Monto real no puede ser negativo.")
+    if re.fullmatch(r"\d{1,3}(?:[,.]\d{3})+", normalized):
+        normalized = normalized.replace(",", "").replace(".", "")
+    elif re.fullmatch(r"\d+(?:[.,]\d{1,4})?", normalized):
+        normalized = normalized.replace(",", ".")
+    else:
+        raise AccountingValidationError("Monto real no es un número válido.")
+    try:
+        amount = Decimal(normalized).quantize(MONEY_QUANT)
+    except (InvalidOperation, ValueError) as exc:
+        raise AccountingValidationError("Monto real no es un número válido.") from exc
+    if not amount.is_finite() or amount < ZERO:
+        raise AccountingValidationError("Monto real no puede ser negativo.")
+    return amount
+
+
 def import_monthly_actuals_csv(
     db: Session,
     *,
@@ -545,17 +589,31 @@ def import_monthly_actuals_csv(
 ) -> AccountingMonthlyActualsImportResult:
     if not filename or not filename.lower().endswith(".csv"):
         raise AccountingValidationError("Debe seleccionar un archivo con extensión .csv.")
-    try:
-        decoded = content.decode("utf-8-sig")
-    except UnicodeDecodeError as exc:
-        raise AccountingValidationError("El archivo debe estar codificado en UTF-8.") from exc
-
-    reader = csv.DictReader(io.StringIO(decoded, newline=""))
-    fieldnames = tuple(reader.fieldnames or ())
-    missing_headers = [header for header in MONTHLY_ACTUALS_TEMPLATE_HEADERS if header not in fieldnames]
+    decoded = _decode_monthly_actuals_csv(content)
+    first_line = decoded.splitlines()[0] if decoded.splitlines() else ""
+    delimiter = ";" if first_line.count(";") > first_line.count(",") else ","
+    reader = csv.DictReader(io.StringIO(decoded, newline=""), delimiter=delimiter)
+    detected_headers = tuple(str(header or "").strip() for header in (reader.fieldnames or ()))
+    canonical_by_normalized = {
+        _normalize_monthly_actuals_header(header): header
+        for header in MONTHLY_ACTUALS_TEMPLATE_HEADERS
+    }
+    canonical_headers = tuple(
+        canonical_by_normalized.get(_normalize_monthly_actuals_header(header), header)
+        for header in detected_headers
+    )
+    reader.fieldnames = list(canonical_headers)
+    missing_headers = [
+        header for header in MONTHLY_ACTUALS_TEMPLATE_HEADERS if header not in canonical_headers
+    ]
     if missing_headers:
+        detected_label = ", ".join(detected_headers) if detected_headers else "(ninguna)"
         raise AccountingValidationError(
-            "Faltan columnas requeridas: " + ", ".join(missing_headers) + "."
+            "Faltan columnas requeridas: "
+            + ", ".join(missing_headers)
+            + ".\nColumnas detectadas: "
+            + detected_label
+            + "."
         )
 
     period_start = normalize_period_month(period_month)
@@ -613,7 +671,7 @@ def import_monthly_actuals_csv(
 
         amount: Decimal | None = None
         try:
-            amount = parse_nonnegative_amount(row.get("Monto real"), "Monto real")
+            amount = _parse_monthly_actuals_import_amount(row.get("Monto real"))
         except AccountingValidationError as exc:
             row_errors.append(str(exc))
 

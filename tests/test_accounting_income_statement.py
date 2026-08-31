@@ -79,12 +79,23 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         Base.metadata.drop_all(self.engine)
         self.engine.dispose()
 
-    def _monthly_csv(self, rows: list[dict[str, object]], headers=None) -> bytes:
+    def _monthly_csv(
+        self,
+        rows: list[dict[str, object]],
+        headers=None,
+        *,
+        delimiter: str = ",",
+        encoding: str = "utf-8-sig",
+    ) -> bytes:
         buffer = io.StringIO(newline="")
-        writer = csv.DictWriter(buffer, fieldnames=headers or MONTHLY_ACTUALS_TEMPLATE_HEADERS)
+        writer = csv.DictWriter(
+            buffer,
+            fieldnames=headers or MONTHLY_ACTUALS_TEMPLATE_HEADERS,
+            delimiter=delimiter,
+        )
         writer.writeheader()
         writer.writerows(rows)
-        return buffer.getvalue().encode("utf-8-sig")
+        return buffer.getvalue().encode(encoding)
 
     def _monthly_row(self, **overrides: object) -> dict[str, object]:
         row: dict[str, object] = {
@@ -401,6 +412,81 @@ class AccountingIncomeStatementTests(unittest.TestCase):
         self.assertFalse(any(row[4] == "op_test" and not row[5] for row in rows))
         self.assertTrue(any(row[4] == "admin_test" and not row[5] for row in rows))
 
+    def test_csv_import_accepts_comma_semicolon_encodings_and_accented_headers(self) -> None:
+        accented_headers = tuple(
+            {
+                "Codigo Cuenta": "Código Cuenta",
+                "Codigo Subcuenta": "Código Subcuenta",
+                "Observacion": "Observación",
+            }.get(header, header)
+            for header in MONTHLY_ACTUALS_TEMPLATE_HEADERS
+        )
+        accented_row = {
+            {
+                "Codigo Cuenta": "Código Cuenta",
+                "Codigo Subcuenta": "Código Subcuenta",
+                "Observacion": "Observación",
+            }.get(header, header): value
+            for header, value in self._monthly_row(**{"Monto real": "44", "Observacion": "Edición"}).items()
+        }
+        cases = (
+            (",", "utf-8-sig", MONTHLY_ACTUALS_TEMPLATE_HEADERS, self._monthly_row(**{"Monto real": "41"})),
+            (";", "utf-8", MONTHLY_ACTUALS_TEMPLATE_HEADERS, self._monthly_row(**{"Monto real": "42"})),
+            (";", "cp1252", accented_headers, accented_row),
+            (";", "latin-1", accented_headers, accented_row),
+        )
+        for delimiter, encoding, headers, row in cases:
+            with self.subTest(delimiter=delimiter, encoding=encoding), self.Session.begin() as db:
+                result = import_monthly_actuals_csv(
+                    db,
+                    period_month=date(2026, 11, 1),
+                    filename="gastos.csv",
+                    content=self._monthly_csv(
+                        [row],
+                        headers=headers,
+                        delimiter=delimiter,
+                        encoding=encoding,
+                    ),
+                    user_id=None,
+                )
+                self.assertEqual(result.updated_rows, 1)
+
+        with self.Session() as db:
+            actual = db.query(AccountingMonthlyActual).filter_by(
+                period_month=date(2026, 11, 1),
+                rubric_id=self.rubrics["op_test"],
+            ).one()
+            self.assertEqual(actual.actual_amount, Decimal("44.0000"))
+            self.assertEqual(actual.notes, "Edición")
+
+    def test_csv_import_accepts_excel_currency_and_thousands_amount_formats(self) -> None:
+        cases = (
+            ("", Decimal("0.0000")),
+            ("-", Decimal("0.0000")),
+            ("500000", Decimal("500000.0000")),
+            ("500,000", Decimal("500000.0000")),
+            ("500.000", Decimal("500000.0000")),
+            ("₡500,000", Decimal("500000.0000")),
+            ("₡500.000", Decimal("500000.0000")),
+        )
+        for raw_amount, expected in cases:
+            with self.subTest(raw_amount=raw_amount), self.Session.begin() as db:
+                import_monthly_actuals_csv(
+                    db,
+                    period_month=date(2026, 11, 1),
+                    filename="gastos.csv",
+                    content=self._monthly_csv([
+                        self._monthly_row(**{"Monto real": raw_amount, "Observacion": "Formato Excel"})
+                    ]),
+                    user_id=None,
+                )
+            with self.Session() as db:
+                actual = db.query(AccountingMonthlyActual).filter_by(
+                    period_month=date(2026, 11, 1),
+                    rubric_id=self.rubrics["op_test"],
+                ).one()
+                self.assertEqual(actual.actual_amount, expected)
+
     def test_csv_import_replaces_direct_amount_note_and_blank_amount_becomes_zero(self) -> None:
         with self.Session.begin() as db:
             save_monthly_actuals(
@@ -501,8 +587,8 @@ class AccountingIncomeStatementTests(unittest.TestCase):
             ([self._monthly_row(**{"Codigo Cuenta": "missing"})], "no existe"),
             ([self._monthly_row(**{"Codigo Subcuenta": "missing_sub"})], "subcuenta 'missing_sub' no existe"),
             ([self._monthly_row(), self._monthly_row()], "duplicada"),
-            ([self._monthly_row(**{"Monto real": "abc"})], "valid number"),
-            ([self._monthly_row(**{"Monto real": "-1"})], "zero or greater"),
+            ([self._monthly_row(**{"Monto real": "abc"})], "número válido"),
+            ([self._monthly_row(**{"Monto real": "-1"})], "negativo"),
         )
         for rows, expected in cases:
             with self.subTest(expected=expected), self.Session() as db:
@@ -574,6 +660,17 @@ class AccountingIncomeStatementTests(unittest.TestCase):
                         content=content,
                         user_id=None,
                     )
+
+        with self.Session() as db, self.assertRaises(AccountingValidationError) as caught:
+            import_monthly_actuals_csv(
+                db,
+                period_month=date(2026, 11, 1),
+                filename="gastos.csv",
+                content=self._monthly_csv([{"Periodo": "2026-11"}], headers=("Periodo",)),
+                user_id=None,
+            )
+        self.assertIn("Faltan columnas requeridas:", str(caught.exception))
+        self.assertIn("Columnas detectadas: Periodo.", str(caught.exception))
 
     def test_csv_import_is_atomic_and_does_not_change_sales_or_cogs(self) -> None:
         with self.Session.begin() as db:
