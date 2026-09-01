@@ -44,8 +44,10 @@ from app.services.erp_loyverse_stock_preview_service import (  # noqa: E402
 
 
 EXECUTE_CONFIRMATION = "SEND_B2B_JULY_2026_TO_LOYVERSE"
-EXECUTE_START_DATE = date(2026, 7, 1)
-EXECUTE_END_DATE_EXCLUSIVE = date(2026, 8, 1)
+EXECUTE_ALLOWED_DATE_RANGES = {
+    (date(2026, 7, 1), date(2026, 8, 1)),
+    (date(2026, 8, 1), date(2026, 9, 1)),
+}
 EXECUTE_TIMEZONE = "America/Costa_Rica"
 SUPPORTED_ORDER_STATUSES = {"draft", "in_process", "invoiced"}
 CSV_FIELDS = [
@@ -211,12 +213,11 @@ def validate_args(args: argparse.Namespace) -> tuple[date, date, tzinfo]:
             f"Use --confirm {EXECUTE_CONFIRMATION} only after approving the dry-run."
         )
     if args.execute and (
-        start_date != EXECUTE_START_DATE
-        or end_date_exclusive != EXECUTE_END_DATE_EXCLUSIVE
+        (start_date, end_date_exclusive) not in EXECUTE_ALLOWED_DATE_RANGES
         or args.timezone != EXECUTE_TIMEZONE
     ):
         raise SystemExit(
-            "Execute mode is locked to 2026-07-01 <= delivery_date < 2026-08-01 "
+            "Execute mode is locked to the complete July or August 2026 delivery-date range "
             "with timezone America/Costa_Rica. No receipts were sent."
         )
     if not args.execute and args.confirm:
