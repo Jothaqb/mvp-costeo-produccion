@@ -44,9 +44,16 @@ from app.services.erp_loyverse_stock_preview_service import (  # noqa: E402
 
 
 EXECUTE_CONFIRMATION = "SEND_B2B_JULY_2026_TO_LOYVERSE"
+SEPTEMBER_2026_EXECUTE_CONFIRMATION = "SEND_B2B_SEPTEMBER_2026_TO_LOYVERSE"
 EXECUTE_ALLOWED_DATE_RANGES = {
     (date(2026, 7, 1), date(2026, 8, 1)),
     (date(2026, 8, 1), date(2026, 9, 1)),
+    (date(2026, 9, 1), date(2026, 10, 1)),
+}
+EXECUTE_CONFIRMATIONS_BY_DATE_RANGE = {
+    (date(2026, 7, 1), date(2026, 8, 1)): EXECUTE_CONFIRMATION,
+    (date(2026, 8, 1), date(2026, 9, 1)): EXECUTE_CONFIRMATION,
+    (date(2026, 9, 1), date(2026, 10, 1)): SEPTEMBER_2026_EXECUTE_CONFIRMATION,
 }
 EXECUTE_TIMEZONE = "America/Costa_Rica"
 SUPPORTED_ORDER_STATUSES = {"draft", "in_process", "invoiced"}
@@ -207,19 +214,21 @@ def validate_args(args: argparse.Namespace) -> tuple[date, date, tzinfo]:
     )
     if not args.use_env:
         raise SystemExit("--use-env is required; credentials are accepted only from environment variables.")
-    if args.execute and args.confirm != EXECUTE_CONFIRMATION:
-        raise SystemExit(
-            "Execution confirmation mismatch. No receipts were sent. "
-            f"Use --confirm {EXECUTE_CONFIRMATION} only after approving the dry-run."
-        )
     if args.execute and (
         (start_date, end_date_exclusive) not in EXECUTE_ALLOWED_DATE_RANGES
         or args.timezone != EXECUTE_TIMEZONE
     ):
         raise SystemExit(
-            "Execute mode is locked to the complete July or August 2026 delivery-date range "
+            "Execute mode is locked to an explicitly approved complete monthly delivery-date range "
             "with timezone America/Costa_Rica. No receipts were sent."
         )
+    if args.execute:
+        required_confirmation = EXECUTE_CONFIRMATIONS_BY_DATE_RANGE[(start_date, end_date_exclusive)]
+        if args.confirm != required_confirmation:
+            raise SystemExit(
+                "Execution confirmation mismatch. No receipts were sent. "
+                f"Use --confirm {required_confirmation} only after approving the dry-run."
+            )
     if not args.execute and args.confirm:
         raise SystemExit("--confirm is only valid together with --execute.")
     return start_date, end_date_exclusive, timezone
