@@ -15,7 +15,13 @@ from app.services.password_reset_service import (
 )
 
 
-FUNCTIONAL_ROLE_CODES = ("admin", "general_operator", "general_approver")
+FUNCTIONAL_ROLE_LABELS = {
+    "admin": "Admin",
+    "general_operator": "General Operator",
+    "general_approver": "General Approver",
+    "sales_manager": "Sales Manager",
+}
+FUNCTIONAL_ROLE_CODES = tuple(FUNCTIONAL_ROLE_LABELS)
 
 
 class AdminUserValidationError(Exception):

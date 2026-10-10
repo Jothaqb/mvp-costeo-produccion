@@ -315,6 +315,7 @@ from app.services.auth_service import (
 )
 from app.services.admin_user_service import (
     FUNCTIONAL_ROLE_CODES,
+    FUNCTIONAL_ROLE_LABELS,
     AdminUserConfigurationError,
     AdminUserNotFoundError,
     AdminUserValidationError,
@@ -641,12 +642,7 @@ def _admin_user_snapshot(user: User) -> dict[str, object]:
 
 
 def _admin_role_label(role_code: str | None) -> str:
-    labels = {
-        "admin": "Admin",
-        "general_operator": "General Operator",
-        "general_approver": "General Approver",
-    }
-    return labels.get(role_code or "", role_code or "Unassigned")
+    return FUNCTIONAL_ROLE_LABELS.get(role_code or "", role_code or "Unassigned")
 
 
 def _admin_user_rows(users: list[User], *, current_user_id: int | None) -> list[dict[str, object]]:

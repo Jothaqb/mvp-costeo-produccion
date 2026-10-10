@@ -180,6 +180,26 @@ def ensure_admin_role(db: Session) -> Role:
     return role
 
 
+def ensure_sales_manager_role(db: Session) -> Role:
+    role = db.query(Role).filter(Role.code == "sales_manager").one_or_none()
+    if role is None:
+        role = Role(
+            code="sales_manager",
+            name="Sales Manager",
+            description="Manage B2B customer catalogs and customer-specific pricing.",
+            is_system=True,
+            active=True,
+        )
+        db.add(role)
+        db.flush()
+    else:
+        role.name = "Sales Manager"
+        role.description = "Manage B2B customer catalogs and customer-specific pricing."
+        role.is_system = True
+        role.active = True
+    return role
+
+
 def sync_admin_role_permissions(db: Session, role: Role) -> None:
     permissions = ensure_base_permissions(db)
     existing_permission_ids = {
@@ -217,7 +237,13 @@ def sync_role_permissions_by_code_if_present(db: Session, role_code: str, permis
 def ensure_auth_seed_state(db: Session) -> None:
     ensure_base_permissions(db)
     admin_role = ensure_admin_role(db)
+    ensure_sales_manager_role(db)
     sync_admin_role_permissions(db, admin_role)
+    sync_role_permissions_by_code_if_present(
+        db,
+        "sales_manager",
+        {"sales.view", "product.view", "b2b_customer_products.edit_prices"},
+    )
     sync_role_permissions_by_code_if_present(
         db,
         "general_approver",
