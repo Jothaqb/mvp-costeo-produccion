@@ -22,6 +22,7 @@ from app.database import (
     SessionLocal,
     ensure_accounting_tables,
     ensure_b2b_accounts_receivable_tables,
+    ensure_b2b_invoice_cancellation_columns,
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
     ensure_auth_tables,
@@ -104,6 +105,7 @@ from app.schemas import ComponentType, ProcessType, ProductionOrderStatus
 from app.services.b2b_sales_service import (
     B2BValidationError,
     add_customer_product,
+    cancel_b2b_invoice,
     change_sales_order_status,
     create_customer,
     create_sales_order,
@@ -470,6 +472,7 @@ ensure_channel_master_tables()
 ensure_inventory_adjustment_tables()
 ensure_packaging_batch_tables()
 ensure_auth_tables()
+ensure_b2b_invoice_cancellation_columns()
 ensure_password_reset_tables()
 ensure_audit_tables()
 _bom_alignment_db = SessionLocal()
@@ -2131,7 +2134,7 @@ def _production_order_statuses() -> list[str]:
 
 
 def _b2b_statuses() -> list[str]:
-    return ["draft", "in_process", "invoiced"]
+    return ["draft", "in_process", "invoiced", "cancelled"]
 
 
 def _b2c_statuses() -> list[str]:
@@ -8287,7 +8290,11 @@ def b2b_order_document(order_id: int, request: Request, db: Session = Depends(ge
         .order_by(B2BSalesOrderLine.line_number)
         .all()
     )
-    document_title = "Factura" if order.status == "invoiced" else "Proforma"
+    document_title = (
+        "Factura anulada"
+        if order.status == "cancelled"
+        else "Factura" if order.status == "invoiced" else "Proforma"
+    )
     return templates.TemplateResponse(
         request=request,
         name="b2b_order_document.html",
@@ -8299,7 +8306,7 @@ def b2b_order_document(order_id: int, request: Request, db: Session = Depends(ge
 def edit_b2b_order(order_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     require_permission(request, "sales.edit")
     order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
-    if order.status == "invoiced":
+    if order.status not in {"draft", "in_process"}:
         return b2b_order_detail(order_id, request, db)
     lines = (
         db.query(B2BSalesOrderLine)
@@ -8436,6 +8443,41 @@ def update_b2b_order_status(
             request=request,
             name="b2b_order_detail.html",
             context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc)},
+        )
+
+
+@app.post("/b2b/orders/{order_id}/cancel")
+def cancel_b2b_order_invoice(
+    request: Request,
+    order_id: int,
+    cancellation_reason: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "b2b_sales.cancel_invoice")
+    try:
+        cancel_b2b_invoice(
+            db,
+            order_id=order_id,
+            user_id=current_user.id,
+            reason=cancellation_reason,
+        )
+        return _redirect(f"/b2b/orders/{order_id}")
+    except B2BValidationError as exc:
+        db.rollback()
+        order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one_or_none()
+        if order is None:
+            raise HTTPException(status_code=404, detail="B2B order not found.") from exc
+        lines = (
+            db.query(B2BSalesOrderLine)
+            .filter(B2BSalesOrderLine.sales_order_id == order_id)
+            .order_by(B2BSalesOrderLine.line_number)
+            .all()
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="b2b_order_detail.html",
+            context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": str(exc)},
+            status_code=400,
         )
 
 

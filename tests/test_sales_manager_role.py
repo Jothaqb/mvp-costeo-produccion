@@ -19,6 +19,7 @@ CATALOG_PERMISSION_CODES = {
     "sales.view",
     "product.view",
     "b2b_customer_products.edit_prices",
+    "b2b_sales.cancel_invoice",
 }
 
 

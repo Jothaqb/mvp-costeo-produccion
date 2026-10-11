@@ -1121,6 +1121,221 @@ def ensure_b2b_invoice_snapshot_columns() -> None:
         )
 
 
+def ensure_b2b_invoice_cancellation_columns() -> None:
+    if not _table_exists("b2b_sales_orders"):
+        return
+
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE b2b_sales_orders ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2b_sales_orders ADD COLUMN IF NOT EXISTS cancelled_by_user_id INTEGER"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2b_sales_orders ADD COLUMN IF NOT EXISTS cancellation_reason TEXT"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_b2b_sales_orders_cancelled_by_user_id "
+                "ON b2b_sales_orders (cancelled_by_user_id)"
+            )
+            connection.exec_driver_sql(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'fk_b2b_sales_orders_cancelled_by_user_id'
+                          AND conrelid = 'b2b_sales_orders'::regclass
+                    ) THEN
+                        ALTER TABLE b2b_sales_orders
+                        ADD CONSTRAINT fk_b2b_sales_orders_cancelled_by_user_id
+                        FOREIGN KEY (cancelled_by_user_id) REFERENCES users (id);
+                    END IF;
+                END $$;
+                """
+            )
+            status_constraints = connection.exec_driver_sql(
+                """
+                SELECT conname, pg_get_constraintdef(oid)
+                FROM pg_constraint
+                WHERE conrelid = 'b2b_sales_orders'::regclass
+                  AND contype = 'c'
+                  AND pg_get_constraintdef(oid) ILIKE '%status%'
+                """
+            ).fetchall()
+            if not status_constraints or any(
+                "'cancelled'" not in (constraint_definition or "")
+                for _, constraint_definition in status_constraints
+            ):
+                for constraint_name, _ in status_constraints:
+                    escaped_constraint_name = constraint_name.replace('"', '""')
+                    connection.exec_driver_sql(
+                        f'ALTER TABLE b2b_sales_orders DROP CONSTRAINT "{escaped_constraint_name}"'
+                    )
+                connection.exec_driver_sql(
+                    """
+                    ALTER TABLE b2b_sales_orders
+                    ADD CONSTRAINT ck_b2b_sales_orders_status
+                    CHECK (status IN ('draft', 'in_process', 'invoiced', 'cancelled'))
+                    """
+                )
+        return
+
+    if engine.dialect.name != "sqlite":
+        return
+
+    raw_connection = engine.raw_connection()
+    try:
+        cursor = raw_connection.cursor()
+        raw_connection.commit()
+        foreign_keys_enabled = _sqlite_foreign_keys_enabled(cursor)
+        if foreign_keys_enabled:
+            cursor.execute("PRAGMA foreign_keys=OFF")
+            raw_connection.commit()
+        try:
+            cursor.execute("BEGIN")
+            row_count_before = cursor.execute(
+                "SELECT COUNT(*) FROM b2b_sales_orders"
+            ).fetchone()[0]
+            _ensure_b2b_sales_orders_status_supports_cancelled_sqlite(cursor)
+            row_count_after = cursor.execute(
+                "SELECT COUNT(*) FROM b2b_sales_orders"
+            ).fetchone()[0]
+            if row_count_after != row_count_before:
+                raise RuntimeError(
+                    "B2B invoice cancellation migration changed the b2b_sales_orders row count."
+                )
+
+            violations: list[tuple] = []
+            for table_name in (
+                "b2b_sales_orders",
+                "b2b_sales_order_lines",
+                "b2b_ar_payments",
+                "b2b_ar_opening_balances",
+            ):
+                violations.extend(
+                    cursor.execute(f"PRAGMA foreign_key_check('{table_name}')").fetchall()
+                )
+            if violations:
+                raise RuntimeError(
+                    "B2B invoice cancellation migration failed scoped foreign key check: "
+                    f"{violations[:5]}"
+                )
+            raw_connection.commit()
+        except Exception:
+            raw_connection.rollback()
+            raise
+        finally:
+            if foreign_keys_enabled:
+                cursor.execute("PRAGMA foreign_keys=ON")
+                raw_connection.commit()
+
+    finally:
+        raw_connection.close()
+
+
+def _ensure_b2b_sales_orders_status_supports_cancelled_sqlite(connection) -> None:
+    create_sql_row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='b2b_sales_orders'"
+    ).fetchone()
+    create_sql = (create_sql_row[0] or "") if create_sql_row else ""
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info('b2b_sales_orders')").fetchall()
+    }
+    foreign_keys = connection.execute("PRAGMA foreign_key_list('b2b_sales_orders')").fetchall()
+    has_cancel_user_fk = any(
+        row[3] == "cancelled_by_user_id" and row[2] == "users" for row in foreign_keys
+    )
+    if (
+        "'cancelled'" in create_sql
+        and {"cancelled_at", "cancelled_by_user_id", "cancellation_reason"}.issubset(columns)
+        and has_cancel_user_fk
+    ):
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_b2b_sales_orders_cancelled_by_user_id "
+            "ON b2b_sales_orders (cancelled_by_user_id)"
+        )
+        return
+
+    if "CREATE TABLE b2b_sales_orders" not in create_sql:
+        raise RuntimeError("Unexpected b2b_sales_orders CREATE TABLE SQL; refusing to rebuild.")
+
+    transformed_sql = create_sql.replace(
+        "CREATE TABLE b2b_sales_orders",
+        "CREATE TABLE b2b_sales_orders_new",
+        1,
+    )
+    check_pattern = re.compile(
+        r"(?:CONSTRAINT\s+\w+\s+)?CHECK\s*\(\s*status\s+IN\s*\([^)]*\)\s*\)",
+        re.IGNORECASE,
+    )
+    replacement_check = (
+        "CONSTRAINT ck_b2b_sales_orders_status "
+        "CHECK (status IN ('draft', 'in_process', 'invoiced', 'cancelled'))"
+    )
+    had_status_check = bool(check_pattern.search(transformed_sql))
+    if had_status_check:
+        transformed_sql = check_pattern.sub(replacement_check, transformed_sql)
+
+    opening_index = transformed_sql.find("(")
+    closing_index = transformed_sql.rfind(")")
+    if opening_index == -1 or closing_index <= opening_index:
+        raise RuntimeError("Could not safely parse b2b_sales_orders CREATE TABLE SQL.")
+    definitions = _split_sqlite_table_definitions(
+        transformed_sql[opening_index + 1 : closing_index]
+    )
+    table_constraint_index = _first_sqlite_table_constraint_index(definitions)
+    column_definitions = definitions[:table_constraint_index]
+    table_constraints = definitions[table_constraint_index:]
+    if not had_status_check:
+        table_constraints.append(replacement_check)
+    missing_columns = {
+        "cancelled_at": "cancelled_at DATETIME",
+        "cancelled_by_user_id": "cancelled_by_user_id INTEGER",
+        "cancellation_reason": "cancellation_reason TEXT",
+    }
+    for column_name, definition in missing_columns.items():
+        if column_name not in columns:
+            column_definitions.append(definition)
+    if not has_cancel_user_fk:
+        table_constraints.append("FOREIGN KEY(cancelled_by_user_id) REFERENCES users (id)")
+
+    rebuilt_body = ", ".join(column_definitions + table_constraints)
+    transformed_sql = (
+        f"{transformed_sql[:opening_index + 1]}{rebuilt_body}{transformed_sql[closing_index:]}"
+    )
+    index_rows = connection.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type='index' AND tbl_name='b2b_sales_orders' AND sql IS NOT NULL"
+    ).fetchall()
+    original_index_sql = [row[0] for row in index_rows]
+
+    connection.execute(transformed_sql)
+    old_columns = [
+        row[1] for row in connection.execute("PRAGMA table_info('b2b_sales_orders')").fetchall()
+    ]
+    new_columns = [
+        row[1] for row in connection.execute("PRAGMA table_info('b2b_sales_orders_new')").fetchall()
+    ]
+    common_columns = [column for column in old_columns if column in new_columns]
+    quoted_columns = ", ".join(f'"{column}"' for column in common_columns)
+    connection.execute(
+        f"INSERT INTO b2b_sales_orders_new ({quoted_columns}) "
+        f"SELECT {quoted_columns} FROM b2b_sales_orders"
+    )
+    connection.execute("DROP TABLE b2b_sales_orders")
+    connection.execute("ALTER TABLE b2b_sales_orders_new RENAME TO b2b_sales_orders")
+    for index_sql in original_index_sql:
+        connection.execute(index_sql)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS ix_b2b_sales_orders_cancelled_by_user_id "
+        "ON b2b_sales_orders (cancelled_by_user_id)"
+    )
+
+
 def ensure_b2b_accounts_receivable_tables() -> None:
     with engine.begin() as connection:
         _ensure_columns(

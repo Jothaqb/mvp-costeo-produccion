@@ -20,6 +20,7 @@ ALLOWED_TRANSACTION_TYPES = {
     "packaging_batch_component_consumption",
     "packaging_batch_receipt",
     "b2b_invoice_sale",
+    "b2b_invoice_cancellation",
     "b2c_sale",
     "manual_adjustment",
     "stock_count_adjustment",

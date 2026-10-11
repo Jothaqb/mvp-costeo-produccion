@@ -11,6 +11,8 @@
     </div>
     <dl class="summary">
       <div><dt>Status</dt><dd>{{ order.status }}</dd></div>
+      {% if order.cancelled_at %}<div><dt>Cancelled at</dt><dd>{{ order.cancelled_at }}</dd></div>{% endif %}
+      {% if order.cancellation_reason %}<div><dt>Cancellation reason</dt><dd>{{ order.cancellation_reason }}</dd></div>{% endif %}
       <div><dt>Customer</dt><dd>{{ order.customer_name_snapshot }}</dd></div>
       <div><dt>Delivery date</dt><dd>{{ order.delivery_date }}</dd></div>
       <div><dt>Net Sales</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
@@ -25,7 +27,7 @@
       <div><dt>Observations</dt><dd>{{ order.observations or "" }}</dd></div>
     </dl>
 
-    {% if order.status != "invoiced" %}
+    {% if order.status in ("draft", "in_process") %}
       <div class="actions">
         {% if can(request, "sales.edit") %}
           <a role="button" href="/b2b/orders/{{ order.id }}/edit">Edit order</a>
@@ -48,8 +50,24 @@
           </form>
         {% endif %}
       </div>
-    {% else %}
+    {% elif order.status == "invoiced" %}
       <p>Invoiced orders are read-only.</p>
+      {% if can(request, "b2b_sales.cancel_invoice") %}
+        <form method="post" action="/b2b/orders/{{ order.id }}/cancel"
+              onsubmit="return confirm('Esta acción anula la factura en ERP, registra reverso de inventario y la saca de CxC. No anula automáticamente el receipt en Loyverse. ¿Desea continuar?');">
+          <label for="cancellation_reason">Motivo de anulación</label>
+          <textarea id="cancellation_reason" name="cancellation_reason" required></textarea>
+          <button type="submit">Anular factura</button>
+        </form>
+      {% endif %}
+      {% if order.loyverse_receipt_id or order.loyverse_receipt_number %}
+        <p class="warning">Esta anulación en ERP no anula automáticamente el receipt en Loyverse. Revisar/anular manualmente en Loyverse si corresponde.</p>
+      {% endif %}
+    {% else %}
+      <p>Cancelled invoices are read-only.</p>
+      {% if order.loyverse_receipt_id or order.loyverse_receipt_number %}
+        <p class="warning">El receipt de Loyverse no fue anulado automáticamente. Revíselo manualmente si corresponde.</p>
+      {% endif %}
     {% endif %}
   </section>
 

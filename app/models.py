@@ -677,7 +677,7 @@ class B2BSalesOrder(Base):
     __tablename__ = "b2b_sales_orders"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft', 'in_process', 'invoiced')",
+            "status IN ('draft', 'in_process', 'invoiced', 'cancelled')",
             name="ck_b2b_sales_orders_status",
         ),
     )
@@ -713,6 +713,9 @@ class B2BSalesOrder(Base):
     loyverse_invoice_sync_attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     invoice_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     invoiced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

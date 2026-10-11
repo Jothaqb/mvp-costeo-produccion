@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     AppSequence,
+    AuditLog,
+    B2BARPayment,
     B2BCustomer,
     B2BCustomerProduct,
     B2BSalesOrder,
@@ -14,10 +16,13 @@ from app.models import (
     Channel,
     InventoryTransaction,
     Product,
+    User,
 )
+from app.services.audit_service import serialize_audit_payload, snapshot_b2b_sales_order_for_audit
 from app.services.inventory_ledger_service import (
     InventoryLedgerValidationError,
     get_or_create_inventory_balance,
+    post_incoming_movement,
     post_outgoing_movement,
 )
 
@@ -26,11 +31,12 @@ B2B_SEQUENCE_NAME = "b2b_sales_order"
 B2B_ORDER_PREFIX = "B2B"
 B2B_ORDER_NUMBER_PATTERN = re.compile(r"^B2B(\d+)$")
 EDITABLE_STATUSES = {"draft", "in_process"}
-ORDER_STATUSES = {"draft", "in_process", "invoiced"}
+ORDER_STATUSES = {"draft", "in_process", "invoiced", "cancelled"}
 ALLOWED_STATUS_TRANSITIONS = {
     "draft": {"in_process", "invoiced"},
     "in_process": {"invoiced"},
     "invoiced": set(),
+    "cancelled": set(),
 }
 ZERO = Decimal("0")
 SNAPSHOT_QUANT = Decimal("0.0001")
@@ -411,6 +417,132 @@ def invoice_b2b_order_in_erp(db: Session, order_id: int) -> B2BSalesOrder:
         if order.invoiced_at is None:
             order.invoiced_at = transaction_date
         order.invoice_date = order.invoiced_at.date()
+        db.commit()
+        db.refresh(order)
+        return order
+    except InventoryLedgerValidationError as exc:
+        db.rollback()
+        raise B2BValidationError(str(exc)) from exc
+    except B2BValidationError:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+
+def cancel_b2b_invoice(
+    db: Session,
+    order_id: int,
+    user_id: int,
+    reason: str,
+) -> B2BSalesOrder:
+    normalized_reason = (reason or "").strip()
+    try:
+        order = (
+            db.query(B2BSalesOrder)
+            .filter(B2BSalesOrder.id == order_id)
+            .with_for_update()
+            .one_or_none()
+        )
+        if order is None:
+            raise B2BValidationError("B2B order not found.")
+        if order.status == "cancelled":
+            raise B2BValidationError("B2B invoice has already been cancelled.")
+        if order.status != "invoiced":
+            raise B2BValidationError("Only invoiced B2B orders can be cancelled.")
+        if not normalized_reason:
+            raise B2BValidationError("Cancellation reason is required.")
+
+        acting_user = db.query(User).filter(User.id == user_id, User.is_active.is_(True)).one_or_none()
+        if acting_user is None:
+            raise B2BValidationError("An active user is required to cancel a B2B invoice.")
+
+        payment_exists = (
+            db.query(B2BARPayment.id)
+            .filter(B2BARPayment.sales_order_id == order.id)
+            .first()
+        )
+        if payment_exists is not None:
+            raise B2BValidationError("B2B invoices with registered payments cannot be cancelled.")
+
+        existing_cancellation = (
+            db.query(InventoryTransaction.id)
+            .filter(
+                InventoryTransaction.transaction_type == "b2b_invoice_cancellation",
+                InventoryTransaction.source_type == "b2b_order",
+                InventoryTransaction.source_id == order.id,
+            )
+            .first()
+        )
+        if existing_cancellation is not None:
+            raise B2BValidationError("Inventory for this B2B invoice has already been reversed.")
+
+        original_transactions = (
+            db.query(InventoryTransaction)
+            .filter(
+                InventoryTransaction.transaction_type == "b2b_invoice_sale",
+                InventoryTransaction.source_type == "b2b_order",
+                InventoryTransaction.source_id == order.id,
+            )
+            .order_by(InventoryTransaction.id)
+            .all()
+        )
+        if not original_transactions:
+            raise B2BValidationError(
+                "B2B invoice has no original inventory postings; cancellation requires manual review."
+            )
+        for transaction in original_transactions:
+            quantity_out = parse_required_decimal(transaction.quantity_out, "Original quantity out")
+            if quantity_out <= ZERO or transaction.unit_cost is None:
+                raise B2BValidationError(
+                    f"Original inventory transaction {transaction.id} cannot be reversed safely."
+                )
+            unit_cost = parse_required_decimal(transaction.unit_cost, "Original unit cost")
+            total_cost = parse_required_decimal(transaction.total_cost, "Original total cost")
+            if (quantity_out * unit_cost).quantize(SNAPSHOT_QUANT) != total_cost.quantize(SNAPSHOT_QUANT):
+                raise B2BValidationError(
+                    f"Original inventory transaction {transaction.id} has inconsistent cost values."
+                )
+
+        old_values = snapshot_b2b_sales_order_for_audit(order)
+        cancelled_at = datetime.utcnow()
+        for transaction in original_transactions:
+            post_incoming_movement(
+                db,
+                product_id=transaction.product_id,
+                transaction_type="b2b_invoice_cancellation",
+                incoming_qty=transaction.quantity_out,
+                incoming_unit_cost=transaction.unit_cost,
+                transaction_date=cancelled_at,
+                source_type="b2b_order",
+                source_id=order.id,
+                source_line_id=transaction.source_line_id,
+                notes=(
+                    f"B2B invoice {order.order_number} cancellation reversal for original "
+                    f"inventory transaction {transaction.id}. Reason: {normalized_reason}"
+                ),
+            )
+
+        order.status = "cancelled"
+        order.cancelled_at = cancelled_at
+        order.cancelled_by_user_id = acting_user.id
+        order.cancellation_reason = normalized_reason
+        db.flush()
+        db.add(
+            AuditLog(
+                user_id=acting_user.id,
+                username=acting_user.username,
+                module="sales",
+                action="b2b_sales_order_cancelled",
+                entity_type="b2b_sales_order",
+                entity_id=str(order.id),
+                entity_label=order.order_number,
+                old_values=serialize_audit_payload(old_values),
+                new_values=serialize_audit_payload(snapshot_b2b_sales_order_for_audit(order)),
+                notes=normalized_reason,
+            )
+        )
         db.commit()
         db.refresh(order)
         return order

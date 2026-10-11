@@ -122,6 +122,9 @@
 
     <header>
       <h1>{{ document_title }}</h1>
+      {% if order.status == "cancelled" %}
+        <p><strong>Motivo de anulación:</strong> {{ order.cancellation_reason }}</p>
+      {% endif %}
       <div class="document-meta">
         <div>
           <div class="label">B2B Order Number</div>
