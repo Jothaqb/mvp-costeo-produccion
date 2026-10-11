@@ -1158,11 +1158,14 @@ def ensure_b2b_invoice_cancellation_columns() -> None:
             )
             status_constraints = connection.exec_driver_sql(
                 """
-                SELECT conname, pg_get_constraintdef(oid)
-                FROM pg_constraint
-                WHERE conrelid = 'b2b_sales_orders'::regclass
-                  AND contype = 'c'
-                  AND pg_get_constraintdef(oid) ILIKE '%status%'
+                SELECT constraint_record.conname, pg_get_constraintdef(constraint_record.oid)
+                FROM pg_constraint AS constraint_record
+                JOIN pg_attribute AS status_attribute
+                  ON status_attribute.attrelid = constraint_record.conrelid
+                 AND status_attribute.attname = 'status'
+                 AND constraint_record.conkey = ARRAY[status_attribute.attnum]::smallint[]
+                WHERE constraint_record.conrelid = 'b2b_sales_orders'::regclass
+                  AND constraint_record.contype = 'c'
                 """
             ).fetchall()
             if not status_constraints or any(
