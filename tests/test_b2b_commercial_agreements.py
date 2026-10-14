@@ -635,7 +635,10 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                 agreement_permissions - {"b2b_commercial_agreement.sign_archive"},
             )
             self.assertTrue(role_permissions(db, "general_operator").isdisjoint(agreement_permissions))
-            self.assertTrue(role_permissions(db, "general_approver").isdisjoint(agreement_permissions))
+            self.assertEqual(
+                role_permissions(db, "general_approver") & agreement_permissions,
+                agreement_permissions,
+            )
 
         main_source = Path("app/main.py").read_text(encoding="utf-8")
         self.assertIn('require_permission(request, "b2b_commercial_agreement.view")', main_source)

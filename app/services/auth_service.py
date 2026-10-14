@@ -260,7 +260,18 @@ def ensure_auth_seed_state(db: Session) -> None:
     sync_role_permissions_by_code_if_present(
         db,
         "general_approver",
-        {"ar.view", "ar.record_payment", "ar.export"},
+        {
+            "sales.view",
+            "product.view",
+            "b2b_customer_products.edit_prices",
+            "b2b_commercial_agreement.view",
+            "b2b_commercial_agreement.edit",
+            "b2b_commercial_agreement.generate",
+            "b2b_commercial_agreement.sign_archive",
+            "ar.view",
+            "ar.record_payment",
+            "ar.export",
+        },
     )
     sync_role_permissions_by_code_if_present(
         db,

@@ -24,6 +24,20 @@ SALES_MANAGER_PERMISSION_CODES = {
     "b2b_commercial_agreement.edit",
     "b2b_commercial_agreement.generate",
 }
+GENERAL_APPROVER_B2B_PERMISSION_CODES = {
+    "sales.view",
+    "product.view",
+    "b2b_customer_products.edit_prices",
+    "b2b_commercial_agreement.view",
+    "b2b_commercial_agreement.edit",
+    "b2b_commercial_agreement.generate",
+    "b2b_commercial_agreement.sign_archive",
+}
+GENERAL_APPROVER_EXISTING_AR_PERMISSION_CODES = {
+    "ar.view",
+    "ar.record_payment",
+    "ar.export",
+}
 
 
 class SalesManagerRoleTests(unittest.TestCase):
@@ -91,6 +105,26 @@ class SalesManagerRoleTests(unittest.TestCase):
             operator_permissions = self._permission_codes(db, "general_operator")
             self.assertTrue(operator_permissions.isdisjoint(SALES_MANAGER_PERMISSION_CODES))
 
+    def test_general_approver_receives_b2b_catalog_and_agreement_permissions(self) -> None:
+        with self.SessionLocal() as db:
+            approver_permissions = self._permission_codes(db, "general_approver")
+            self.assertEqual(
+                approver_permissions,
+                GENERAL_APPROVER_B2B_PERMISSION_CODES
+                | GENERAL_APPROVER_EXISTING_AR_PERMISSION_CODES,
+            )
+
+    def test_general_approver_does_not_receive_unrelated_permissions(self) -> None:
+        forbidden_permissions = {
+            code
+            for code, module, _action, _description in BASE_PERMISSION_DEFINITIONS
+            if module in {"admin", "accounting", "inventory", "production_order"}
+            or "loyverse" in code
+        }
+        with self.SessionLocal() as db:
+            approver_permissions = self._permission_codes(db, "general_approver")
+            self.assertTrue(approver_permissions.isdisjoint(forbidden_permissions))
+
     def test_admin_keeps_all_base_permissions(self) -> None:
         expected_permissions = {definition[0] for definition in BASE_PERMISSION_DEFINITIONS}
         with self.SessionLocal() as db:
@@ -126,6 +160,20 @@ class SalesManagerRoleTests(unittest.TestCase):
             self.assertEqual(
                 db.query(RolePermission).filter(RolePermission.role_id == role.id).count(),
                 len(SALES_MANAGER_PERMISSION_CODES),
+            )
+
+    def test_general_approver_permission_seed_is_idempotent(self) -> None:
+        expected_permissions = (
+            GENERAL_APPROVER_B2B_PERMISSION_CODES
+            | GENERAL_APPROVER_EXISTING_AR_PERMISSION_CODES
+        )
+        with self.SessionLocal.begin() as db:
+            ensure_auth_seed_state(db)
+            ensure_auth_seed_state(db)
+            role = db.query(Role).filter(Role.code == "general_approver").one()
+            self.assertEqual(
+                db.query(RolePermission).filter(RolePermission.role_id == role.id).count(),
+                len(expected_permissions),
             )
 
 
