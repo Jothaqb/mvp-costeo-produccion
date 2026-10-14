@@ -298,6 +298,21 @@ def ensure_channel_master_tables() -> None:
         )
 
 
+def ensure_b2b_customer_channel_column() -> None:
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        if not inspector.has_table("channels") or not inspector.has_table("b2b_customers"):
+            return
+        _ensure_columns(
+            connection,
+            "b2b_customers",
+            {"channel_id": "INTEGER REFERENCES channels(id)"},
+        )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2b_customers_channel_id ON b2b_customers (channel_id)"
+        )
+
+
 def ensure_auth_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

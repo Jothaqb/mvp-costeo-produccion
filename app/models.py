@@ -63,6 +63,7 @@ class Channel(Base):
         nullable=False,
     )
 
+    b2b_customers: Mapped[list["B2BCustomer"]] = relationship("B2BCustomer", back_populates="channel_record")
     b2b_orders: Mapped[list["B2BSalesOrder"]] = relationship("B2BSalesOrder", back_populates="channel_record")
     b2c_orders: Mapped[list["B2CSalesOrder"]] = relationship("B2CSalesOrder", back_populates="channel_record")
 
@@ -601,6 +602,7 @@ class B2BCustomer(Base):
     phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
     loyverse_customer_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     credit_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -614,6 +616,7 @@ class B2BCustomer(Base):
         back_populates="customer",
         cascade="all, delete-orphan",
     )
+    channel_record: Mapped["Channel | None"] = relationship("Channel", back_populates="b2b_customers")
     orders: Mapped[list["B2BSalesOrder"]] = relationship(back_populates="customer")
 
 

@@ -14,6 +14,7 @@
     {% set form_phone = form_data.phone if form_data else (customer.phone if customer and customer.phone else '') %}
     {% set form_loyverse_customer_id = form_data.loyverse_customer_id if form_data else (customer.loyverse_customer_id if customer and customer.loyverse_customer_id else '') %}
     {% set form_credit_days = form_data.credit_days if form_data else (customer.credit_days if customer else 0) %}
+    {% set form_channel_id = form_data.channel_id if form_data else (customer.channel_id if customer and customer.channel_id else '') %}
     {% set form_active = form_data.active if form_data else (customer.active if customer else True) %}
     <form method="post" action="{{ '/b2b/customers/' ~ customer.id ~ '/edit' if customer else '/b2b/customers' }}">
       <label for="customer_name">Customer name</label>
@@ -43,6 +44,16 @@
 
       <label for="credit_days">Credit days</label>
       <input id="credit_days" name="credit_days" type="number" min="0" step="1" value="{{ form_credit_days }}">
+
+      <label for="channel_id">B2B Channel</label>
+      <select id="channel_id" name="channel_id">
+        <option value="">Not assigned yet</option>
+        {% for channel in channels %}
+          <option value="{{ channel.id }}" {% if (form_channel_id|string) == (channel.id|string) %}selected{% endif %}>
+            {{ channel.name }}{% if not channel.active %} (inactive){% endif %}
+          </option>
+        {% endfor %}
+      </select>
 
       <label class="checkbox-label">
         <input type="checkbox" name="active" value="true" {% if form_active %}checked{% endif %}>

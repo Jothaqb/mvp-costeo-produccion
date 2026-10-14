@@ -92,8 +92,10 @@ def create_customer(
     loyverse_customer_id: str,
     credit_days: str | int | None,
     active: bool,
+    channel_id: str = "",
 ) -> B2BCustomer:
     customer = B2BCustomer()
+    channel = _optional_active_b2b_channel(db, channel_id)
     _assign_customer_fields(
         customer,
         customer_name,
@@ -107,6 +109,7 @@ def create_customer(
         loyverse_customer_id,
         credit_days,
         active,
+        channel.id if channel is not None else None,
     )
     db.add(customer)
     db.commit()
@@ -128,8 +131,10 @@ def update_customer(
     loyverse_customer_id: str,
     credit_days: str | int | None,
     active: bool,
+    channel_id: str = "",
 ) -> B2BCustomer:
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+    channel = _optional_active_b2b_channel(db, channel_id)
     _assign_customer_fields(
         customer,
         customer_name,
@@ -143,6 +148,7 @@ def update_customer(
         loyverse_customer_id,
         credit_days,
         active,
+        channel.id if channel is not None else None,
     )
     db.commit()
     db.refresh(customer)
@@ -162,6 +168,7 @@ def _assign_customer_fields(
     loyverse_customer_id: str,
     credit_days: str | int | None,
     active: bool,
+    channel_id: int | None,
 ) -> None:
     name = customer_name.strip()
     if not name:
@@ -177,6 +184,7 @@ def _assign_customer_fields(
     customer.phone = phone.strip() or None
     customer.loyverse_customer_id = loyverse_customer_id.strip() or None
     customer.credit_days = parsed_credit_days
+    customer.channel_id = channel_id
     customer.active = active
 
 
@@ -270,14 +278,13 @@ def create_sales_order(
     delivery_date: date,
     line_inputs: list[dict[str, str]],
     observations: str,
-    channel_id: str,
 ) -> B2BSalesOrder:
     validate_future_delivery_date(delivery_date)
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one_or_none()
     if customer is None or not customer.active:
         raise B2BValidationError("Active customer is required.")
 
-    channel = _active_channel_for_id(db, channel_id, requires_b2b=True)
+    channel = _active_b2b_channel_for_customer(db, customer)
     line_data = _build_line_data(db, customer.id, line_inputs, require_at_least_one=True)
     order = B2BSalesOrder(
         order_number=_generate_b2b_order_number(db),
@@ -314,19 +321,10 @@ def update_sales_order_lines(
     deleted_line_ids: list[int],
     new_line_inputs: list[dict[str, str]],
     observations: str,
-    channel_id: str,
 ) -> B2BSalesOrder:
     order = db.query(B2BSalesOrder).filter(B2BSalesOrder.id == order_id).one()
     _ensure_order_editable(order)
-    channel = _active_channel_for_id(
-        db,
-        channel_id,
-        requires_b2b=True,
-        allow_inactive_channel_id=order.channel_id,
-    )
     order.observations = observations.strip() or None
-    order.channel_id = channel.id
-    order.b2b_channel_name_snapshot = channel.name
     catalog_by_sku = _active_customer_catalog_by_sku(db, order.customer_id)
 
     deleted_ids = set(deleted_line_ids)
@@ -720,6 +718,27 @@ def _active_channel_for_id(
         raise B2BValidationError("Selected B2B Channel is not valid for B2B orders.")
     if not channel.active and channel.id != allow_inactive_channel_id:
         raise B2BValidationError("Selected B2B Channel is not active.")
+    return channel
+
+
+def _optional_active_b2b_channel(db: Session, channel_id: str | int | None) -> Channel | None:
+    selected_id = str(channel_id or "").strip()
+    if not selected_id:
+        return None
+    return _active_channel_for_id(db, selected_id, requires_b2b=True)
+
+
+def _active_b2b_channel_for_customer(db: Session, customer: B2BCustomer) -> Channel:
+    if customer.channel_id is None:
+        raise B2BValidationError("Debe asignar un canal B2B al cliente antes de crear órdenes.")
+
+    channel = db.query(Channel).filter(Channel.id == customer.channel_id).one_or_none()
+    if channel is None:
+        raise B2BValidationError("El canal B2B asignado al cliente no existe.")
+    if not channel.applies_to_b2b:
+        raise B2BValidationError("El canal asignado al cliente no es válido para órdenes B2B.")
+    if not channel.active:
+        raise B2BValidationError("El canal B2B asignado al cliente no está activo.")
     return channel
 
 

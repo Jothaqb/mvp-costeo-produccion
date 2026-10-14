@@ -30,7 +30,12 @@
         <div><dt>Legal name</dt><dd>{{ selected_customer.legal_name or "" }}</dd></div>
         <div><dt>Legal ID</dt><dd>{{ selected_customer.legal_id or "" }}</dd></div>
         <div><dt>Phone</dt><dd>{{ selected_customer.phone or "" }}</dd></div>
+        <div><dt>B2B Channel</dt><dd>{{ selected_customer.channel_record.name if customer_channel_ready else "Not assigned" }}</dd></div>
       </dl>
+      {% if not customer_channel_ready %}
+        <p class="error">Debe asignar un canal B2B al cliente antes de crear órdenes.</p>
+        <p><a href="/b2b/customers/{{ selected_customer.id }}/edit">Edit customer</a></p>
+      {% endif %}
     </section>
 
     <section>
@@ -39,14 +44,6 @@
         <input type="hidden" name="customer_id" value="{{ selected_customer.id }}">
         <label for="delivery_date">Delivery date</label>
         <input id="delivery_date" name="delivery_date" type="date" min="{{ min_delivery_date }}" value="{{ submitted_delivery_date or '' }}" required>
-
-        <label for="b2b_channel_id">B2B Channel</label>
-        <select id="b2b_channel_id" name="b2b_channel_id" required>
-          <option value="">Select channel...</option>
-          {% for channel in channels %}
-            <option value="{{ channel.id }}" {% if submitted_b2b_channel_id is defined and submitted_b2b_channel_id == (channel.id|string) %}selected{% endif %}>{{ channel.name }}</option>
-          {% endfor %}
-        </select>
 
         <label for="observations">Observations</label>
         <textarea id="observations" name="observations">{{ submitted_observations or "" }}</textarea>
@@ -101,7 +98,7 @@
 
         <p><strong>Order Total:</strong> <span id="b2b-order-total">&#8353;0</span></p>
 
-        <button type="submit">Create draft order</button>
+        <button type="submit" {% if not customer_channel_ready %}disabled{% endif %}>Create draft order</button>
       </form>
 
       <template id="b2b-line-template">
