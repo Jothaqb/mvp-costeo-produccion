@@ -1,4 +1,4 @@
-# Acuerdos comerciales B2B — Fase 1
+# Acuerdos comerciales B2B — Fases 1 y 1.1
 
 ## Alcance
 
@@ -22,9 +22,15 @@ Los permisos son:
 1. En **B2B Customers**, la acción **Acuerdo comercial** abre el historial del cliente.
 2. **Crear acuerdo comercial** crea la versión `0` si es el primer acuerdo, con estado `draft`.
 3. Se copian snapshots de identidad, ubicación, crédito, canal y estado del cliente.
-4. Se crean 19 apartados contractuales con texto base editable.
+4. Se crean 19 apartados contractuales con texto base editable y variables del acuerdo.
 5. El borrador permite registrar representación legal, contactos, condiciones, personas autorizadas y aceptación.
 6. **Validar acuerdo** muestra de una vez todos los campos pendientes. No genera documentos ni cambia el estado.
+
+## Plantilla contractual y variables
+
+La Fase 1.1 sustituye los placeholders por una plantilla operativa de 19 apartados. Los textos se guardan en cada borrador y continúan siendo editables. En el editor las variables se muestran literalmente, por ejemplo `{{customer_name}}`, `{{contract_credit_days}}` y `{{credit_limit}}`. En el detalle se sustituyen con los snapshots y condiciones del acuerdo; una variable conocida sin valor se presenta como `______` y una variable desconocida se conserva sin evaluar.
+
+La acción **Actualizar textos desde plantilla base** está disponible únicamente para borradores y requiere `b2b_commercial_agreement.edit`. Reemplaza títulos y textos de los 19 apartados, sin cambiar snapshots del cliente, condiciones comerciales, personas autorizadas ni datos de firma. La acción registra `commercial_agreement_sections_reset` en auditoría.
 
 Solo puede existir un borrador por cliente, validado por el servicio. En esta fase únicamente se crea la versión inicial `0`; la interfaz y la copia para crear versiones posteriores quedan expresamente fuera de alcance. Los estados `generated`, `signed` y `archived` están preparados y son inmutables en la edición actual. Una fase futura deberá crear cada nueva versión con `MAX(version_number) + 1`.
 
@@ -43,6 +49,7 @@ Se registran los eventos:
 - `commercial_agreement_created`
 - `commercial_agreement_updated`
 - `commercial_agreement_validated`
+- `commercial_agreement_sections_reset`
 
 ## Límites de Fase 1
 

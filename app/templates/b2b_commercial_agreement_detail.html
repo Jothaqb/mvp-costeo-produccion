@@ -49,10 +49,10 @@
     </ul>
 
     <h2>Apartados contractuales</h2>
-    {% for section in agreement.sections %}
+    {% for item in rendered_sections %}
       <article>
-        <h3>{{ section.section_number }}. {{ section.title }}</h3>
-        <p style="white-space:pre-wrap">{{ section.body_text }}</p>
+        <h3>{{ item.section.section_number }}. {{ item.section.title }}</h3>
+        <p style="white-space:pre-wrap">{{ item.body_text }}</p>
       </article>
     {% endfor %}
 

@@ -126,6 +126,8 @@ from app.services.b2b_commercial_agreement_service import (
     create_commercial_agreement_draft,
     get_commercial_agreement,
     list_customer_commercial_agreements,
+    render_agreement_template_text,
+    reset_commercial_agreement_sections_to_template,
     update_commercial_agreement_draft,
     validate_commercial_agreement,
 )
@@ -7401,6 +7403,46 @@ async def update_b2b_commercial_agreement(
         return _render_b2b_commercial_agreement_editor(request, agreement, error=str(exc))
 
 
+@app.post("/b2b/commercial-agreements/{agreement_id}/sections/reset-template")
+def reset_b2b_commercial_agreement_sections(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "b2b_commercial_agreement.edit")
+    agreement = get_commercial_agreement(db, agreement_id)
+    if agreement.status != "draft":
+        raise HTTPException(status_code=409, detail="Solo los acuerdos en borrador se pueden editar.")
+    old_snapshot = snapshot_b2b_commercial_agreement_for_audit(agreement)
+    try:
+        updated = reset_commercial_agreement_sections_to_template(
+            db,
+            agreement_id=agreement_id,
+        )
+        changed_old, changed_new = diff_audit_snapshots(
+            old_snapshot,
+            snapshot_b2b_commercial_agreement_for_audit(updated),
+        )
+        safe_log_audit_event(
+            module="commercial",
+            action="commercial_agreement_sections_reset",
+            entity_type="b2b_commercial_agreement",
+            entity_id=updated.id,
+            entity_label=f"{updated.customer_name_snapshot} v{updated.version_number}",
+            old_values=changed_old,
+            new_values=changed_new,
+            request=request,
+            user=current_user,
+        )
+        return _redirect(
+            f"/b2b/commercial-agreements/{agreement_id}/edit?message="
+            f"{quote('Textos contractuales actualizados desde la plantilla base.')}"
+        )
+    except B2BCommercialAgreementValidationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/b2b/commercial-agreements/{agreement_id}/validate", response_class=HTMLResponse)
 def validate_b2b_commercial_agreement_route(
     agreement_id: int,
@@ -7447,6 +7489,13 @@ def b2b_commercial_agreement_detail(
         context={
             "title": f"Acuerdo comercial v{agreement.version_number}",
             "agreement": agreement,
+            "rendered_sections": [
+                {
+                    "section": section,
+                    "body_text": render_agreement_template_text(section.body_text, agreement),
+                }
+                for section in agreement.sections
+            ],
             "order_people": [
                 person for person in agreement.authorized_people if person.authorization_type == "orders"
             ],

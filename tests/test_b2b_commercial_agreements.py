@@ -2,7 +2,10 @@ import unittest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
+from fastapi import HTTPException
+from starlette.requests import Request
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -24,12 +27,16 @@ from app.models import (
     Role,
     RolePermission,
 )
-from app.services.auth_service import ensure_auth_seed_state
+from app.services.auth_service import ensure_auth_seed_state, require_permission
 from app.services.b2b_commercial_agreement_service import (
     B2BCommercialAgreementValidationError,
     DEFAULT_AGREEMENT_SECTIONS,
+    DEFAULT_AGREEMENT_SECTION_TEXTS,
     create_commercial_agreement_draft,
+    find_missing_template_variables,
     get_commercial_agreement,
+    render_agreement_template_text,
+    reset_commercial_agreement_sections_to_template,
     update_commercial_agreement_draft,
     validate_commercial_agreement,
 )
@@ -153,6 +160,20 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                 [section.title for section in agreement.sections],
                 [title for _key, title in DEFAULT_AGREEMENT_SECTIONS],
             )
+            self.assertTrue(all(section.body_text.strip() for section in agreement.sections))
+            self.assertFalse(
+                any("Texto base editable" in section.body_text for section in agreement.sections)
+            )
+            self.assertEqual(
+                {section.section_key: section.body_text for section in agreement.sections},
+                DEFAULT_AGREEMENT_SECTION_TEXTS,
+            )
+            self.assertTrue(
+                any("{{customer_name}}" in section.body_text for section in agreement.sections)
+            )
+            self.assertTrue(
+                any("{{credit_limit}}" in section.body_text for section in agreement.sections)
+            )
             self.assertIsNone(agreement.generated_pdf_bytes)
             self.assertIsNone(agreement.generated_pdf_filename)
             self.assertIsNone(agreement.generated_pdf_sha256)
@@ -240,6 +261,139 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             self.assertIn("Título del apartado 1", missing)
             self.assertIn("Texto del apartado 2: Descuento comercial B2B y volumen de compra", missing)
 
+    def test_template_renderer_handles_values_missing_and_unknown_variables(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            agreement.legal_representative_name = "Ana Representante"
+            agreement.credit_limit = Decimal("50000")
+            agreement.signature_date = date(2026, 10, 14)
+
+            rendered = render_agreement_template_text(
+                "Cliente: {{customer_name}} | Representante: {{legal_representative_name}} | "
+                "Crédito: ₡{{credit_limit}} | Firma: {{signature_date}} | "
+                "Correo: {{billing_email}} | Otro: {{variable_desconocida}}",
+                agreement,
+            )
+            self.assertIn("Cliente: Cliente Acuerdo", rendered)
+            self.assertIn("Representante: Ana Representante", rendered)
+            self.assertIn("Crédito: ₡50,000", rendered)
+            self.assertIn("Firma: 2026-10-14", rendered)
+            self.assertIn("Correo: ______", rendered)
+            self.assertIn("Otro: {{variable_desconocida}}", rendered)
+            self.assertEqual(
+                find_missing_template_variables(
+                    "{{billing_email}} {{billing_email}} {{variable_desconocida}}",
+                    agreement,
+                ),
+                ["billing_email"],
+            )
+            validation_messages = validate_commercial_agreement(agreement)
+            self.assertTrue(
+                any("{{billing_email}}" in message for message in validation_messages)
+            )
+
+    def test_reset_template_replaces_only_sections_without_duplicates(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            updated = update_commercial_agreement_draft(
+                db,
+                agreement_id=agreement.id,
+                fields=self._complete_fields(),
+                people=self._people(),
+                section_updates=self._section_updates(agreement),
+                user_id=None,
+            )
+            section_identity = {
+                section.section_key: (
+                    section.id,
+                    section.section_number,
+                    section.display_order,
+                )
+                for section in updated.sections
+            }
+            protected_values = {
+                "customer_name_snapshot": updated.customer_name_snapshot,
+                "legal_name_snapshot": updated.legal_name_snapshot,
+                "b2b_discount_percent": updated.b2b_discount_percent,
+                "credit_limit": updated.credit_limit,
+                "signature_place": updated.signature_place,
+                "signature_date": updated.signature_date,
+            }
+            people_before = [
+                (
+                    person.authorization_type,
+                    person.name,
+                    person.identification,
+                    person.position,
+                    person.phone,
+                    person.email,
+                )
+                for person in updated.authorized_people
+            ]
+
+            reset = reset_commercial_agreement_sections_to_template(
+                db,
+                agreement_id=updated.id,
+            )
+            self.assertEqual(len(reset.sections), 19)
+            self.assertEqual(len({section.section_key for section in reset.sections}), 19)
+            self.assertEqual(
+                {section.section_key: section.body_text for section in reset.sections},
+                DEFAULT_AGREEMENT_SECTION_TEXTS,
+            )
+            self.assertEqual(
+                {
+                    section.section_key: (
+                        section.id,
+                        section.section_number,
+                        section.display_order,
+                    )
+                    for section in reset.sections
+                },
+                section_identity,
+            )
+            for field_name, expected in protected_values.items():
+                self.assertEqual(getattr(reset, field_name), expected)
+            self.assertEqual(
+                [
+                    (
+                        person.authorization_type,
+                        person.name,
+                        person.identification,
+                        person.position,
+                        person.phone,
+                        person.email,
+                    )
+                    for person in reset.authorized_people
+                ],
+                people_before,
+            )
+
+            reset_again = reset_commercial_agreement_sections_to_template(
+                db,
+                agreement_id=reset.id,
+            )
+            self.assertEqual(len(reset_again.sections), 19)
+            self.assertEqual(len({section.section_key for section in reset_again.sections}), 19)
+
+    def test_reset_template_is_blocked_for_every_non_draft_status(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            for status in ("generated", "signed", "archived"):
+                with self.subTest(status=status):
+                    agreement.status = status
+                    db.commit()
+                    with self.assertRaisesRegex(
+                        B2BCommercialAgreementValidationError,
+                        "Solo los acuerdos comerciales en estado draft",
+                    ):
+                        reset_commercial_agreement_sections_to_template(
+                            db,
+                            agreement_id=agreement.id,
+                        )
+                    agreement.status = "draft"
+                    db.commit()
+
     def test_agreement_flow_does_not_query_products_or_modify_restricted_tables(self) -> None:
         statements: list[str] = []
 
@@ -260,6 +414,10 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                 statements.clear()
                 agreement = self._create(db)
                 get_commercial_agreement(db, agreement.id)
+                reset_commercial_agreement_sections_to_template(
+                    db,
+                    agreement_id=agreement.id,
+                )
                 service_statements = list(statements)
                 after = {
                     "products": db.query(B2BCustomerProduct).count(),
@@ -325,8 +483,29 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         self.assertIn('require_permission(request, "b2b_commercial_agreement.generate")', main_source)
         self.assertGreaterEqual(
             main_source.count('detail="Solo los acuerdos en borrador se pueden editar."'),
-            2,
+            3,
         )
+        self.assertIn(
+            '@app.post("/b2b/commercial-agreements/{agreement_id}/sections/reset-template")',
+            main_source,
+        )
+        reset_route_source = main_source.split(
+            '@app.post("/b2b/commercial-agreements/{agreement_id}/sections/reset-template")',
+            1,
+        )[1].split('@app.post("/b2b/commercial-agreements/{agreement_id}/validate"', 1)[0]
+        self.assertIn(
+            'require_permission(request, "b2b_commercial_agreement.edit")',
+            reset_route_source,
+        )
+        self.assertIn('action="commercial_agreement_sections_reset"', reset_route_source)
+
+    def test_reset_route_rejects_user_without_edit_permission_with_403(self) -> None:
+        request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+        request.state.current_user = SimpleNamespace(id=123)
+        request.state.current_permissions = set()
+        with self.assertRaises(HTTPException) as raised:
+            require_permission(request, "b2b_commercial_agreement.edit")
+        self.assertEqual(raised.exception.status_code, 403)
 
     def test_actions_link_is_permission_guarded_and_no_pdf_route_exists(self) -> None:
         customer_template = Path("app/templates/b2b_customers_list.html").read_text(encoding="utf-8")
@@ -342,6 +521,9 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         self.assertNotIn("commercial-agreements/{agreement_id}/export", main_source)
         self.assertNotIn("reportlab", service_source.lower())
         self.assertNotIn("b2b_catalog_export_service", service_source)
+        self.assertNotIn("Product", service_source)
+        self.assertIn("Actualizar textos desde plantilla base", editor_template)
+        self.assertIn("sections/reset-template", editor_template)
         self.assertNotIn('name="section_title_{{ section.section_key }}" value="{{ section.title }}" required', editor_template)
         self.assertNotIn('name="section_body_{{ section.section_key }}" rows="6" required', editor_template)
 

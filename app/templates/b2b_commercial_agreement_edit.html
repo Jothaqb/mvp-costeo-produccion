@@ -70,6 +70,13 @@
           <button type="submit">Validar acuerdo</button>
         </form>
       {% endif %}
+      <form
+        method="post"
+        action="/b2b/commercial-agreements/{{ agreement.id }}/sections/reset-template"
+        onsubmit="return confirm('Esta acción reemplazará los textos actuales de los apartados por la plantilla base. No cambiará los datos del cliente ni las condiciones comerciales. ¿Desea continuar?')"
+      >
+        <button type="submit">Actualizar textos desde plantilla base</button>
+      </form>
     </section>
 
     <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/edit">
@@ -130,7 +137,10 @@
 
       <fieldset>
         <legend>6. Apartados contractuales</legend>
-        <p>Estos textos son borradores editables. No constituyen todavía una plantilla legal definitiva.</p>
+        <p>
+          Estos textos son borradores editables. Las variables con formato
+          <code>{% raw %}{{campo}}{% endraw %}</code> se sustituyen en el detalle con los datos del acuerdo.
+        </p>
         {% for section in agreement.sections %}
           <details {% if loop.first %}open{% endif %}>
             <summary>{{ section.section_number }}. {{ section.title }}</summary>
