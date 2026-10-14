@@ -7891,18 +7891,41 @@ def export_b2b_customer_products_csv(
         .order_by(B2BCustomerProduct.sku, B2BCustomerProduct.id)
         .all()
     )
-    return _csv_report_response(
-        filename=f"b2b_customer_{customer.id}_catalog.csv",
-        headers=("Codigo", "Descripcion", "Precio", "Estado"),
-        rows=[
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerows(
+        (
+            ("Campo", "Valor", "Campo", "Valor"),
+            ("Customer name", customer.customer_name, "Legal name", customer.legal_name or ""),
+            ("Legal ID", customer.legal_id or "", "Phone", customer.phone or ""),
             (
-                product.sku,
-                product.description,
-                format(product.distributor_price, "f"),
-                "Activo" if product.active else "Inactivo",
-            )
-            for product in products
-        ],
+                "Address",
+                customer.address or "",
+                "B2B Channel",
+                customer.channel_record.name if customer.channel_record is not None else "",
+            ),
+            ("Province", customer.province or "", "Credit days", customer.credit_days),
+            ("Canton", customer.canton or "", "Active", "yes" if customer.active else "no"),
+            ("District", customer.district or "", "", ""),
+        )
+    )
+    writer.writerow(())
+    writer.writerow(("Codigo", "Descripcion", "Precio", "Estado"))
+    writer.writerows(
+        (
+            product.sku,
+            product.description,
+            format(product.distributor_price, "f"),
+            "Activo" if product.active else "Inactivo",
+        )
+        for product in products
+    )
+    return Response(
+        content=buffer.getvalue().encode("utf-8-sig"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="b2b_customer_{customer.id}_catalog.csv"'
+        },
     )
 
 

@@ -18,7 +18,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TEMP_DB.name).as_posix()}"
 
 with mock.patch("zoneinfo.ZoneInfo", return_value=timezone.utc):
     from app import main  # noqa: E402
-from app.models import B2BCustomer, B2BCustomerProduct, Permission, Role, RolePermission  # noqa: E402
+from app.models import B2BCustomer, B2BCustomerProduct, Channel, Permission, Role, RolePermission  # noqa: E402
 
 
 class B2BCustomerCatalogExportTests(unittest.TestCase):
@@ -35,7 +35,23 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         with main.SessionLocal.begin() as db:
             db.query(B2BCustomerProduct).delete()
             db.query(B2BCustomer).delete()
-            customer_a = B2BCustomer(customer_name="Café Cliente A")
+            db.query(Channel).delete()
+            channel = Channel(name="Tiendas Naturales (Minisuper)", active=True, applies_to_b2b=True)
+            db.add(channel)
+            db.flush()
+            customer_a = B2BCustomer(
+                customer_name="Café Cliente A",
+                legal_name="Grupo Café Cliente A S.A.",
+                legal_id="3-101-123456",
+                phone="24797018",
+                address="Costado Norte del Parque, La Fortuna\nAlajuela",
+                province="Alajuela",
+                canton="San Carlos",
+                district="La Fortuna",
+                credit_days=10,
+                channel_id=channel.id,
+                active=True,
+            )
             customer_b = B2BCustomer(customer_name="Cliente B")
             db.add_all((customer_a, customer_b))
             db.flush()
@@ -108,14 +124,31 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             f'attachment; filename="b2b_customer_{self.customer_a_id}_catalog.csv"',
         )
         rows = list(csv.reader(io.StringIO(response.body.decode("utf-8-sig"))))
-        self.assertEqual(rows[0], ["Codigo", "Descripcion", "Precio", "Estado"])
+        self.assertEqual(rows[0], ["Campo", "Valor", "Campo", "Valor"])
+        self.assertEqual(rows[1], ["Customer name", "Café Cliente A", "Legal name", "Grupo Café Cliente A S.A."])
+        self.assertEqual(rows[2], ["Legal ID", "3-101-123456", "Phone", "24797018"])
         self.assertEqual(
-            rows[1:],
+            rows[3],
+            [
+                "Address",
+                "Costado Norte del Parque, La Fortuna\nAlajuela",
+                "B2B Channel",
+                "Tiendas Naturales (Minisuper)",
+            ],
+        )
+        self.assertEqual(rows[4], ["Province", "Alajuela", "Credit days", "10"])
+        self.assertEqual(rows[5], ["Canton", "San Carlos", "Active", "yes"])
+        self.assertEqual(rows[6], ["District", "La Fortuna", "", ""])
+        self.assertEqual(rows[7], [])
+        self.assertEqual(rows[8], ["Codigo", "Descripcion", "Precio", "Estado"])
+        self.assertEqual(
+            rows[9:],
             [
                 ["A-001", "Té limón", "1250.5000", "Activo"],
                 ["A-002", "Producto inactivo", "800.0000", "Inactivo"],
             ],
         )
+        self.assertIn('"Costado Norte del Parque, La Fortuna', response.body.decode("utf-8-sig"))
         self.assertNotIn("B-SECRET", response.body.decode("utf-8-sig"))
 
     def test_empty_customer_catalog_exports_only_headers(self) -> None:
@@ -127,7 +160,10 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
 
         response = self._export_customer(empty_customer_id)
         rows = list(csv.reader(io.StringIO(response.body.decode("utf-8-sig"))))
-        self.assertEqual(rows, [["Codigo", "Descripcion", "Precio", "Estado"]])
+        self.assertEqual(rows[3], ["Address", "", "B2B Channel", ""])
+        self.assertEqual(rows[7], [])
+        self.assertEqual(rows[8], ["Codigo", "Descripcion", "Precio", "Estado"])
+        self.assertEqual(len(rows), 9)
 
     def test_templates_show_catalog_and_download_labels(self) -> None:
         customer_list = Path("app/templates/b2b_customers_list.html").read_text(encoding="utf-8")
