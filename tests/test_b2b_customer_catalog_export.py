@@ -124,11 +124,13 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             f'attachment; filename="b2b_customer_{self.customer_a_id}_catalog.csv"',
         )
         rows = list(csv.reader(io.StringIO(response.body.decode("utf-8-sig"))))
-        self.assertEqual(rows[0], ["Campo", "Valor", "Campo", "Valor"])
-        self.assertEqual(rows[1], ["Customer name", "Café Cliente A", "Legal name", "Grupo Café Cliente A S.A."])
-        self.assertEqual(rows[2], ["Legal ID", "3-101-123456", "Phone", "24797018"])
+        self.assertEqual(rows[0], ["Catalogo:", "Café Cliente A"])
+        self.assertEqual(rows[1], [])
+        self.assertNotIn(["Campo", "Valor", "Campo", "Valor"], rows)
+        self.assertEqual(rows[2], ["Customer name", "Café Cliente A", "Legal name", "Grupo Café Cliente A S.A."])
+        self.assertEqual(rows[3], ["Legal ID", "3-101-123456", "Phone", "24797018"])
         self.assertEqual(
-            rows[3],
+            rows[4],
             [
                 "Address",
                 "Costado Norte del Parque, La Fortuna\nAlajuela",
@@ -136,13 +138,13 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
                 "Tiendas Naturales (Minisuper)",
             ],
         )
-        self.assertEqual(rows[4], ["Province", "Alajuela", "Credit days", "10"])
-        self.assertEqual(rows[5], ["Canton", "San Carlos", "Active", "yes"])
-        self.assertEqual(rows[6], ["District", "La Fortuna", "", ""])
-        self.assertEqual(rows[7], [])
-        self.assertEqual(rows[8], ["Codigo", "Descripcion", "Precio", "Estado"])
+        self.assertEqual(rows[5], ["Province", "Alajuela", "Credit days", "10"])
+        self.assertEqual(rows[6], ["Canton", "San Carlos", "Active", "yes"])
+        self.assertEqual(rows[7], ["District", "La Fortuna", "", ""])
+        self.assertEqual(rows[8], [])
+        self.assertEqual(rows[9], ["Codigo", "Descripcion", "Precio", "Estado"])
         self.assertEqual(
-            rows[9:],
+            rows[10:],
             [
                 ["A-001", "Té limón", "1250.5000", "Activo"],
                 ["A-002", "Producto inactivo", "800.0000", "Inactivo"],
@@ -160,10 +162,11 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
 
         response = self._export_customer(empty_customer_id)
         rows = list(csv.reader(io.StringIO(response.body.decode("utf-8-sig"))))
-        self.assertEqual(rows[3], ["Address", "", "B2B Channel", ""])
-        self.assertEqual(rows[7], [])
-        self.assertEqual(rows[8], ["Codigo", "Descripcion", "Precio", "Estado"])
-        self.assertEqual(len(rows), 9)
+        self.assertEqual(rows[0], ["Catalogo:", "Sin catálogo"])
+        self.assertEqual(rows[4], ["Address", "", "B2B Channel", ""])
+        self.assertEqual(rows[8], [])
+        self.assertEqual(rows[9], ["Codigo", "Descripcion", "Precio", "Estado"])
+        self.assertEqual(len(rows), 10)
 
     def test_templates_show_catalog_and_download_labels(self) -> None:
         customer_list = Path("app/templates/b2b_customers_list.html").read_text(encoding="utf-8")

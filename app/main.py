@@ -7893,9 +7893,10 @@ def export_b2b_customer_products_csv(
     )
     buffer = io.StringIO()
     writer = csv.writer(buffer)
+    writer.writerow(("Catalogo:", customer.customer_name))
+    writer.writerow(())
     writer.writerows(
         (
-            ("Campo", "Valor", "Campo", "Valor"),
             ("Customer name", customer.customer_name, "Legal name", customer.legal_name or ""),
             ("Legal ID", customer.legal_id or "", "Phone", customer.phone or ""),
             (
