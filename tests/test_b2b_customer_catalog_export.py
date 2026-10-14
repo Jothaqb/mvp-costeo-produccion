@@ -8,6 +8,8 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
+from fastapi import HTTPException
+
 
 _PREVIOUS_DATABASE_URL = os.environ.get("DATABASE_URL")
 _TEMP_DB = tempfile.NamedTemporaryFile(prefix="b2b_catalog_export_", suffix=".db", delete=False)
@@ -16,7 +18,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TEMP_DB.name).as_posix()}"
 
 with mock.patch("zoneinfo.ZoneInfo", return_value=timezone.utc):
     from app import main  # noqa: E402
-from app.models import B2BCustomer, B2BCustomerProduct  # noqa: E402
+from app.models import B2BCustomer, B2BCustomerProduct, Permission, Role, RolePermission  # noqa: E402
 
 
 class B2BCustomerCatalogExportTests(unittest.TestCase):
@@ -78,6 +80,26 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             self.assertFalse(db.deleted)
             return response
 
+    def _role_permissions(self, role_code: str) -> set[str]:
+        with main.SessionLocal() as db:
+            return {
+                code
+                for (code,) in (
+                    db.query(Permission.code)
+                    .join(RolePermission, RolePermission.permission_id == Permission.id)
+                    .join(Role, Role.id == RolePermission.role_id)
+                    .filter(Role.code == role_code, Role.active.is_(True), Permission.active.is_(True))
+                    .all()
+                )
+            }
+
+    @staticmethod
+    def _request_with_permissions(permission_codes: set[str]):
+        request = mock.Mock()
+        request.state.current_user = mock.Mock(id=123, username="catalog-test-user")
+        request.state.current_permissions = permission_codes
+        return request
+
     def test_export_is_utf8_bom_and_strictly_scoped_to_customer(self) -> None:
         response = self._export_customer(self.customer_a_id)
         self.assertTrue(response.body.startswith(b"\xef\xbb\xbf"))
@@ -114,6 +136,89 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         self.assertNotIn(">Products</a>", customer_list)
         self.assertIn("Descargar CSV", catalog)
         self.assertIn("products/export.csv", catalog)
+
+    def test_add_form_supports_manual_and_b2c_discount_pricing(self) -> None:
+        catalog = Path("app/templates/b2b_customer_products.html").read_text(encoding="utf-8")
+        self.assertIn("Método de precio", catalog)
+        self.assertIn('value="manual"', catalog)
+        self.assertIn("Digitar precio manual", catalog)
+        self.assertIn('value="b2c_discount"', catalog)
+        self.assertIn("Calcular por descuento sobre B2C", catalog)
+        self.assertIn('id="b2c_discount_percent"', catalog)
+        self.assertIn("Descuento sobre precio B2C (%)", catalog)
+        self.assertIn("Precio sugerido al por mayor", catalog)
+        self.assertIn("suggestedPrice = b2cPrice * (1 - (discountPercent / 100))", catalog)
+        self.assertIn("distributorPriceInput.value = suggestedPrice.toFixed(2)", catalog)
+        self.assertIn("El precio final de este campo es el único valor que se guarda.", catalog)
+
+    def test_discount_mode_saves_final_distributor_price_not_discount(self) -> None:
+        request = self._request_with_permissions(self._role_permissions("sales_manager"))
+        with main.SessionLocal() as db, mock.patch.object(main, "safe_log_audit_event"):
+            response = main.add_b2b_customer_product(
+                customer_id=self.customer_a_id,
+                request=request,
+                sku="A-DISCOUNT",
+                description="Precio final redondeado",
+                distributor_price="2350",
+                pricing_method="b2c_discount",
+                discount_percent="26.8",
+                active=True,
+                db=db,
+            )
+            saved = (
+                db.query(B2BCustomerProduct)
+                .filter(
+                    B2BCustomerProduct.customer_id == self.customer_a_id,
+                    B2BCustomerProduct.sku == "A-DISCOUNT",
+                )
+                .one()
+            )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(saved.distributor_price, Decimal("2350.0000"))
+
+    def test_admin_can_still_add_a_manual_price(self) -> None:
+        request = self._request_with_permissions(self._role_permissions("admin"))
+        with main.SessionLocal() as db, mock.patch.object(main, "safe_log_audit_event"):
+            response = main.add_b2b_customer_product(
+                customer_id=self.customer_a_id,
+                request=request,
+                sku="A-MANUAL",
+                description="Precio manual",
+                distributor_price="1800.50",
+                pricing_method="manual",
+                discount_percent="",
+                active=True,
+                db=db,
+            )
+            saved = db.query(B2BCustomerProduct).filter(B2BCustomerProduct.sku == "A-MANUAL").one()
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(saved.distributor_price, Decimal("1800.5000"))
+
+    def test_user_without_catalog_edit_permission_cannot_add(self) -> None:
+        request = self._request_with_permissions({"sales.view", "product.view"})
+        with main.SessionLocal() as db:
+            with self.assertRaises(HTTPException) as raised:
+                main.add_b2b_customer_product(
+                    customer_id=self.customer_a_id,
+                    request=request,
+                    sku="A-FORBIDDEN",
+                    description="No debe guardarse",
+                    distributor_price="1000",
+                    pricing_method="manual",
+                    discount_percent="",
+                    active=True,
+                    db=db,
+                )
+            self.assertEqual(raised.exception.status_code, 403)
+            self.assertIsNone(
+                db.query(B2BCustomerProduct).filter(B2BCustomerProduct.sku == "A-FORBIDDEN").one_or_none()
+            )
+
+    def test_add_pricing_validation_rejects_invalid_discount_and_nonpositive_final_price(self) -> None:
+        with self.assertRaisesRegex(main.B2BValidationError, "between 0 and 100"):
+            main._validate_b2b_catalog_add_pricing("b2c_discount", "100.01", "1000")
+        with self.assertRaisesRegex(main.B2BValidationError, "greater than 0"):
+            main._validate_b2b_catalog_add_pricing("manual", "", "0")
 
 
 if __name__ == "__main__":

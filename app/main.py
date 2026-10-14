@@ -7878,6 +7878,35 @@ def export_b2b_customer_products_csv(
     )
 
 
+def _validate_b2b_catalog_add_pricing(
+    pricing_method: str,
+    discount_percent: str,
+    distributor_price: str,
+) -> Decimal:
+    normalized_method = (pricing_method or "manual").strip().lower()
+    if normalized_method not in {"manual", "b2c_discount"}:
+        raise B2BValidationError("Invalid pricing method.")
+
+    normalized_price = (distributor_price or "").strip().replace(" ", "").replace(",", ".")
+    try:
+        final_price = Decimal(normalized_price)
+    except InvalidOperation as exc:
+        raise B2BValidationError("Distributor price must be a valid number.") from exc
+    if final_price <= 0:
+        raise B2BValidationError("Distributor price must be greater than 0.")
+
+    if normalized_method == "b2c_discount":
+        normalized_discount = (discount_percent or "").strip().replace(" ", "").replace(",", ".")
+        try:
+            discount = Decimal(normalized_discount)
+        except InvalidOperation as exc:
+            raise B2BValidationError("B2C discount must be a valid percentage.") from exc
+        if discount < 0 or discount > 100:
+            raise B2BValidationError("B2C discount must be between 0 and 100.")
+
+    return final_price
+
+
 @app.post("/b2b/customers/{customer_id}/products")
 def add_b2b_customer_product(
     customer_id: int,
@@ -7885,13 +7914,27 @@ def add_b2b_customer_product(
     sku: str = Form(...),
     description: str = Form(...),
     distributor_price: str = Form(...),
+    pricing_method: str = Form("manual"),
+    discount_percent: str = Form(""),
     active: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "b2b_customer_products.edit_prices")
     try:
+        final_distributor_price = _validate_b2b_catalog_add_pricing(
+            pricing_method,
+            discount_percent,
+            distributor_price,
+        )
         customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
-        product_line = add_customer_product(db, customer_id, sku, description, distributor_price, active)
+        product_line = add_customer_product(
+            db,
+            customer_id,
+            sku,
+            description,
+            final_distributor_price,
+            active,
+        )
         product_ref = db.query(Product).filter(Product.sku == product_line.sku).one_or_none()
         safe_log_audit_event(
             module="commercial",
@@ -7929,6 +7972,8 @@ def add_b2b_customer_product(
                     "sku": sku,
                     "description": description,
                     "distributor_price": distributor_price,
+                    "pricing_method": pricing_method,
+                    "discount_percent": discount_percent,
                     "active": active,
                 },
             },

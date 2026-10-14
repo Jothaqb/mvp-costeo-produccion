@@ -13,6 +13,7 @@
     </section>
 
     {% if can_edit_customer_prices %}
+      {% set submitted_pricing_method = submitted_add_product.pricing_method if submitted_add_product else 'manual' %}
       <p>
         <button type="button" class="button" id="toggle_add_product_form" aria-expanded="{{ 'true' if show_add_product_form else 'false' }}">
           Add product
@@ -40,11 +41,58 @@
           <div class="lookup-reference-grid">
             <p><strong>B2C Price:</strong> <span id="selected_b2c_price">-</span></p>
             <p><strong>Product Cost:</strong> <span id="selected_standard_cost">-</span></p>
-            <p><strong>Gross Margin %:</strong> <span id="selected_gross_margin">-</span></p>
+            <p><strong>Gross Margin % (estimado):</strong> <span id="selected_gross_margin">N/A</span></p>
+          </div>
+
+          <fieldset>
+            <legend>Método de precio</legend>
+            <label>
+              <input
+                type="radio"
+                name="pricing_method"
+                value="manual"
+                {% if submitted_pricing_method != 'b2c_discount' %}checked{% endif %}
+              >
+              Digitar precio manual
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="pricing_method"
+                value="b2c_discount"
+                {% if submitted_pricing_method == 'b2c_discount' %}checked{% endif %}
+              >
+              Calcular por descuento sobre B2C
+            </label>
+          </fieldset>
+
+          <div id="b2c_discount_panel" {% if submitted_pricing_method != 'b2c_discount' %}hidden{% endif %}>
+            <label for="b2c_discount_percent">Descuento sobre precio B2C (%)</label>
+            <input
+              id="b2c_discount_percent"
+              name="discount_percent"
+              type="number"
+              min="0"
+              max="100"
+              step="0.01"
+              inputmode="decimal"
+              value="{{ submitted_add_product.discount_percent if submitted_add_product else '' }}"
+            >
+            <p><strong>Precio sugerido al por mayor:</strong> <span id="suggested_distributor_price">N/A</span></p>
           </div>
 
           <label for="distributor_price">Distributor price</label>
-          <input id="distributor_price" name="distributor_price" value="{{ submitted_add_product.distributor_price if submitted_add_product else '' }}" required>
+          <input
+            id="distributor_price"
+            name="distributor_price"
+            type="number"
+            min="0.01"
+            step="0.01"
+            inputmode="decimal"
+            value="{{ submitted_add_product.distributor_price if submitted_add_product else '' }}"
+            required
+          >
+          <p class="muted-inline">El precio final de este campo es el único valor que se guarda.</p>
 
           <label>
             <input type="checkbox" name="active" value="true" {% if submitted_add_product is none or submitted_add_product.active %}checked{% endif %}>
@@ -144,6 +192,10 @@
         const b2cPriceEl = document.getElementById("selected_b2c_price");
         const standardCostEl = document.getElementById("selected_standard_cost");
         const grossMarginEl = document.getElementById("selected_gross_margin");
+        const pricingMethodInputs = Array.from(document.querySelectorAll('input[name="pricing_method"]'));
+        const discountPanel = document.getElementById("b2c_discount_panel");
+        const discountInput = document.getElementById("b2c_discount_percent");
+        const suggestedPriceEl = document.getElementById("suggested_distributor_price");
 
         function syncAddProductToggle() {
           if (!addProductToggleButton || !addProductFormPanel) {
@@ -170,15 +222,22 @@
         let selectedProduct = null;
 
         function parseDecimal(value) {
-          const parsed = Number(String(value || "").replace(",", "."));
+          const normalized = String(value ?? "").trim().replace(",", ".");
+          if (!normalized) {
+            return null;
+          }
+          const parsed = Number(normalized);
           return Number.isFinite(parsed) ? parsed : null;
         }
 
         function formatMoney(value) {
           if (value === null || value === undefined || value === "") {
-            return "-";
+            return "N/A";
           }
-          return "CRC " + Math.round(Number(value)).toLocaleString("en-US");
+          return "₡" + Number(value).toLocaleString("es-CR", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          });
         }
 
         function formatPercent(value) {
@@ -212,13 +271,13 @@
           const productCost = selectedProduct ? parseDecimal(selectedProduct.standard_cost) : null;
           if (productCost === null) {
             if (grossMarginEl) {
-              grossMarginEl.textContent = "-";
+              grossMarginEl.textContent = "N/A";
             }
             return;
           }
-          if (distributorPrice === null || distributorPrice === 0) {
+          if (distributorPrice === null || distributorPrice <= 0) {
             if (grossMarginEl) {
-              grossMarginEl.textContent = "";
+              grossMarginEl.textContent = "N/A";
             }
             return;
           }
@@ -227,19 +286,71 @@
           }
         }
 
+        function selectedPricingMethod() {
+          const selectedInput = pricingMethodInputs.find((input) => input.checked);
+          return selectedInput ? selectedInput.value : "manual";
+        }
+
+        function refreshSuggestedPrice() {
+          const usesDiscount = selectedPricingMethod() === "b2c_discount";
+          if (discountPanel) {
+            discountPanel.hidden = !usesDiscount;
+          }
+          if (discountInput) {
+            discountInput.required = usesDiscount;
+            discountInput.setCustomValidity("");
+          }
+          if (!usesDiscount) {
+            if (suggestedPriceEl) {
+              suggestedPriceEl.textContent = "N/A";
+            }
+            refreshMargin();
+            return;
+          }
+
+          const b2cPrice = selectedProduct ? parseDecimal(selectedProduct.b2c_price) : null;
+          const discountPercent = discountInput ? parseDecimal(discountInput.value) : null;
+          if (discountPercent !== null && (discountPercent < 0 || discountPercent > 100)) {
+            discountInput.setCustomValidity("El descuento debe estar entre 0 y 100.");
+          }
+          if (
+            b2cPrice === null
+            || discountPercent === null
+            || discountPercent < 0
+            || discountPercent > 100
+          ) {
+            if (suggestedPriceEl) {
+              suggestedPriceEl.textContent = "N/A";
+            }
+            refreshMargin();
+            return;
+          }
+
+          const suggestedPrice = b2cPrice * (1 - (discountPercent / 100));
+          if (suggestedPriceEl) {
+            suggestedPriceEl.textContent = formatMoney(suggestedPrice);
+          }
+          distributorPriceInput.value = suggestedPrice.toFixed(2);
+          refreshMargin();
+        }
+
         function applyProduct(product) {
           selectedProduct = product;
           skuInput.value = product.sku || "";
           descriptionInput.value = product.description || product.name || "";
           if (b2cPriceEl) {
-            b2cPriceEl.textContent = product.b2c_price ? formatMoney(product.b2c_price) : "-";
+            b2cPriceEl.textContent = product.b2c_price !== null && product.b2c_price !== undefined
+              ? formatMoney(product.b2c_price)
+              : "N/A";
           }
           if (standardCostEl) {
-            standardCostEl.textContent = product.standard_cost ? formatMoney(product.standard_cost) : "-";
+            standardCostEl.textContent = product.standard_cost !== null && product.standard_cost !== undefined
+              ? formatMoney(product.standard_cost)
+              : "N/A";
           }
           lookupInput.value = buildLabel(product);
           hideResults();
-          refreshMargin();
+          refreshSuggestedPrice();
         }
 
         function renderResults(products) {
@@ -298,6 +409,11 @@
         });
 
         distributorPriceInput.addEventListener("input", refreshMargin);
+        pricingMethodInputs.forEach((input) => input.addEventListener("change", refreshSuggestedPrice));
+        if (discountInput) {
+          discountInput.addEventListener("input", refreshSuggestedPrice);
+        }
+        refreshSuggestedPrice();
       })();
     </script>
   {% endif %}
