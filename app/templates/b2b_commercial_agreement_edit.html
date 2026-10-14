@@ -7,30 +7,30 @@
       <thead>
         <tr>
           <th>Nombre</th>
-          <th>Identificación</th>
           <th>Cargo</th>
-          <th>Teléfono</th>
-          <th>Correo</th>
+          <th>Teléfono / correo</th>
           <th></th>
         </tr>
       </thead>
       <tbody id="{{ kind }}-people-body">
         {% for person in people %}
           <tr>
-            <td><input name="{{ kind }}_person_name" value="{{ person.name }}"></td>
-            <td><input name="{{ kind }}_person_identification" value="{{ person.identification or '' }}"></td>
+            <td>
+              <input name="{{ kind }}_person_name" value="{{ person.name }}">
+              <input type="hidden" name="{{ kind }}_person_identification" value="{{ person.identification or '' }}">
+            </td>
             <td><input name="{{ kind }}_person_position" value="{{ person.position or '' }}"></td>
-            <td><input name="{{ kind }}_person_phone" value="{{ person.phone or '' }}"></td>
-            <td><input type="email" name="{{ kind }}_person_email" value="{{ person.email or '' }}"></td>
+            <td><input name="{{ kind }}_person_contact_info" value="{{ format_person_contact_info(person.phone, person.email) }}" placeholder="Teléfono / correo"></td>
             <td><button type="button" class="remove-person-row">Quitar</button></td>
           </tr>
         {% endfor %}
         <tr>
-          <td><input name="{{ kind }}_person_name"></td>
-          <td><input name="{{ kind }}_person_identification"></td>
+          <td>
+            <input name="{{ kind }}_person_name">
+            <input type="hidden" name="{{ kind }}_person_identification" value="">
+          </td>
           <td><input name="{{ kind }}_person_position"></td>
-          <td><input name="{{ kind }}_person_phone"></td>
-          <td><input type="email" name="{{ kind }}_person_email"></td>
+          <td><input name="{{ kind }}_person_contact_info" placeholder="Teléfono / correo"></td>
           <td><button type="button" class="remove-person-row">Quitar</button></td>
         </tr>
       </tbody>
@@ -114,15 +114,38 @@
         <legend>3. Condiciones comerciales</legend>
         <div class="form-grid">
           <label>Descuento comercial B2B (%)<input name="b2b_discount_percent" inputmode="decimal" value="{{ agreement.b2b_discount_percent if agreement.b2b_discount_percent is not none else '' }}"></label>
-          <label>Forma de pago<input name="payment_terms" value="{{ agreement.payment_terms or '' }}"></label>
-          <label><input type="checkbox" name="advance_payment_enabled" {% if agreement.advance_payment_enabled %}checked{% endif %}> Pago anticipado habilitado</label>
-          <label><input type="checkbox" name="credit_approved" {% if agreement.credit_approved %}checked{% endif %}> Crédito aprobado</label>
+          <label>
+            Forma de pago
+            <select name="payment_terms" required>
+              <option value="">Seleccione una opción</option>
+              {% if selected_payment_terms and selected_payment_terms not in payment_term_options %}
+                <option value="{{ selected_payment_terms }}" selected>{{ selected_payment_terms }} (valor anterior)</option>
+              {% endif %}
+              {% for option in payment_term_options %}
+                <option value="{{ option }}" {% if selected_payment_terms == option %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+          </label>
           <label>Días de crédito contractual<input type="number" min="0" name="contract_credit_days" value="{{ agreement.contract_credit_days if agreement.contract_credit_days is not none else '' }}"></label>
           <label>Límite de crédito<input name="credit_limit" inputmode="decimal" value="{{ agreement.credit_limit if agreement.credit_limit is not none else '' }}"></label>
           <label>Días de recepción de pedidos<input name="order_reception_days" value="{{ agreement.order_reception_days or '' }}"></label>
           <label>Tiempo habitual de alisto<input name="usual_prep_time" value="{{ agreement.usual_prep_time or '' }}"></label>
-          <label>Tipo de entrega habitual<input name="usual_delivery_type" value="{{ agreement.usual_delivery_type or '' }}"></label>
+          <label>
+            Entrega habitual
+            <select name="usual_delivery_type" required>
+              <option value="">Seleccione una opción</option>
+              {% if agreement.usual_delivery_type and agreement.usual_delivery_type not in usual_delivery_type_options %}
+                <option value="{{ agreement.usual_delivery_type }}" selected>{{ agreement.usual_delivery_type }} (valor anterior)</option>
+              {% endif %}
+              {% for option in usual_delivery_type_options %}
+                <option value="{{ option }}" {% if agreement.usual_delivery_type == option %}selected{% endif %}>{{ option }}</option>
+              {% endfor %}
+            </select>
+          </label>
         </div>
+        <p class="muted-inline">
+          La opción de pago seleccionada mantiene automáticamente los indicadores de pago anticipado o crédito aprobado.
+        </p>
       </fieldset>
 
       <fieldset>

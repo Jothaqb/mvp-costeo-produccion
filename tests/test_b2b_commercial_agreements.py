@@ -32,9 +32,14 @@ from app.services.b2b_commercial_agreement_service import (
     B2BCommercialAgreementValidationError,
     DEFAULT_AGREEMENT_SECTIONS,
     DEFAULT_AGREEMENT_SECTION_TEXTS,
+    PAYMENT_TERM_OPTIONS,
+    USUAL_DELIVERY_TYPE_OPTIONS,
     create_commercial_agreement_draft,
     find_missing_template_variables,
+    format_person_contact_info,
     get_commercial_agreement,
+    normalize_payment_terms,
+    parse_person_contact_info,
     render_agreement_template_text,
     reset_commercial_agreement_sections_to_template,
     update_commercial_agreement_draft,
@@ -98,14 +103,12 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             "administrative_email": "admin@example.com",
             "whatsapp": "8888-0000",
             "b2b_discount_percent": "12.5",
-            "payment_terms": "Crédito",
-            "advance_payment_enabled": False,
-            "credit_approved": True,
+            "payment_terms": "Crédito comercial aprobado",
             "contract_credit_days": "15",
             "credit_limit": "250000",
             "order_reception_days": "Lunes a viernes",
             "usual_prep_time": "Dos días hábiles",
-            "usual_delivery_type": "Entrega en local",
+            "usual_delivery_type": "Ruta de entrega GREEN CORNER",
             "signature_place": "San José",
             "signature_date": "2026-10-14",
             "client_signer_name": "Laura Cliente",
@@ -242,6 +245,7 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             agreement.legal_name_snapshot = None
             agreement.address_snapshot = None
             agreement.customer_active_snapshot = False
+            agreement.payment_terms = "Crédito comercial aprobado"
             agreement.credit_approved = True
             agreement.contract_credit_days = None
             agreement.credit_limit = Decimal("0")
@@ -260,6 +264,136 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             self.assertIn("El límite de crédito debe ser mayor a 0.", missing)
             self.assertIn("Título del apartado 1", missing)
             self.assertIn("Texto del apartado 2: Descuento comercial B2B y volumen de compra", missing)
+
+    def test_payment_and_delivery_choices_are_validated_and_drive_flags(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            fields = self._complete_fields()
+            fields["payment_terms"] = "Pago anticipado antes del despacho"
+            fields["usual_delivery_type"] = "Encomienda"
+            updated = update_commercial_agreement_draft(
+                db,
+                agreement_id=agreement.id,
+                fields=fields,
+                people=self._people(),
+                section_updates=self._section_updates(agreement),
+                user_id=None,
+            )
+            self.assertEqual(updated.payment_terms, "Pago anticipado antes del despacho")
+            self.assertEqual(updated.usual_delivery_type, "Encomienda")
+            self.assertTrue(updated.advance_payment_enabled)
+            self.assertFalse(updated.credit_approved)
+
+            fields["payment_terms"] = "Forma inventada"
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "Forma de pago debe ser una de las opciones permitidas",
+            ):
+                update_commercial_agreement_draft(
+                    db,
+                    agreement_id=agreement.id,
+                    fields=fields,
+                    people=self._people(),
+                    section_updates=self._section_updates(agreement),
+                    user_id=None,
+                )
+            db.rollback()
+
+            fields = self._complete_fields()
+            fields["usual_delivery_type"] = "Entrega inventada"
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "Entrega habitual debe ser una de las opciones permitidas",
+            ):
+                update_commercial_agreement_draft(
+                    db,
+                    agreement_id=agreement.id,
+                    fields=fields,
+                    people=self._people(),
+                    section_updates=self._section_updates(agreement),
+                    user_id=None,
+                )
+
+    def test_credit_requires_terms_and_limit_but_cash_does_not(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            fields = self._complete_fields()
+            fields["contract_credit_days"] = ""
+            fields["credit_limit"] = ""
+            credit = update_commercial_agreement_draft(
+                db,
+                agreement_id=agreement.id,
+                fields=fields,
+                people=self._people(),
+                section_updates=self._section_updates(agreement),
+                user_id=None,
+            )
+            credit_missing = validate_commercial_agreement(credit)
+            self.assertIn("Los días de crédito contractual deben ser mayores a 0.", credit_missing)
+            self.assertIn("El límite de crédito debe ser mayor a 0.", credit_missing)
+
+            fields["payment_terms"] = "Contado contra entrega"
+            cash = update_commercial_agreement_draft(
+                db,
+                agreement_id=agreement.id,
+                fields=fields,
+                people=self._people(),
+                section_updates=self._section_updates(credit),
+                user_id=None,
+            )
+            self.assertFalse(cash.credit_approved)
+            self.assertFalse(cash.advance_payment_enabled)
+            self.assertNotIn(
+                "Los días de crédito contractual deben ser mayores a 0.",
+                validate_commercial_agreement(cash),
+            )
+            self.assertNotIn(
+                "El límite de crédito debe ser mayor a 0.",
+                validate_commercial_agreement(cash),
+            )
+
+    def test_legacy_payment_aliases_and_person_contact_round_trip(self) -> None:
+        self.assertEqual(normalize_payment_terms("Contado"), "Contado contra entrega")
+        self.assertEqual(normalize_payment_terms("Crédito"), "Crédito comercial aprobado")
+        combined = format_person_contact_info("8888-0000", "persona@example.com")
+        self.assertEqual(combined, "8888-0000 / persona@example.com")
+        self.assertEqual(
+            parse_person_contact_info(combined),
+            ("8888-0000", "persona@example.com"),
+        )
+        self.assertEqual(parse_person_contact_info("persona@example.com"), (None, "persona@example.com"))
+        self.assertEqual(parse_person_contact_info("8888-0000"), ("8888-0000", None))
+
+        with self.Session() as db:
+            agreement = self._create(db)
+            people_without_identification = [
+                {**person, "identification": ""}
+                for person in self._people()
+            ]
+            updated = update_commercial_agreement_draft(
+                db,
+                agreement_id=agreement.id,
+                fields=self._complete_fields(),
+                people=people_without_identification,
+                section_updates=self._section_updates(agreement),
+                user_id=None,
+            )
+            self.assertTrue(all(person.identification is None for person in updated.authorized_people))
+            self.assertTrue(all(person.phone and person.email for person in updated.authorized_people))
+
+            missing_contact = [dict(people_without_identification[0], phone="", email="")]
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "Teléfono / correo es obligatorio",
+            ):
+                update_commercial_agreement_draft(
+                    db,
+                    agreement_id=agreement.id,
+                    fields=self._complete_fields(),
+                    people=missing_contact,
+                    section_updates=self._section_updates(updated),
+                    user_id=None,
+                )
 
     def test_template_renderer_handles_values_missing_and_unknown_variables(self) -> None:
         with self.Session() as db:
@@ -524,6 +658,19 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         self.assertNotIn("Product", service_source)
         self.assertIn("Actualizar textos desde plantilla base", editor_template)
         self.assertIn("sections/reset-template", editor_template)
+        self.assertIn('<select name="payment_terms" required>', editor_template)
+        self.assertIn('<select name="usual_delivery_type" required>', editor_template)
+        self.assertIn("{% for option in payment_term_options %}", editor_template)
+        self.assertIn("{% for option in usual_delivery_type_options %}", editor_template)
+        self.assertIn('"payment_term_options": PAYMENT_TERM_OPTIONS', main_source)
+        self.assertIn('"usual_delivery_type_options": USUAL_DELIVERY_TYPE_OPTIONS', main_source)
+        for option in PAYMENT_TERM_OPTIONS + USUAL_DELIVERY_TYPE_OPTIONS:
+            self.assertIn(option, service_source)
+        self.assertIn("Teléfono / correo", editor_template)
+        self.assertNotIn("<th>Identificación</th>", editor_template)
+        self.assertNotIn('name="{{ kind }}_person_phone"', editor_template)
+        self.assertNotIn('name="{{ kind }}_person_email"', editor_template)
+        self.assertIn('type="hidden" name="{{ kind }}_person_identification"', editor_template)
         self.assertNotIn('name="section_title_{{ section.section_key }}" value="{{ section.title }}" required', editor_template)
         self.assertNotIn('name="section_body_{{ section.section_key }}" rows="6" required', editor_template)
 

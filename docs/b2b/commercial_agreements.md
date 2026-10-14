@@ -32,6 +32,12 @@ La Fase 1.1 sustituye los placeholders por una plantilla operativa de 19 apartad
 
 La acción **Actualizar textos desde plantilla base** está disponible únicamente para borradores y requiere `b2b_commercial_agreement.edit`. Reemplaza títulos y textos de los 19 apartados, sin cambiar snapshots del cliente, condiciones comerciales, personas autorizadas ni datos de firma. La acción registra `commercial_agreement_sections_reset` en auditoría.
 
+## Opciones comerciales y personas autorizadas
+
+El editor limita **Forma de pago** a pago anticipado antes del despacho, crédito comercial aprobado o contado contra entrega. La selección mantiene automáticamente `advance_payment_enabled` y `credit_approved`; solo el crédito comercial exige plazo y límite positivos. **Entrega habitual** se limita a ruta de entrega GREEN CORNER, encomienda o retiro.
+
+Las personas autorizadas se editan con nombre, cargo y un único campo **Teléfono / correo**. Internamente se conservan las columnas existentes `identification`, `phone` y `email`: la identificación previa viaja oculta para evitar pérdida de históricos y el contacto combinado se separa nuevamente al guardar. No se agregó ninguna columna ni migración.
+
 Solo puede existir un borrador por cliente, validado por el servicio. En esta fase únicamente se crea la versión inicial `0`; la interfaz y la copia para crear versiones posteriores quedan expresamente fuera de alcance. Los estados `generated`, `signed` y `archived` están preparados y son inmutables en la edición actual. Una fase futura deberá crear cada nueva versión con `MAX(version_number) + 1`.
 
 ## Persistencia

@@ -17,6 +17,22 @@ from app.models import (
 
 AGREEMENT_STATUSES = {"draft", "generated", "signed", "archived"}
 AUTHORIZATION_TYPES = {"orders", "receiving"}
+PAYMENT_TERM_OPTIONS = (
+    "Pago anticipado antes del despacho",
+    "Crédito comercial aprobado",
+    "Contado contra entrega",
+)
+USUAL_DELIVERY_TYPE_OPTIONS = (
+    "Ruta de entrega GREEN CORNER",
+    "Encomienda",
+    "Retiro",
+)
+_PAYMENT_TERM_ALIASES = {
+    "contado": "Contado contra entrega",
+    "crédito": "Crédito comercial aprobado",
+    "credito": "Crédito comercial aprobado",
+    "pago anticipado": "Pago anticipado antes del despacho",
+}
 DEFAULT_CATALOG_REFERENCE = (
     "Catálogo o lista de precios aplicable: Ver catálogo comercial vigente adjunto."
 )
@@ -59,7 +75,8 @@ DEFAULT_AGREEMENT_SECTION_TEXTS = {
         "los pedidos expresamente confirmados bajo esa condición."
     ),
     "advance_payment_discount": (
-        "Cuando GREEN CORNER habilite un beneficio adicional por pago anticipado, este deberá ser "
+        "La forma de pago acordada es {{payment_terms}}. Cuando GREEN CORNER habilite un beneficio "
+        "adicional por pago anticipado, este deberá ser "
         "informado y confirmado por escrito antes de la facturación del pedido. El beneficio no es "
         "automático, no se acumula con otras promociones salvo autorización expresa y podrá ser "
         "retirado para pedidos futuros mediante comunicación a EL CLIENTE."
@@ -242,12 +259,40 @@ def find_missing_template_variables(
         field_name = _TEMPLATE_VARIABLE_FIELDS.get(variable_name)
         if field_name is None or variable_name in missing:
             continue
-        if variable_name in {"contract_credit_days", "credit_limit"} and not agreement.credit_approved:
+        if (
+            variable_name in {"contract_credit_days", "credit_limit"}
+            and normalize_payment_terms(agreement.payment_terms) != "Crédito comercial aprobado"
+        ):
             continue
         value = getattr(agreement, field_name, None)
         if value is None or (isinstance(value, str) and not value.strip()):
             missing.append(variable_name)
     return missing
+
+
+def normalize_payment_terms(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return _PAYMENT_TERM_ALIASES.get(normalized.casefold(), normalized)
+
+
+def format_person_contact_info(phone: Any, email: Any) -> str:
+    phone_value = str(phone or "").strip()
+    email_value = str(email or "").strip()
+    if phone_value and email_value:
+        return f"{phone_value} / {email_value}"
+    return phone_value or email_value
+
+
+def parse_person_contact_info(value: Any) -> tuple[str | None, str | None]:
+    contact_info = str(value or "").strip()
+    if not contact_info:
+        return None, None
+    if " / " in contact_info:
+        phone_value, email_value = (part.strip() for part in contact_info.split(" / ", 1))
+        return phone_value or None, email_value or None
+    if "@" in contact_info:
+        return None, contact_info
+    return contact_info, None
 
 
 def reset_commercial_agreement_sections_to_template(
@@ -393,10 +438,8 @@ def update_commercial_agreement_draft(
         "billing_email",
         "administrative_email",
         "whatsapp",
-        "payment_terms",
         "order_reception_days",
         "usual_prep_time",
-        "usual_delivery_type",
         "signature_place",
         "client_signer_name",
         "client_signer_id",
@@ -405,14 +448,27 @@ def update_commercial_agreement_draft(
     ):
         setattr(agreement, field_name, _optional_text(fields.get(field_name)))
 
+    payment_terms = normalize_payment_terms(fields.get("payment_terms"))
+    if payment_terms not in PAYMENT_TERM_OPTIONS:
+        raise B2BCommercialAgreementValidationError(
+            "Forma de pago debe ser una de las opciones permitidas."
+        )
+    usual_delivery_type = str(fields.get("usual_delivery_type") or "").strip()
+    if usual_delivery_type not in USUAL_DELIVERY_TYPE_OPTIONS:
+        raise B2BCommercialAgreementValidationError(
+            "Entrega habitual debe ser una de las opciones permitidas."
+        )
+    agreement.payment_terms = payment_terms
+    agreement.usual_delivery_type = usual_delivery_type
+    agreement.advance_payment_enabled = payment_terms == "Pago anticipado antes del despacho"
+    agreement.credit_approved = payment_terms == "Crédito comercial aprobado"
+
     agreement.b2b_discount_percent = _optional_decimal(
         fields.get("b2b_discount_percent"),
         "Descuento comercial B2B",
         minimum=Decimal("0"),
         maximum=Decimal("100"),
     )
-    agreement.advance_payment_enabled = bool(fields.get("advance_payment_enabled"))
-    agreement.credit_approved = bool(fields.get("credit_approved"))
     agreement.contract_credit_days = _optional_integer(
         fields.get("contract_credit_days"),
         "Días de crédito contractual",
@@ -461,7 +517,9 @@ def validate_commercial_agreement(agreement: B2BCommercialAgreement) -> list[str
     _append_missing(missing, agreement.legal_representative_id, "Identificación del representante")
     _append_missing(missing, agreement.legal_representative_position, "Cargo del representante")
     _append_missing(missing, agreement.billing_email, "Correo de facturación")
-    _append_missing(missing, agreement.payment_terms, "Forma de pago")
+    payment_terms = normalize_payment_terms(agreement.payment_terms)
+    if payment_terms not in PAYMENT_TERM_OPTIONS:
+        missing.append("Forma de pago debe ser una de las opciones permitidas.")
     if agreement.b2b_discount_percent is None:
         missing.append("Descuento comercial B2B")
     elif agreement.b2b_discount_percent < 0 or agreement.b2b_discount_percent > 100:
@@ -472,16 +530,22 @@ def validate_commercial_agreement(agreement: B2BCommercialAgreement) -> list[str
         missing.append("Al menos una persona autorizada para pedidos")
     if not any(person.authorization_type == "receiving" and person.name.strip() for person in people):
         missing.append("Al menos una persona autorizada para recibir mercadería")
+    for person in people:
+        if person.name.strip() and not (person.phone or "").strip() and not (person.email or "").strip():
+            missing.append(
+                f"Teléfono / correo de la persona autorizada: {person.name.strip()}"
+            )
 
     _append_missing(missing, agreement.order_reception_days, "Días de recepción de pedidos")
     _append_missing(missing, agreement.usual_prep_time, "Tiempo habitual de alisto")
-    _append_missing(missing, agreement.usual_delivery_type, "Tipo de entrega habitual")
+    if agreement.usual_delivery_type not in USUAL_DELIVERY_TYPE_OPTIONS:
+        missing.append("Entrega habitual debe ser una de las opciones permitidas.")
     _append_missing(missing, agreement.signature_place, "Lugar de firma")
     if agreement.signature_date is None:
         missing.append("Fecha de firma")
     _append_missing(missing, agreement.catalog_reference, "Referencia al catálogo")
 
-    if agreement.credit_approved:
+    if payment_terms == "Crédito comercial aprobado":
         if agreement.contract_credit_days is None or agreement.contract_credit_days <= 0:
             missing.append("Los días de crédito contractual deben ser mayores a 0.")
         if agreement.credit_limit is None or agreement.credit_limit <= 0:
@@ -541,11 +605,18 @@ def _normalize_people(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "phone": _optional_text(raw_person.get("phone")),
             "email": _optional_text(raw_person.get("email")),
         }
-        if not any(values.values()):
+        if not any(
+            values[field_name]
+            for field_name in ("name", "position", "phone", "email")
+        ):
             continue
         if values["name"] is None:
             raise B2BCommercialAgreementValidationError(
                 "El nombre es obligatorio en toda persona autorizada."
+            )
+        if values["phone"] is None and values["email"] is None:
+            raise B2BCommercialAgreementValidationError(
+                "Teléfono / correo es obligatorio en toda persona autorizada."
             )
         counters[authorization_type] += 1
         normalized.append(

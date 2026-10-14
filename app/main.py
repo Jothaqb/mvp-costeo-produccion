@@ -123,9 +123,14 @@ from app.services.b2b_catalog_export_service import (
 )
 from app.services.b2b_commercial_agreement_service import (
     B2BCommercialAgreementValidationError,
+    PAYMENT_TERM_OPTIONS,
+    USUAL_DELIVERY_TYPE_OPTIONS,
     create_commercial_agreement_draft,
+    format_person_contact_info,
     get_commercial_agreement,
     list_customer_commercial_agreements,
+    normalize_payment_terms,
+    parse_person_contact_info,
     render_agreement_template_text,
     reset_commercial_agreement_sections_to_template,
     update_commercial_agreement_draft,
@@ -7353,8 +7358,6 @@ async def update_b2b_commercial_agreement(
                 "whatsapp": form.get("whatsapp", ""),
                 "b2b_discount_percent": form.get("b2b_discount_percent", ""),
                 "payment_terms": form.get("payment_terms", ""),
-                "advance_payment_enabled": "advance_payment_enabled" in form,
-                "credit_approved": "credit_approved" in form,
                 "contract_credit_days": form.get("contract_credit_days", ""),
                 "credit_limit": form.get("credit_limit", ""),
                 "order_reception_days": form.get("order_reception_days", ""),
@@ -7530,6 +7533,10 @@ def _render_b2b_commercial_agreement_editor(
                 for person in agreement.authorized_people
                 if person.authorization_type == "receiving"
             ],
+            "payment_term_options": PAYMENT_TERM_OPTIONS,
+            "selected_payment_terms": normalize_payment_terms(agreement.payment_terms),
+            "usual_delivery_type_options": USUAL_DELIVERY_TYPE_OPTIONS,
+            "format_person_contact_info": format_person_contact_info,
             "error": error,
             "message": message,
             "missing_fields": missing_fields,
@@ -7542,17 +7549,36 @@ def _commercial_agreement_people_from_form(form) -> list[dict[str, str]]:
     for authorization_type in ("orders", "receiving"):
         values_by_field = {
             field_name: list(form.getlist(f"{authorization_type}_person_{field_name}"))
-            for field_name in ("name", "identification", "position", "phone", "email")
+            for field_name in ("name", "identification", "position", "contact_info")
         }
         row_count = max((len(values) for values in values_by_field.values()), default=0)
         for row_index in range(row_count):
+            contact_info = (
+                values_by_field["contact_info"][row_index]
+                if row_index < len(values_by_field["contact_info"])
+                else ""
+            )
+            phone, email = parse_person_contact_info(contact_info)
             people.append(
                 {
                     "authorization_type": authorization_type,
-                    **{
-                        field_name: (values[row_index] if row_index < len(values) else "")
-                        for field_name, values in values_by_field.items()
-                    },
+                    "name": (
+                        values_by_field["name"][row_index]
+                        if row_index < len(values_by_field["name"])
+                        else ""
+                    ),
+                    "identification": (
+                        values_by_field["identification"][row_index]
+                        if row_index < len(values_by_field["identification"])
+                        else ""
+                    ),
+                    "position": (
+                        values_by_field["position"][row_index]
+                        if row_index < len(values_by_field["position"])
+                        else ""
+                    ),
+                    "phone": phone or "",
+                    "email": email or "",
                 }
             )
     return people
