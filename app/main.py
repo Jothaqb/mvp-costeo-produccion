@@ -116,6 +116,7 @@ from app.services.b2b_sales_service import (
     update_customer_product,
     update_sales_order_lines,
 )
+from app.services.b2b_catalog_export_service import build_b2b_customer_catalog_pdf
 from app.services.accounts_receivable_service import (
     AccountsReceivableValidationError,
     STATUS_ALL as AR_STATUS_ALL,
@@ -7926,6 +7927,35 @@ def export_b2b_customer_products_csv(
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": f'attachment; filename="b2b_customer_{customer.id}_catalog.csv"'
+        },
+    )
+
+
+@app.get("/b2b/customers/{customer_id}/products/export.pdf")
+def export_b2b_customer_products_pdf(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "sales.view")
+    customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
+    products = (
+        db.query(B2BCustomerProduct)
+        .filter(B2BCustomerProduct.customer_id == customer_id)
+        .order_by(B2BCustomerProduct.sku, B2BCustomerProduct.id)
+        .all()
+    )
+    settings = _get_app_settings(db)
+    pdf_bytes = build_b2b_customer_catalog_pdf(
+        customer,
+        products,
+        logo_bytes=settings.logo_bytes if settings is not None else None,
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="b2b_customer_{customer.id}_catalog.pdf"'
         },
     )
 

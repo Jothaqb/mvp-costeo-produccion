@@ -18,7 +18,8 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TEMP_DB.name).as_posix()}"
 
 with mock.patch("zoneinfo.ZoneInfo", return_value=timezone.utc):
     from app import main  # noqa: E402
-from app.models import B2BCustomer, B2BCustomerProduct, Channel, Permission, Role, RolePermission  # noqa: E402
+from app.models import AppSettings, B2BCustomer, B2BCustomerProduct, Channel, Permission, Role, RolePermission  # noqa: E402
+from app.services.b2b_catalog_export_service import format_crc_catalog_price  # noqa: E402
 
 
 class B2BCustomerCatalogExportTests(unittest.TestCase):
@@ -36,6 +37,7 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             db.query(B2BCustomerProduct).delete()
             db.query(B2BCustomer).delete()
             db.query(Channel).delete()
+            db.query(AppSettings).delete()
             channel = Channel(name="Tiendas Naturales (Minisuper)", active=True, applies_to_b2b=True)
             db.add(channel)
             db.flush()
@@ -109,6 +111,19 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
                 )
             }
 
+    def _export_customer_pdf(self, customer_id: int, permission_codes: set[str]):
+        request = self._request_with_permissions(permission_codes)
+        with main.SessionLocal() as db:
+            response = main.export_b2b_customer_products_pdf(
+                customer_id=customer_id,
+                request=request,
+                db=db,
+            )
+            self.assertFalse(db.dirty)
+            self.assertFalse(db.new)
+            self.assertFalse(db.deleted)
+            return response
+
     @staticmethod
     def _request_with_permissions(permission_codes: set[str]):
         request = mock.Mock()
@@ -174,7 +189,69 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         self.assertIn(">Catálogo</a>", customer_list)
         self.assertNotIn(">Products</a>", customer_list)
         self.assertIn("Descargar CSV", catalog)
+        self.assertIn("Descargar PDF", catalog)
         self.assertIn("products/export.csv", catalog)
+        self.assertIn("products/export.pdf", catalog)
+        self.assertEqual(catalog.count("products/export.pdf"), 1)
+
+    def test_pdf_endpoint_exists_and_admin_and_sales_manager_can_download(self) -> None:
+        self.assertEqual(
+            sum(
+                getattr(route, "path", "") == "/b2b/customers/{customer_id}/products/export.pdf"
+                for route in main.app.routes
+            ),
+            1,
+        )
+        for role_code in ("admin", "sales_manager"):
+            with self.subTest(role_code=role_code):
+                response = self._export_customer_pdf(self.customer_a_id, self._role_permissions(role_code))
+                self.assertEqual(response.media_type, "application/pdf")
+                self.assertTrue(response.body.startswith(b"%PDF"))
+                self.assertGreater(len(response.body), 1500)
+                self.assertEqual(
+                    response.headers["content-disposition"],
+                    f'attachment; filename="b2b_customer_{self.customer_a_id}_catalog.pdf"',
+                )
+
+    def test_pdf_endpoint_rejects_user_without_sales_view(self) -> None:
+        with self.assertRaises(HTTPException) as raised:
+            self._export_customer_pdf(self.customer_a_id, {"product.view"})
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_pdf_handles_customer_without_channel_and_empty_catalog(self) -> None:
+        with main.SessionLocal.begin() as db:
+            empty_customer = B2BCustomer(
+                customer_name="Cliente sin canal ni catálogo",
+                address="Dirección extensa, con comas, tildes y suficiente texto para probar ajuste de línea",
+            )
+            db.add(empty_customer)
+            db.flush()
+            empty_customer_id = empty_customer.id
+
+        response = self._export_customer_pdf(empty_customer_id, self._role_permissions("admin"))
+        self.assertTrue(response.body.startswith(b"%PDF"))
+        self.assertGreater(len(response.body), 1500)
+
+    def test_pdf_currency_helper_uses_colones_and_rounds_to_whole_colones(self) -> None:
+        self.assertEqual(format_crc_catalog_price(Decimal("3200.0000")), "₡3,200")
+        self.assertEqual(format_crc_catalog_price(Decimal("2350.4900")), "₡2,350")
+        self.assertEqual(format_crc_catalog_price(Decimal("20900.5000")), "₡20,901")
+
+    def test_pdf_attempts_database_logo_and_survives_unreadable_logo(self) -> None:
+        with main.SessionLocal.begin() as db:
+            db.add(
+                AppSettings(
+                    id=main.BRANDING_SETTINGS_ID,
+                    company_name="Green Corner",
+                    logo_bytes=b"not-a-decodable-image",
+                    logo_mime_type="image/png",
+                )
+            )
+
+        with mock.patch("app.services.b2b_catalog_export_service._build_logo_flowable", return_value=None) as logo:
+            response = self._export_customer_pdf(self.customer_a_id, self._role_permissions("admin"))
+        logo.assert_called_once_with(b"not-a-decodable-image")
+        self.assertTrue(response.body.startswith(b"%PDF"))
 
     def test_add_form_supports_manual_and_b2c_discount_pricing(self) -> None:
         catalog = Path("app/templates/b2b_customer_products.html").read_text(encoding="utf-8")

@@ -5,3 +5,5 @@ sqlalchemy
 python-multipart
 psycopg2-binary
 psycopg[binary]
+reportlab
+font-roboto
