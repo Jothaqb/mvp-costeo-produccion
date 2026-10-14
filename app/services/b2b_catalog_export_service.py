@@ -1,3 +1,5 @@
+import re
+import unicodedata
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import escape
 from io import BytesIO
@@ -21,6 +23,13 @@ _GREEN = colors.HexColor("#2F6B42")
 _SOFT_GREEN = colors.HexColor("#EAF2EC")
 _GRID = colors.HexColor("#CBD5CC")
 _TEXT = colors.HexColor("#26332A")
+
+
+def safe_b2b_catalog_pdf_filename(customer_name: str | None) -> str:
+    normalized_name = unicodedata.normalize("NFKD", customer_name or "")
+    ascii_name = normalized_name.encode("ascii", "ignore").decode("ascii")
+    safe_name = re.sub(r"[^A-Za-z0-9]+", "_", ascii_name).strip("_")
+    return f"Catalogo_{safe_name or 'Cliente'}.pdf"
 
 
 def format_crc_catalog_price(value: Decimal | int | float | str | None) -> str:

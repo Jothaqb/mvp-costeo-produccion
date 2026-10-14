@@ -116,7 +116,10 @@ from app.services.b2b_sales_service import (
     update_customer_product,
     update_sales_order_lines,
 )
-from app.services.b2b_catalog_export_service import build_b2b_customer_catalog_pdf
+from app.services.b2b_catalog_export_service import (
+    build_b2b_customer_catalog_pdf,
+    safe_b2b_catalog_pdf_filename,
+)
 from app.services.accounts_receivable_service import (
     AccountsReceivableValidationError,
     STATUS_ALL as AR_STATUS_ALL,
@@ -7941,7 +7944,10 @@ def export_b2b_customer_products_pdf(
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
     products = (
         db.query(B2BCustomerProduct)
-        .filter(B2BCustomerProduct.customer_id == customer_id)
+        .filter(
+            B2BCustomerProduct.customer_id == customer_id,
+            B2BCustomerProduct.active.is_(True),
+        )
         .order_by(B2BCustomerProduct.sku, B2BCustomerProduct.id)
         .all()
     )
@@ -7955,7 +7961,9 @@ def export_b2b_customer_products_pdf(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="b2b_customer_{customer.id}_catalog.pdf"'
+            "Content-Disposition": (
+                f'attachment; filename="{safe_b2b_catalog_pdf_filename(customer.customer_name)}"'
+            )
         },
     )
 
