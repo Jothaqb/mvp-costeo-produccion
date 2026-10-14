@@ -45,6 +45,10 @@ BASE_PERMISSION_DEFINITIONS = (
     ("bom.delete", "bom", "delete", "Delete product BOM components."),
     ("b2b_customer_products.edit_prices", "b2b_customer_products", "edit_prices", "Edit B2B customer-specific pricing."),
     ("b2b_sales.cancel_invoice", "b2b_sales", "cancel_invoice", "Cancel invoiced B2B sales and reverse their inventory postings."),
+    ("b2b_commercial_agreement.view", "b2b_commercial_agreement", "view", "View B2B commercial agreements."),
+    ("b2b_commercial_agreement.edit", "b2b_commercial_agreement", "edit", "Create and edit draft B2B commercial agreements."),
+    ("b2b_commercial_agreement.generate", "b2b_commercial_agreement", "generate", "Validate B2B commercial agreements before generation."),
+    ("b2b_commercial_agreement.sign_archive", "b2b_commercial_agreement", "sign_archive", "Sign or archive B2B commercial agreements."),
     ("planning.view", "planning", "view", "View planning data."),
     ("planning.edit_parameters", "planning", "edit_parameters", "Edit planning parameters."),
     ("planning.edit_moq", "planning", "edit_moq", "Edit planning MOQ values."),
@@ -243,7 +247,15 @@ def ensure_auth_seed_state(db: Session) -> None:
     sync_role_permissions_by_code_if_present(
         db,
         "sales_manager",
-        {"sales.view", "product.view", "b2b_customer_products.edit_prices", "b2b_sales.cancel_invoice"},
+        {
+            "sales.view",
+            "product.view",
+            "b2b_customer_products.edit_prices",
+            "b2b_sales.cancel_invoice",
+            "b2b_commercial_agreement.view",
+            "b2b_commercial_agreement.edit",
+            "b2b_commercial_agreement.generate",
+        },
     )
     sync_role_permissions_by_code_if_present(
         db,

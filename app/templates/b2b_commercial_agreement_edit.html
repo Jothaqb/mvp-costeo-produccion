@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+
+{% macro person_table(kind, people, heading) %}
+  <h3>{{ heading }}</h3>
+  <div style="overflow-x:auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Nombre</th>
+          <th>Identificación</th>
+          <th>Cargo</th>
+          <th>Teléfono</th>
+          <th>Correo</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="{{ kind }}-people-body">
+        {% for person in people %}
+          <tr>
+            <td><input name="{{ kind }}_person_name" value="{{ person.name }}"></td>
+            <td><input name="{{ kind }}_person_identification" value="{{ person.identification or '' }}"></td>
+            <td><input name="{{ kind }}_person_position" value="{{ person.position or '' }}"></td>
+            <td><input name="{{ kind }}_person_phone" value="{{ person.phone or '' }}"></td>
+            <td><input type="email" name="{{ kind }}_person_email" value="{{ person.email or '' }}"></td>
+            <td><button type="button" class="remove-person-row">Quitar</button></td>
+          </tr>
+        {% endfor %}
+        <tr>
+          <td><input name="{{ kind }}_person_name"></td>
+          <td><input name="{{ kind }}_person_identification"></td>
+          <td><input name="{{ kind }}_person_position"></td>
+          <td><input name="{{ kind }}_person_phone"></td>
+          <td><input type="email" name="{{ kind }}_person_email"></td>
+          <td><button type="button" class="remove-person-row">Quitar</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <button type="button" class="add-person-row" data-kind="{{ kind }}">Agregar persona</button>
+{% endmacro %}
+
+{% block content %}
+  <section>
+    <h1>Editar acuerdo comercial</h1>
+    <p>
+      <strong>{{ agreement.customer_name_snapshot }}</strong>
+      | Versión {{ agreement.version_number }}
+      | Estado: {{ agreement.status }}
+    </p>
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if missing_fields is not none %}
+      {% if missing_fields %}
+        <section class="error">
+          <strong>El acuerdo aún no está completo:</strong>
+          <ul>
+            {% for missing in missing_fields %}<li>{{ missing }}</li>{% endfor %}
+          </ul>
+        </section>
+      {% else %}
+        <p class="success">Validación completa: no hay campos faltantes.</p>
+      {% endif %}
+    {% endif %}
+
+    <section class="actions">
+      <a href="/b2b/customers/{{ agreement.customer_id }}/commercial-agreements">Volver al historial</a>
+      <a href="/b2b/commercial-agreements/{{ agreement.id }}">Ver detalle</a>
+      {% if can(request, "b2b_commercial_agreement.generate") %}
+        <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/validate">
+          <button type="submit">Validar acuerdo</button>
+        </form>
+      {% endif %}
+    </section>
+
+    <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/edit">
+      <fieldset>
+        <legend>1. Información del cliente</legend>
+        <p>Los datos de esta sección son el snapshot tomado al crear la versión y no cambian si luego se edita el cliente.</p>
+        <div class="form-grid">
+          <label>Nombre comercial<input value="{{ agreement.customer_name_snapshot or '' }}" readonly></label>
+          <label>Razón social<input value="{{ agreement.legal_name_snapshot or '' }}" readonly></label>
+          <label>Cédula jurídica<input value="{{ agreement.legal_id_snapshot or '' }}" readonly></label>
+          <label>Teléfono<input value="{{ agreement.phone_snapshot or '' }}" readonly></label>
+          <label>Dirección<input value="{{ agreement.address_snapshot or '' }}" readonly></label>
+          <label>Provincia<input value="{{ agreement.province_snapshot or '' }}" readonly></label>
+          <label>Cantón<input value="{{ agreement.canton_snapshot or '' }}" readonly></label>
+          <label>Distrito<input value="{{ agreement.district_snapshot or '' }}" readonly></label>
+          <label>Días de crédito<input value="{{ agreement.credit_days_snapshot }}" readonly></label>
+          <label>Canal B2B<input value="{{ agreement.b2b_channel_name_snapshot or '' }}" readonly></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>2. Representación legal y contactos</legend>
+        <div class="form-grid">
+          <label>Representante legal<input name="legal_representative_name" value="{{ agreement.legal_representative_name or '' }}"></label>
+          <label>Identificación representante<input name="legal_representative_id" value="{{ agreement.legal_representative_id or '' }}"></label>
+          <label>Cargo representante<input name="legal_representative_position" value="{{ agreement.legal_representative_position or '' }}"></label>
+          <label>Dirección de facturación<input name="billing_address" value="{{ agreement.billing_address or '' }}"></label>
+          <label>Correo de facturación<input type="email" name="billing_email" value="{{ agreement.billing_email or '' }}"></label>
+          <label>Correo administrativo<input type="email" name="administrative_email" value="{{ agreement.administrative_email or '' }}"></label>
+          <label>WhatsApp<input name="whatsapp" value="{{ agreement.whatsapp or '' }}"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>3. Condiciones comerciales</legend>
+        <div class="form-grid">
+          <label>Descuento comercial B2B (%)<input name="b2b_discount_percent" inputmode="decimal" value="{{ agreement.b2b_discount_percent if agreement.b2b_discount_percent is not none else '' }}"></label>
+          <label>Forma de pago<input name="payment_terms" value="{{ agreement.payment_terms or '' }}"></label>
+          <label><input type="checkbox" name="advance_payment_enabled" {% if agreement.advance_payment_enabled %}checked{% endif %}> Pago anticipado habilitado</label>
+          <label><input type="checkbox" name="credit_approved" {% if agreement.credit_approved %}checked{% endif %}> Crédito aprobado</label>
+          <label>Días de crédito contractual<input type="number" min="0" name="contract_credit_days" value="{{ agreement.contract_credit_days if agreement.contract_credit_days is not none else '' }}"></label>
+          <label>Límite de crédito<input name="credit_limit" inputmode="decimal" value="{{ agreement.credit_limit if agreement.credit_limit is not none else '' }}"></label>
+          <label>Días de recepción de pedidos<input name="order_reception_days" value="{{ agreement.order_reception_days or '' }}"></label>
+          <label>Tiempo habitual de alisto<input name="usual_prep_time" value="{{ agreement.usual_prep_time or '' }}"></label>
+          <label>Tipo de entrega habitual<input name="usual_delivery_type" value="{{ agreement.usual_delivery_type or '' }}"></label>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>4. Personas autorizadas para pedidos</legend>
+        {{ person_table("orders", order_people, "Personas de pedidos") }}
+      </fieldset>
+
+      <fieldset>
+        <legend>5. Personas autorizadas para recibir mercadería</legend>
+        {{ person_table("receiving", receiving_people, "Personas de recepción") }}
+      </fieldset>
+
+      <fieldset>
+        <legend>6. Apartados contractuales</legend>
+        <p>Estos textos son borradores editables. No constituyen todavía una plantilla legal definitiva.</p>
+        {% for section in agreement.sections %}
+          <details {% if loop.first %}open{% endif %}>
+            <summary>{{ section.section_number }}. {{ section.title }}</summary>
+            <label for="section-title-{{ section.section_key }}">Título</label>
+            <input id="section-title-{{ section.section_key }}" name="section_title_{{ section.section_key }}" value="{{ section.title }}">
+            <label for="section-body-{{ section.section_key }}">Texto</label>
+            <textarea id="section-body-{{ section.section_key }}" name="section_body_{{ section.section_key }}" rows="6">{{ section.body_text }}</textarea>
+          </details>
+        {% endfor %}
+      </fieldset>
+
+      <fieldset>
+        <legend>7. Aceptación y firma</legend>
+        <div class="form-grid">
+          <label>Lugar de firma<input name="signature_place" value="{{ agreement.signature_place or '' }}"></label>
+          <label>Fecha de firma<input type="date" name="signature_date" value="{{ agreement.signature_date.isoformat() if agreement.signature_date else '' }}"></label>
+          <label>Nombre firmante cliente<input name="client_signer_name" value="{{ agreement.client_signer_name or '' }}"></label>
+          <label>Identificación firmante<input name="client_signer_id" value="{{ agreement.client_signer_id or '' }}"></label>
+          <label>Cargo firmante<input name="client_signer_position" value="{{ agreement.client_signer_position or '' }}"></label>
+        </div>
+        <label for="catalog-reference">Referencia al catálogo</label>
+        <textarea id="catalog-reference" name="catalog_reference" rows="3">{{ agreement.catalog_reference or '' }}</textarea>
+      </fieldset>
+
+      <button type="submit">Guardar borrador</button>
+    </form>
+  </section>
+
+  <script>
+    (() => {
+      const addRow = (kind) => {
+        const body = document.getElementById(kind + "-people-body");
+        const source = body && body.querySelector("tr:last-child");
+        if (!body || !source) { return; }
+        const row = source.cloneNode(true);
+        row.querySelectorAll("input").forEach((input) => { input.value = ""; });
+        body.appendChild(row);
+      };
+      document.addEventListener("click", (event) => {
+        const addButton = event.target.closest(".add-person-row");
+        if (addButton) {
+          addRow(addButton.dataset.kind);
+          return;
+        }
+        const removeButton = event.target.closest(".remove-person-row");
+        if (removeButton) {
+          removeButton.closest("tr").remove();
+        }
+      });
+    })();
+  </script>
+{% endblock %}

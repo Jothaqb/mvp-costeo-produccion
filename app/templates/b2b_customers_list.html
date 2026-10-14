@@ -45,6 +45,9 @@
             <td>
               <a href="/b2b/customers/{{ customer.id }}/edit">Edit</a>
               <a href="/b2b/customers/{{ customer.id }}/products">Catálogo</a>
+              {% if can(request, "b2b_commercial_agreement.view") %}
+                <a href="/b2b/customers/{{ customer.id }}/commercial-agreements">Acuerdo comercial</a>
+              {% endif %}
             </td>
           </tr>
         {% else %}

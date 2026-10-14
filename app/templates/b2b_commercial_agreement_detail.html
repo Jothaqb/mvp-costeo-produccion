@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Acuerdo comercial v{{ agreement.version_number }}</h1>
+    <p><strong>Cliente:</strong> {{ agreement.customer_name_snapshot }}</p>
+    <p><strong>Estado:</strong> {{ agreement.status }}</p>
+    <section class="actions">
+      <a href="/b2b/customers/{{ agreement.customer_id }}/commercial-agreements">Volver al historial</a>
+      {% if agreement.status == "draft" and can(request, "b2b_commercial_agreement.edit") %}
+        <a class="button" href="/b2b/commercial-agreements/{{ agreement.id }}/edit">Editar borrador</a>
+      {% endif %}
+    </section>
+
+    <h2>Información del cliente</h2>
+    <dl>
+      <dt>Nombre comercial</dt><dd>{{ agreement.customer_name_snapshot or "" }}</dd>
+      <dt>Razón social</dt><dd>{{ agreement.legal_name_snapshot or "" }}</dd>
+      <dt>Cédula jurídica</dt><dd>{{ agreement.legal_id_snapshot or "" }}</dd>
+      <dt>Dirección</dt><dd>{{ agreement.address_snapshot or "" }}</dd>
+      <dt>Ubicación</dt><dd>{{ agreement.district_snapshot or "" }}, {{ agreement.canton_snapshot or "" }}, {{ agreement.province_snapshot or "" }}</dd>
+      <dt>Canal B2B</dt><dd>{{ agreement.b2b_channel_name_snapshot or "" }}</dd>
+    </dl>
+
+    <h2>Representación y condiciones</h2>
+    <dl>
+      <dt>Representante legal</dt><dd>{{ agreement.legal_representative_name or "" }}</dd>
+      <dt>Identificación</dt><dd>{{ agreement.legal_representative_id or "" }}</dd>
+      <dt>Cargo</dt><dd>{{ agreement.legal_representative_position or "" }}</dd>
+      <dt>Correo de facturación</dt><dd>{{ agreement.billing_email or "" }}</dd>
+      <dt>Forma de pago</dt><dd>{{ agreement.payment_terms or "" }}</dd>
+      <dt>Descuento B2B</dt><dd>{{ agreement.b2b_discount_percent if agreement.b2b_discount_percent is not none else "" }}%</dd>
+      <dt>Crédito aprobado</dt><dd>{{ "Sí" if agreement.credit_approved else "No" }}</dd>
+      <dt>Referencia al catálogo</dt><dd>{{ agreement.catalog_reference or "" }}</dd>
+    </dl>
+
+    <h2>Personas autorizadas para pedidos</h2>
+    <ul>
+      {% for person in order_people %}
+        <li>{{ person.name }}{% if person.position %} — {{ person.position }}{% endif %}</li>
+      {% else %}<li>No registradas.</li>{% endfor %}
+    </ul>
+
+    <h2>Personas autorizadas para recibir mercadería</h2>
+    <ul>
+      {% for person in receiving_people %}
+        <li>{{ person.name }}{% if person.position %} — {{ person.position }}{% endif %}</li>
+      {% else %}<li>No registradas.</li>{% endfor %}
+    </ul>
+
+    <h2>Apartados contractuales</h2>
+    {% for section in agreement.sections %}
+      <article>
+        <h3>{{ section.section_number }}. {{ section.title }}</h3>
+        <p style="white-space:pre-wrap">{{ section.body_text }}</p>
+      </article>
+    {% endfor %}
+
+    <h2>Aceptación y firma</h2>
+    <p>{{ agreement.signature_place or "" }}{% if agreement.signature_date %}, {{ agreement.signature_date }}{% endif %}</p>
+    <p>{{ agreement.client_signer_name or "" }} — {{ agreement.client_signer_position or "" }}</p>
+    <p class="muted-inline">La generación, firma y archivo documental se implementarán en una fase posterior.</p>
+  </section>
+{% endblock %}

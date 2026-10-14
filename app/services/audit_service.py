@@ -13,6 +13,7 @@ from app.models import (
     AuditLog,
     B2BAROpeningBalance,
     B2BARPayment,
+    B2BCommercialAgreement,
     B2BCustomer,
     B2BCustomerProduct,
     B2BSalesOrder,
@@ -149,6 +150,79 @@ def snapshot_b2b_customer_for_audit(customer: B2BCustomer) -> dict[str, Any]:
         "credit_days": customer.credit_days,
         "channel_id": customer.channel_id,
         "active": customer.active,
+    }
+
+
+def snapshot_b2b_commercial_agreement_for_audit(
+    agreement: B2BCommercialAgreement,
+) -> dict[str, Any]:
+    return {
+        "agreement_id": agreement.id,
+        "customer_id": agreement.customer_id,
+        "version_number": agreement.version_number,
+        "status": agreement.status,
+        "customer_name_snapshot": agreement.customer_name_snapshot,
+        "legal_name_snapshot": agreement.legal_name_snapshot,
+        "legal_id_snapshot": agreement.legal_id_snapshot,
+        "phone_snapshot": agreement.phone_snapshot,
+        "address_snapshot": agreement.address_snapshot,
+        "province_snapshot": agreement.province_snapshot,
+        "canton_snapshot": agreement.canton_snapshot,
+        "district_snapshot": agreement.district_snapshot,
+        "credit_days_snapshot": agreement.credit_days_snapshot,
+        "b2b_channel_name_snapshot": agreement.b2b_channel_name_snapshot,
+        "customer_active_snapshot": agreement.customer_active_snapshot,
+        "legal_representative_name": agreement.legal_representative_name,
+        "legal_representative_id": agreement.legal_representative_id,
+        "legal_representative_position": agreement.legal_representative_position,
+        "billing_address": agreement.billing_address,
+        "billing_email": agreement.billing_email,
+        "administrative_email": agreement.administrative_email,
+        "whatsapp": agreement.whatsapp,
+        "b2b_discount_percent": agreement.b2b_discount_percent,
+        "payment_terms": agreement.payment_terms,
+        "advance_payment_enabled": agreement.advance_payment_enabled,
+        "credit_approved": agreement.credit_approved,
+        "contract_credit_days": agreement.contract_credit_days,
+        "credit_limit": agreement.credit_limit,
+        "order_reception_days": agreement.order_reception_days,
+        "usual_prep_time": agreement.usual_prep_time,
+        "usual_delivery_type": agreement.usual_delivery_type,
+        "signature_place": agreement.signature_place,
+        "signature_date": agreement.signature_date,
+        "client_signer_name": agreement.client_signer_name,
+        "client_signer_id": agreement.client_signer_id,
+        "client_signer_position": agreement.client_signer_position,
+        "catalog_reference": agreement.catalog_reference,
+        "template_revision": agreement.template_revision,
+        "authorized_people": [
+            {
+                "authorization_type": person.authorization_type,
+                "name": person.name,
+                "identification": person.identification,
+                "position": person.position,
+                "phone": person.phone,
+                "email": person.email,
+                "display_order": person.display_order,
+            }
+            for person in sorted(
+                agreement.authorized_people,
+                key=lambda item: (item.authorization_type, item.display_order, item.id),
+            )
+        ],
+        "sections": [
+            {
+                "section_key": section.section_key,
+                "section_number": section.section_number,
+                "title": section.title,
+                "body_text": section.body_text,
+                "display_order": section.display_order,
+            }
+            for section in sorted(
+                agreement.sections,
+                key=lambda item: (item.display_order, item.section_number, item.id),
+            )
+        ],
     }
 
 

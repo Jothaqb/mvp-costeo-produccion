@@ -59,6 +59,7 @@ from app.models import (
     AccountingSubrubric,
     AppSettings,
     AuditLog,
+    B2BCommercialAgreement,
     B2BCustomer,
     B2BCustomerProduct,
     B2CCustomer,
@@ -119,6 +120,14 @@ from app.services.b2b_sales_service import (
 from app.services.b2b_catalog_export_service import (
     build_b2b_customer_catalog_pdf,
     safe_b2b_catalog_pdf_filename,
+)
+from app.services.b2b_commercial_agreement_service import (
+    B2BCommercialAgreementValidationError,
+    create_commercial_agreement_draft,
+    get_commercial_agreement,
+    list_customer_commercial_agreements,
+    update_commercial_agreement_draft,
+    validate_commercial_agreement,
 )
 from app.services.accounts_receivable_service import (
     AccountsReceivableValidationError,
@@ -344,6 +353,7 @@ from app.services.audit_service import (
     snapshot_b2b_ar_opening_balance_for_audit,
     snapshot_b2b_ar_payment_for_audit,
     snapshot_b2b_customer_for_audit,
+    snapshot_b2b_commercial_agreement_for_audit,
     snapshot_b2b_sales_order_for_audit,
     snapshot_b2b_customer_product_for_audit,
     snapshot_b2c_sales_order_for_audit,
@@ -7239,6 +7249,264 @@ def b2b_customers(
             "result_count": len(customers),
         },
     )
+
+
+@app.get("/b2b/customers/{customer_id}/commercial-agreements", response_class=HTMLResponse)
+def b2b_commercial_agreements(
+    customer_id: int,
+    request: Request,
+    message: str = Query(""),
+    error: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "b2b_commercial_agreement.view")
+    customer, agreements = list_customer_commercial_agreements(db, customer_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_commercial_agreements.html",
+        context={
+            "title": f"Acuerdos comerciales - {customer.customer_name}",
+            "customer": customer,
+            "agreements": agreements,
+            "has_draft": any(agreement.status == "draft" for agreement in agreements),
+            "can_create_first_version": not agreements,
+            "message": message or None,
+            "error": error or None,
+        },
+    )
+
+
+@app.post("/b2b/customers/{customer_id}/commercial-agreements/create")
+def create_b2b_commercial_agreement(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "b2b_commercial_agreement.edit")
+    try:
+        agreement = create_commercial_agreement_draft(
+            db,
+            customer_id=customer_id,
+            user_id=current_user.id,
+        )
+        safe_log_audit_event(
+            module="commercial",
+            action="commercial_agreement_created",
+            entity_type="b2b_commercial_agreement",
+            entity_id=agreement.id,
+            entity_label=f"{agreement.customer_name_snapshot} v{agreement.version_number}",
+            new_values=snapshot_b2b_commercial_agreement_for_audit(agreement),
+            request=request,
+            user=current_user,
+        )
+        return _redirect(f"/b2b/commercial-agreements/{agreement.id}/edit")
+    except B2BCommercialAgreementValidationError as exc:
+        db.rollback()
+        return _redirect(
+            f"/b2b/customers/{customer_id}/commercial-agreements?error={quote(str(exc))}"
+        )
+
+
+@app.get("/b2b/commercial-agreements/{agreement_id}/edit", response_class=HTMLResponse)
+def edit_b2b_commercial_agreement(
+    agreement_id: int,
+    request: Request,
+    message: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "b2b_commercial_agreement.edit")
+    agreement = get_commercial_agreement(db, agreement_id)
+    if agreement.status != "draft":
+        raise HTTPException(status_code=409, detail="Solo los acuerdos en borrador se pueden editar.")
+    return _render_b2b_commercial_agreement_editor(
+        request,
+        agreement,
+        message=message or None,
+    )
+
+
+@app.post("/b2b/commercial-agreements/{agreement_id}/edit")
+async def update_b2b_commercial_agreement(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "b2b_commercial_agreement.edit")
+    agreement = get_commercial_agreement(db, agreement_id)
+    if agreement.status != "draft":
+        raise HTTPException(status_code=409, detail="Solo los acuerdos en borrador se pueden editar.")
+    old_snapshot = snapshot_b2b_commercial_agreement_for_audit(agreement)
+    form = await request.form()
+    try:
+        updated = update_commercial_agreement_draft(
+            db,
+            agreement_id=agreement_id,
+            fields={
+                "legal_representative_name": form.get("legal_representative_name", ""),
+                "legal_representative_id": form.get("legal_representative_id", ""),
+                "legal_representative_position": form.get("legal_representative_position", ""),
+                "billing_address": form.get("billing_address", ""),
+                "billing_email": form.get("billing_email", ""),
+                "administrative_email": form.get("administrative_email", ""),
+                "whatsapp": form.get("whatsapp", ""),
+                "b2b_discount_percent": form.get("b2b_discount_percent", ""),
+                "payment_terms": form.get("payment_terms", ""),
+                "advance_payment_enabled": "advance_payment_enabled" in form,
+                "credit_approved": "credit_approved" in form,
+                "contract_credit_days": form.get("contract_credit_days", ""),
+                "credit_limit": form.get("credit_limit", ""),
+                "order_reception_days": form.get("order_reception_days", ""),
+                "usual_prep_time": form.get("usual_prep_time", ""),
+                "usual_delivery_type": form.get("usual_delivery_type", ""),
+                "signature_place": form.get("signature_place", ""),
+                "signature_date": form.get("signature_date", ""),
+                "client_signer_name": form.get("client_signer_name", ""),
+                "client_signer_id": form.get("client_signer_id", ""),
+                "client_signer_position": form.get("client_signer_position", ""),
+                "catalog_reference": form.get("catalog_reference", ""),
+            },
+            people=_commercial_agreement_people_from_form(form),
+            section_updates={
+                section.section_key: {
+                    "title": form.get(f"section_title_{section.section_key}", section.title),
+                    "body_text": form.get(f"section_body_{section.section_key}", section.body_text),
+                }
+                for section in agreement.sections
+            },
+            user_id=current_user.id,
+        )
+        changed_old, changed_new = diff_audit_snapshots(
+            old_snapshot,
+            snapshot_b2b_commercial_agreement_for_audit(updated),
+        )
+        if changed_old is not None and changed_new is not None:
+            safe_log_audit_event(
+                module="commercial",
+                action="commercial_agreement_updated",
+                entity_type="b2b_commercial_agreement",
+                entity_id=updated.id,
+                entity_label=f"{updated.customer_name_snapshot} v{updated.version_number}",
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+                user=current_user,
+            )
+        return _redirect(
+            f"/b2b/commercial-agreements/{agreement_id}/edit?message="
+            f"{quote('Borrador guardado correctamente.')}"
+        )
+    except B2BCommercialAgreementValidationError as exc:
+        db.rollback()
+        agreement = get_commercial_agreement(db, agreement_id)
+        return _render_b2b_commercial_agreement_editor(request, agreement, error=str(exc))
+
+
+@app.post("/b2b/commercial-agreements/{agreement_id}/validate", response_class=HTMLResponse)
+def validate_b2b_commercial_agreement_route(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    current_user = require_permission(request, "b2b_commercial_agreement.generate")
+    agreement = get_commercial_agreement(db, agreement_id)
+    if agreement.status != "draft":
+        raise HTTPException(status_code=409, detail="Solo se validan acuerdos en borrador.")
+    missing_fields = validate_commercial_agreement(agreement)
+    safe_log_audit_event(
+        module="commercial",
+        action="commercial_agreement_validated",
+        entity_type="b2b_commercial_agreement",
+        entity_id=agreement.id,
+        entity_label=f"{agreement.customer_name_snapshot} v{agreement.version_number}",
+        new_values={
+            "valid": not missing_fields,
+            "missing_fields": missing_fields,
+        },
+        request=request,
+        user=current_user,
+    )
+    return _render_b2b_commercial_agreement_editor(
+        request,
+        agreement,
+        missing_fields=missing_fields,
+        message=("El acuerdo está completo y listo para la futura fase de generación." if not missing_fields else None),
+    )
+
+
+@app.get("/b2b/commercial-agreements/{agreement_id}", response_class=HTMLResponse)
+def b2b_commercial_agreement_detail(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "b2b_commercial_agreement.view")
+    agreement = get_commercial_agreement(db, agreement_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_commercial_agreement_detail.html",
+        context={
+            "title": f"Acuerdo comercial v{agreement.version_number}",
+            "agreement": agreement,
+            "order_people": [
+                person for person in agreement.authorized_people if person.authorization_type == "orders"
+            ],
+            "receiving_people": [
+                person
+                for person in agreement.authorized_people
+                if person.authorization_type == "receiving"
+            ],
+        },
+    )
+
+
+def _render_b2b_commercial_agreement_editor(
+    request: Request,
+    agreement: B2BCommercialAgreement,
+    *,
+    error: str | None = None,
+    message: str | None = None,
+    missing_fields: list[str] | None = None,
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_commercial_agreement_edit.html",
+        context={
+            "title": f"Editar acuerdo comercial v{agreement.version_number}",
+            "agreement": agreement,
+            "order_people": [
+                person for person in agreement.authorized_people if person.authorization_type == "orders"
+            ],
+            "receiving_people": [
+                person
+                for person in agreement.authorized_people
+                if person.authorization_type == "receiving"
+            ],
+            "error": error,
+            "message": message,
+            "missing_fields": missing_fields,
+        },
+    )
+
+
+def _commercial_agreement_people_from_form(form) -> list[dict[str, str]]:
+    people: list[dict[str, str]] = []
+    for authorization_type in ("orders", "receiving"):
+        values_by_field = {
+            field_name: list(form.getlist(f"{authorization_type}_person_{field_name}"))
+            for field_name in ("name", "identification", "position", "phone", "email")
+        }
+        row_count = max((len(values) for values in values_by_field.values()), default=0)
+        for row_index in range(row_count):
+            people.append(
+                {
+                    "authorization_type": authorization_type,
+                    **{
+                        field_name: (values[row_index] if row_index < len(values) else "")
+                        for field_name, values in values_by_field.items()
+                    },
+                }
+            )
+    return people
 
 
 @app.get("/b2b/customers/import", response_class=HTMLResponse)

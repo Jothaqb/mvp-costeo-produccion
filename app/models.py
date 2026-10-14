@@ -618,6 +618,191 @@ class B2BCustomer(Base):
     )
     channel_record: Mapped["Channel | None"] = relationship("Channel", back_populates="b2b_customers")
     orders: Mapped[list["B2BSalesOrder"]] = relationship(back_populates="customer")
+    commercial_agreements: Mapped[list["B2BCommercialAgreement"]] = relationship(
+        back_populates="customer",
+        cascade="all, delete-orphan",
+    )
+
+
+class B2BCommercialAgreement(Base):
+    __tablename__ = "b2b_commercial_agreements"
+    __table_args__ = (
+        UniqueConstraint(
+            "customer_id",
+            "version_number",
+            name="uq_b2b_commercial_agreements_customer_version",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'generated', 'signed', 'archived')",
+            name="ck_b2b_commercial_agreements_status",
+        ),
+        CheckConstraint(
+            "b2b_discount_percent IS NULL OR "
+            "(b2b_discount_percent >= 0 AND b2b_discount_percent <= 100)",
+            name="ck_b2b_commercial_agreements_discount_percent",
+        ),
+        CheckConstraint(
+            "credit_days_snapshot >= 0",
+            name="ck_b2b_commercial_agreements_credit_days_snapshot",
+        ),
+        CheckConstraint(
+            "contract_credit_days IS NULL OR contract_credit_days >= 0",
+            name="ck_b2b_commercial_agreements_contract_credit_days",
+        ),
+        CheckConstraint(
+            "credit_limit IS NULL OR credit_limit >= 0",
+            name="ck_b2b_commercial_agreements_credit_limit",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("b2b_customers.id"), nullable=False, index=True)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False, index=True)
+
+    customer_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legal_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legal_id_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    phone_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    address_snapshot: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    province_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    canton_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    district_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    credit_days_snapshot: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    b2b_channel_name_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    customer_active_snapshot: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    legal_representative_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    legal_representative_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    legal_representative_position: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    billing_address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    billing_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    administrative_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    whatsapp: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    b2b_discount_percent: Mapped[Decimal | None] = mapped_column(Numeric(7, 4), nullable=True)
+    payment_terms: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    advance_payment_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    credit_approved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    contract_credit_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    credit_limit: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    order_reception_days: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    usual_prep_time: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    usual_delivery_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    signature_place: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    signature_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    client_signer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    client_signer_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    client_signer_position: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    catalog_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_revision: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    generated_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    signed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    signed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archived_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    generated_pdf_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    generated_pdf_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    generated_pdf_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    customer: Mapped["B2BCustomer"] = relationship("B2BCustomer", back_populates="commercial_agreements")
+    authorized_people: Mapped[list["B2BCommercialAgreementPerson"]] = relationship(
+        "B2BCommercialAgreementPerson",
+        back_populates="agreement",
+        cascade="all, delete-orphan",
+        order_by="B2BCommercialAgreementPerson.display_order",
+    )
+    sections: Mapped[list["B2BCommercialAgreementSection"]] = relationship(
+        "B2BCommercialAgreementSection",
+        back_populates="agreement",
+        cascade="all, delete-orphan",
+        order_by="B2BCommercialAgreementSection.display_order",
+    )
+
+
+class B2BCommercialAgreementPerson(Base):
+    __tablename__ = "b2b_commercial_agreement_people"
+    __table_args__ = (
+        CheckConstraint(
+            "authorization_type IN ('orders', 'receiving')",
+            name="ck_b2b_commercial_agreement_people_authorization_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    agreement_id: Mapped[int] = mapped_column(
+        ForeignKey("b2b_commercial_agreements.id"),
+        nullable=False,
+        index=True,
+    )
+    authorization_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    identification: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    position: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    agreement: Mapped["B2BCommercialAgreement"] = relationship(
+        "B2BCommercialAgreement",
+        back_populates="authorized_people",
+    )
+
+
+class B2BCommercialAgreementSection(Base):
+    __tablename__ = "b2b_commercial_agreement_sections"
+    __table_args__ = (
+        UniqueConstraint(
+            "agreement_id",
+            "section_key",
+            name="uq_b2b_commercial_agreement_sections_key",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    agreement_id: Mapped[int] = mapped_column(
+        ForeignKey("b2b_commercial_agreements.id"),
+        nullable=False,
+        index=True,
+    )
+    section_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    section_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    agreement: Mapped["B2BCommercialAgreement"] = relationship(
+        "B2BCommercialAgreement",
+        back_populates="sections",
+    )
 
 
 class B2CCustomer(Base):

@@ -15,11 +15,14 @@ from app.services.admin_user_service import (
 from app.services.auth_service import BASE_PERMISSION_DEFINITIONS, ensure_auth_seed_state
 
 
-CATALOG_PERMISSION_CODES = {
+SALES_MANAGER_PERMISSION_CODES = {
     "sales.view",
     "product.view",
     "b2b_customer_products.edit_prices",
     "b2b_sales.cancel_invoice",
+    "b2b_commercial_agreement.view",
+    "b2b_commercial_agreement.edit",
+    "b2b_commercial_agreement.generate",
 }
 
 
@@ -81,12 +84,12 @@ class SalesManagerRoleTests(unittest.TestCase):
 
     def test_sales_manager_receives_only_catalog_permissions(self) -> None:
         with self.SessionLocal() as db:
-            self.assertEqual(self._permission_codes(db, "sales_manager"), CATALOG_PERMISSION_CODES)
+            self.assertEqual(self._permission_codes(db, "sales_manager"), SALES_MANAGER_PERMISSION_CODES)
 
     def test_general_operator_does_not_receive_catalog_permissions(self) -> None:
         with self.SessionLocal() as db:
             operator_permissions = self._permission_codes(db, "general_operator")
-            self.assertTrue(operator_permissions.isdisjoint(CATALOG_PERMISSION_CODES))
+            self.assertTrue(operator_permissions.isdisjoint(SALES_MANAGER_PERMISSION_CODES))
 
     def test_admin_keeps_all_base_permissions(self) -> None:
         expected_permissions = {definition[0] for definition in BASE_PERMISSION_DEFINITIONS}
@@ -122,7 +125,7 @@ class SalesManagerRoleTests(unittest.TestCase):
             role = db.query(Role).filter(Role.code == "sales_manager").one()
             self.assertEqual(
                 db.query(RolePermission).filter(RolePermission.role_id == role.id).count(),
-                len(CATALOG_PERMISSION_CODES),
+                len(SALES_MANAGER_PERMISSION_CODES),
             )
 
 

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section>
+    <h1>Acuerdos comerciales</h1>
+    <p><strong>Cliente:</strong> {{ customer.customer_name }}</p>
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+    <section class="actions">
+      <a href="/b2b/customers">Volver a clientes</a>
+      {% if can(request, "b2b_commercial_agreement.edit") and can_create_first_version %}
+        <form method="post" action="/b2b/customers/{{ customer.id }}/commercial-agreements/create">
+          <button type="submit">Crear acuerdo comercial</button>
+        </form>
+      {% endif %}
+    </section>
+
+    {% if has_draft %}
+      <p class="muted-inline">Ya existe un borrador para este cliente. Debe completarse antes de crear otra versión.</p>
+    {% elif agreements %}
+      <p class="muted-inline">La creación de nuevas versiones se incorporará en la fase 2.</p>
+    {% endif %}
+
+    <table>
+      <thead>
+        <tr>
+          <th>Versión</th>
+          <th>Estado</th>
+          <th>Fecha creación</th>
+          <th>Fecha generación</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for agreement in agreements %}
+          <tr>
+            <td>{{ agreement.version_number }}</td>
+            <td>{{ agreement.status }}</td>
+            <td>{{ agreement.created_at.strftime("%Y-%m-%d %H:%M") if agreement.created_at else "" }}</td>
+            <td>{{ agreement.generated_at.strftime("%Y-%m-%d %H:%M") if agreement.generated_at else "" }}</td>
+            <td>
+              <a href="/b2b/commercial-agreements/{{ agreement.id }}">Ver detalle</a>
+              {% if agreement.status == "draft" and can(request, "b2b_commercial_agreement.edit") %}
+                <a href="/b2b/commercial-agreements/{{ agreement.id }}/edit">Editar</a>
+              {% endif %}
+              {% if agreement.status == "draft" and can(request, "b2b_commercial_agreement.generate") %}
+                <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/validate" style="display:inline">
+                  <button type="submit">Validar</button>
+                </form>
+              {% endif %}
+              {% if agreement.status == "generated" %}
+                <span class="muted-inline">Descarga PDF: fase futura</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5">Este cliente todavía no tiene acuerdos comerciales.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+{% endblock %}
