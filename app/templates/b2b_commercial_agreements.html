@@ -50,7 +50,9 @@
                 </form>
               {% endif %}
               {% if agreement.status == "generated" %}
-                <span class="muted-inline">Descarga PDF: fase futura</span>
+                <a href="/b2b/commercial-agreements/{{ agreement.id }}/download-pdf">Descargar PDF</a>
+              {% elif agreement.generated_pdf_bytes %}
+                <a href="/b2b/commercial-agreements/{{ agreement.id }}/download-pdf">Descargar PDF</a>
               {% endif %}
             </td>
           </tr>

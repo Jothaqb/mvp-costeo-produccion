@@ -1,10 +1,10 @@
-# Acuerdos comerciales B2B — Fases 1 y 1.1
+# Acuerdos comerciales B2B — Fases 1, 1.1 y 2
 
 ## Alcance
 
-Esta fase incorpora el expediente editable de un acuerdo comercial por cliente B2B. Permite crear la primera versión, conservar snapshots del cliente, editar personas autorizadas y apartados contractuales, consultar el historial y validar campos faltantes.
+El módulo incorpora el expediente editable de un acuerdo comercial por cliente B2B. Permite crear la primera versión, conservar snapshots del cliente, editar personas autorizadas y apartados contractuales, consultar el historial, validar campos faltantes y generar un PDF inmutable.
 
-No genera PDF, no cambia el estado `draft`, no gestiona firma o archivo y no incluye productos ni anexos de catálogo.
+No gestiona todavía firma o archivo y no incluye productos ni anexos de catálogo.
 
 ## Acceso y permisos
 
@@ -25,6 +25,8 @@ Los permisos son:
 4. Se crean 19 apartados contractuales con texto base editable y variables del acuerdo.
 5. El borrador permite registrar representación legal, contactos, condiciones, personas autorizadas y aceptación.
 6. **Validar acuerdo** muestra de una vez todos los campos pendientes. No genera documentos ni cambia el estado.
+7. **Generar PDF** vuelve a validar y, si el acuerdo está completo, guarda los bytes, nombre seguro, SHA-256, fecha y usuario de generación; luego cambia el estado a `generated`.
+8. **Descargar PDF** devuelve exactamente los bytes persistidos. No regenera el documento.
 
 ## Plantilla contractual y variables
 
@@ -46,7 +48,15 @@ Solo puede existir un borrador por cliente, validado por el servicio. En esta fa
 - `b2b_commercial_agreement_people`: personas autorizadas para pedidos o recepción.
 - `b2b_commercial_agreement_sections`: los 19 apartados editables.
 
-Las tablas se crean mediante `Base.metadata.create_all()`. No hay migración manual ni modificación de tablas operativas existentes.
+Las tablas se crean mediante `Base.metadata.create_all()`. Los campos de persistencia del PDF ya forman parte de `b2b_commercial_agreements`; no hay migración manual ni modificación de tablas operativas existentes.
+
+## PDF generado
+
+La generación usa ReportLab en tamaño carta vertical. El documento contiene encabezado corporativo y logo opcional, información del cliente, condiciones comerciales, personas autorizadas, los 19 apartados con variables resueltas, aceptación, firmas y pie de página con versión y página.
+
+Solo un acuerdo `draft` completo puede generar PDF. Una vez en estado `generated`, no puede editarse ni regenerarse; los estados `signed` y `archived` también conservan la descarga del PDF original. Un cambio futuro deberá crear una nueva versión.
+
+El PDF no consulta productos, no incorpora SKUs, precios de productos, catálogo ni Anexo 1. Únicamente conserva la referencia textual al catálogo comercial vigente adjunto.
 
 ## Auditoría
 
@@ -56,10 +66,10 @@ Se registran los eventos:
 - `commercial_agreement_updated`
 - `commercial_agreement_validated`
 - `commercial_agreement_sections_reset`
+- `commercial_agreement_generated`
 
-## Límites de Fase 1
+## Límites vigentes
 
-- No se genera, descarga ni persiste un PDF.
 - No se firma ni archiva un acuerdo.
 - No se consulta el catálogo B2B, productos ni precios.
 - No se genera Anexo 1; solo se conserva la referencia textual al catálogo vigente.

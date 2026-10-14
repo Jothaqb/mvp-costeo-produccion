@@ -69,6 +69,13 @@
         <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/validate">
           <button type="submit">Validar acuerdo</button>
         </form>
+        <form
+          method="post"
+          action="/b2b/commercial-agreements/{{ agreement.id }}/generate-pdf"
+          onsubmit="return confirm('Se validará el acuerdo y, si está completo, se generará una versión PDF inmutable. ¿Desea continuar?')"
+        >
+          <button type="submit">Generar PDF</button>
+        </form>
       {% endif %}
       <form
         method="post"

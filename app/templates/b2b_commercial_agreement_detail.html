@@ -10,6 +10,9 @@
       {% if agreement.status == "draft" and can(request, "b2b_commercial_agreement.edit") %}
         <a class="button" href="/b2b/commercial-agreements/{{ agreement.id }}/edit">Editar borrador</a>
       {% endif %}
+      {% if agreement.generated_pdf_bytes and can(request, "b2b_commercial_agreement.view") %}
+        <a class="button" href="/b2b/commercial-agreements/{{ agreement.id }}/download-pdf">Descargar PDF</a>
+      {% endif %}
     </section>
 
     <h2>Información del cliente</h2>
@@ -59,6 +62,8 @@
     <h2>Aceptación y firma</h2>
     <p>{{ agreement.signature_place or "" }}{% if agreement.signature_date %}, {{ agreement.signature_date }}{% endif %}</p>
     <p>{{ agreement.client_signer_name or "" }} — {{ agreement.client_signer_position or "" }}</p>
-    <p class="muted-inline">La generación, firma y archivo documental se implementarán en una fase posterior.</p>
+    {% if agreement.status == "draft" %}
+      <p class="muted-inline">El PDF se habilita cuando el borrador está completo y se genera el acuerdo.</p>
+    {% endif %}
   </section>
 {% endblock %}

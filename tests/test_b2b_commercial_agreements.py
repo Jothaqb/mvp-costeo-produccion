@@ -1,8 +1,10 @@
+import hashlib
 import unittest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -44,6 +46,13 @@ from app.services.b2b_commercial_agreement_service import (
     reset_commercial_agreement_sections_to_template,
     update_commercial_agreement_draft,
     validate_commercial_agreement,
+)
+from app.services.b2b_commercial_agreement_pdf_service import (
+    B2BCommercialAgreementIncompleteError,
+    build_b2b_commercial_agreement_pdf,
+    generate_and_store_b2b_commercial_agreement_pdf,
+    get_stored_b2b_commercial_agreement_pdf,
+    safe_b2b_commercial_agreement_pdf_filename,
 )
 
 
@@ -89,6 +98,23 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         return create_commercial_agreement_draft(
             db,
             customer_id=self.customer_id,
+            user_id=None,
+        )
+
+    def _complete(self, db) -> B2BCommercialAgreement:
+        agreement = self._create(db)
+        return update_commercial_agreement_draft(
+            db,
+            agreement_id=agreement.id,
+            fields=self._complete_fields(),
+            people=self._people(),
+            section_updates={
+                section.section_key: {
+                    "title": section.title,
+                    "body_text": section.body_text,
+                }
+                for section in agreement.sections
+            },
             user_id=None,
         )
 
@@ -641,7 +667,7 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             require_permission(request, "b2b_commercial_agreement.edit")
         self.assertEqual(raised.exception.status_code, 403)
 
-    def test_actions_link_is_permission_guarded_and_no_pdf_route_exists(self) -> None:
+    def test_actions_and_pdf_routes_are_permission_guarded(self) -> None:
         customer_template = Path("app/templates/b2b_customers_list.html").read_text(encoding="utf-8")
         editor_template = Path("app/templates/b2b_commercial_agreement_edit.html").read_text(
             encoding="utf-8"
@@ -652,7 +678,40 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         )
         self.assertIn("Acuerdo comercial", customer_template)
         self.assertIn('can(request, "b2b_commercial_agreement.view")', customer_template)
-        self.assertNotIn("commercial-agreements/{agreement_id}/export", main_source)
+        self.assertIn(
+            '@app.post("/b2b/commercial-agreements/{agreement_id}/generate-pdf")',
+            main_source,
+        )
+        self.assertIn(
+            '@app.get("/b2b/commercial-agreements/{agreement_id}/download-pdf")',
+            main_source,
+        )
+        generate_route = main_source.split(
+            '@app.post("/b2b/commercial-agreements/{agreement_id}/generate-pdf")',
+            1,
+        )[1].split(
+            '@app.get("/b2b/commercial-agreements/{agreement_id}/download-pdf")',
+            1,
+        )[0]
+        download_route = main_source.split(
+            '@app.get("/b2b/commercial-agreements/{agreement_id}/download-pdf")',
+            1,
+        )[1].split(
+            '@app.get("/b2b/commercial-agreements/{agreement_id}"',
+            1,
+        )[0]
+        self.assertIn(
+            'require_permission(request, "b2b_commercial_agreement.generate")',
+            generate_route,
+        )
+        self.assertIn(
+            'require_permission(request, "b2b_commercial_agreement.view")',
+            download_route,
+        )
+        self.assertIn("get_stored_b2b_commercial_agreement_pdf(agreement)", download_route)
+        self.assertIn("content=pdf_bytes", download_route)
+        self.assertIn('media_type="application/pdf"', download_route)
+        self.assertIn('action="commercial_agreement_generated"', generate_route)
         self.assertNotIn("reportlab", service_source.lower())
         self.assertNotIn("b2b_catalog_export_service", service_source)
         self.assertNotIn("Product", service_source)
@@ -673,6 +732,167 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         self.assertIn('type="hidden" name="{{ kind }}_person_identification"', editor_template)
         self.assertNotIn('name="section_title_{{ section.section_key }}" value="{{ section.title }}" required', editor_template)
         self.assertNotIn('name="section_body_{{ section.section_key }}" rows="6" required', editor_template)
+        self.assertIn("Generar PDF", editor_template)
+        self.assertIn("generate-pdf", editor_template)
+        detail_template = Path("app/templates/b2b_commercial_agreement_detail.html").read_text(
+            encoding="utf-8"
+        )
+        history_template = Path("app/templates/b2b_commercial_agreements.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Descargar PDF", detail_template)
+        self.assertIn("download-pdf", detail_template)
+        self.assertIn("Descargar PDF", history_template)
+        self.assertIn("download-pdf", history_template)
+
+    def test_complete_draft_generates_and_persists_immutable_pdf_metadata(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            generated = generate_and_store_b2b_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                user_id=None,
+                logo_bytes=None,
+            )
+
+            self.assertEqual(generated.status, "generated")
+            self.assertIsNotNone(generated.generated_at)
+            self.assertIsNone(generated.generated_by_user_id)
+            self.assertTrue(generated.generated_pdf_bytes.startswith(b"%PDF"))
+            self.assertGreater(len(generated.generated_pdf_bytes), 5000)
+            self.assertEqual(
+                generated.generated_pdf_filename,
+                "Acuerdo_Comercial_B2B_Cliente_Acuerdo_v0.pdf",
+            )
+            self.assertEqual(
+                generated.generated_pdf_sha256,
+                hashlib.sha256(generated.generated_pdf_bytes).hexdigest(),
+            )
+            stored_bytes, stored_filename = get_stored_b2b_commercial_agreement_pdf(generated)
+            self.assertEqual(stored_bytes, generated.generated_pdf_bytes)
+            self.assertEqual(stored_filename, generated.generated_pdf_filename)
+
+    def test_incomplete_draft_lists_all_missing_fields_and_writes_nothing(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            with self.assertRaises(B2BCommercialAgreementIncompleteError) as raised:
+                generate_and_store_b2b_commercial_agreement_pdf(
+                    db,
+                    agreement_id=agreement.id,
+                    user_id=55,
+                )
+            self.assertGreater(len(raised.exception.missing_fields), 5)
+            db.expire_all()
+            unchanged = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(unchanged.status, "draft")
+            self.assertIsNone(unchanged.generated_pdf_bytes)
+            self.assertIsNone(unchanged.generated_pdf_filename)
+            self.assertIsNone(unchanged.generated_pdf_sha256)
+            self.assertIsNone(unchanged.generated_at)
+            self.assertIsNone(unchanged.generated_by_user_id)
+
+    def test_generated_signed_and_archived_cannot_regenerate(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            for status in ("generated", "signed", "archived"):
+                with self.subTest(status=status):
+                    agreement.status = status
+                    db.commit()
+                    pdf_builder = mock.Mock(return_value=b"%PDF-should-not-run")
+                    with self.assertRaisesRegex(
+                        B2BCommercialAgreementValidationError,
+                        "Solo los acuerdos comerciales en estado draft",
+                    ):
+                        generate_and_store_b2b_commercial_agreement_pdf(
+                            db,
+                            agreement_id=agreement.id,
+                            user_id=55,
+                            pdf_builder=pdf_builder,
+                        )
+                    pdf_builder.assert_not_called()
+                    agreement = get_commercial_agreement(db, agreement.id)
+
+    def test_generation_failure_rolls_back_status_and_pdf_fields(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            original_updated_at = agreement.updated_at
+
+            with mock.patch.object(db, "commit", side_effect=RuntimeError("commit failed")):
+                with self.assertRaisesRegex(RuntimeError, "commit failed"):
+                    generate_and_store_b2b_commercial_agreement_pdf(
+                        db,
+                        agreement_id=agreement.id,
+                        user_id=55,
+                        pdf_builder=mock.Mock(return_value=b"%PDF-controlled-test"),
+                    )
+
+            db.expire_all()
+            unchanged = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(unchanged.status, "draft")
+            self.assertEqual(unchanged.updated_at, original_updated_at)
+            self.assertIsNone(unchanged.generated_pdf_bytes)
+            self.assertIsNone(unchanged.generated_pdf_filename)
+            self.assertIsNone(unchanged.generated_pdf_sha256)
+            self.assertIsNone(unchanged.generated_at)
+            self.assertIsNone(unchanged.generated_by_user_id)
+
+    def test_pdf_generation_does_not_query_products_catalog_or_restricted_tables(self) -> None:
+        statements: list[str] = []
+
+        def record_statement(_connection, _cursor, statement, _parameters, _context, _many) -> None:
+            statements.append(statement.lower())
+
+        with self.Session() as db:
+            agreement = self._complete(db)
+            event.listen(self.engine, "before_cursor_execute", record_statement)
+            try:
+                generate_and_store_b2b_commercial_agreement_pdf(
+                    db,
+                    agreement_id=agreement.id,
+                    user_id=None,
+                    logo_bytes=None,
+                )
+            finally:
+                event.remove(self.engine, "before_cursor_execute", record_statement)
+
+        joined_sql = "\n".join(statements)
+        self.assertNotIn("b2b_customer_products", joined_sql)
+        self.assertNotIn(" from products", joined_sql)
+        self.assertNotIn("inventory_transactions", joined_sql)
+        self.assertNotIn("inventory_balances", joined_sql)
+        self.assertNotIn("b2b_sales_orders", joined_sql)
+        self.assertNotIn("b2b_ar_payments", joined_sql)
+        self.assertNotIn("b2b_ar_opening_balances", joined_sql)
+
+    def test_pdf_builder_works_without_logo_and_filename_is_sanitized(self) -> None:
+        self.assertEqual(
+            safe_b2b_commercial_agreement_pdf_filename('Ángel / Azul: "Centro"', 0),
+            "Acuerdo_Comercial_B2B_Angel_Azul_Centro_v0.pdf",
+        )
+        with self.Session() as db:
+            agreement = self._complete(db)
+            pdf_bytes = build_b2b_commercial_agreement_pdf(agreement, logo_bytes=None)
+            invalid_logo_pdf = build_b2b_commercial_agreement_pdf(
+                agreement,
+                logo_bytes=b"not-a-readable-image",
+            )
+        self.assertTrue(pdf_bytes.startswith(b"%PDF"))
+        self.assertGreater(len(pdf_bytes), 5000)
+        self.assertTrue(invalid_logo_pdf.startswith(b"%PDF"))
+
+    def test_pdf_service_source_contains_contract_content_but_no_catalog_queries(self) -> None:
+        pdf_source = Path(
+            "app/services/b2b_commercial_agreement_pdf_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ACUERDO COMERCIAL B2B - COMPRA DIRECTA", pdf_source)
+        self.assertIn("customer_name_snapshot", pdf_source)
+        self.assertIn("render_agreement_template_text", pdf_source)
+        self.assertIn("Personas autorizadas para realizar pedidos", pdf_source)
+        self.assertIn("Aceptación y firmas", pdf_source)
+        self.assertNotIn("B2BCustomerProduct", pdf_source)
+        self.assertNotIn("\n    Product,", pdf_source)
+        self.assertNotIn("db.query(Product", pdf_source)
+        self.assertNotIn("Anexo 1", pdf_source)
 
     def test_schema_constraints_and_relationships_exist(self) -> None:
         self.assertIn("b2b_commercial_agreements", Base.metadata.tables)

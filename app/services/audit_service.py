@@ -195,6 +195,10 @@ def snapshot_b2b_commercial_agreement_for_audit(
         "client_signer_position": agreement.client_signer_position,
         "catalog_reference": agreement.catalog_reference,
         "template_revision": agreement.template_revision,
+        "generated_pdf_filename": agreement.generated_pdf_filename,
+        "generated_pdf_sha256": agreement.generated_pdf_sha256,
+        "generated_at": agreement.generated_at,
+        "generated_by_user_id": agreement.generated_by_user_id,
         "authorized_people": [
             {
                 "authorization_type": person.authorization_type,

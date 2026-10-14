@@ -136,6 +136,12 @@ from app.services.b2b_commercial_agreement_service import (
     update_commercial_agreement_draft,
     validate_commercial_agreement,
 )
+from app.services.b2b_commercial_agreement_pdf_service import (
+    B2BCommercialAgreementIncompleteError,
+    B2BCommercialAgreementPDFNotFoundError,
+    generate_and_store_b2b_commercial_agreement_pdf,
+    get_stored_b2b_commercial_agreement_pdf,
+)
 from app.services.accounts_receivable_service import (
     AccountsReceivableValidationError,
     STATUS_ALL as AR_STATUS_ALL,
@@ -7474,7 +7480,74 @@ def validate_b2b_commercial_agreement_route(
         request,
         agreement,
         missing_fields=missing_fields,
-        message=("El acuerdo está completo y listo para la futura fase de generación." if not missing_fields else None),
+        message=("El acuerdo está completo y listo para generar el PDF." if not missing_fields else None),
+    )
+
+
+@app.post("/b2b/commercial-agreements/{agreement_id}/generate-pdf")
+def generate_b2b_commercial_agreement_pdf(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "b2b_commercial_agreement.generate")
+    agreement = get_commercial_agreement(db, agreement_id)
+    old_snapshot = snapshot_b2b_commercial_agreement_for_audit(agreement)
+    settings = _get_app_settings(db)
+    try:
+        generated = generate_and_store_b2b_commercial_agreement_pdf(
+            db,
+            agreement_id=agreement_id,
+            user_id=current_user.id,
+            logo_bytes=settings.logo_bytes if settings is not None else None,
+        )
+    except B2BCommercialAgreementIncompleteError as exc:
+        db.rollback()
+        agreement = get_commercial_agreement(db, agreement_id)
+        return _render_b2b_commercial_agreement_editor(
+            request,
+            agreement,
+            error="El acuerdo tiene campos pendientes. Complete todos los datos antes de generar.",
+            missing_fields=exc.missing_fields,
+        )
+    except B2BCommercialAgreementValidationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    changed_old, changed_new = diff_audit_snapshots(
+        old_snapshot,
+        snapshot_b2b_commercial_agreement_for_audit(generated),
+    )
+    safe_log_audit_event(
+        module="commercial",
+        action="commercial_agreement_generated",
+        entity_type="b2b_commercial_agreement",
+        entity_id=generated.id,
+        entity_label=f"{generated.customer_name_snapshot} v{generated.version_number}",
+        old_values=changed_old,
+        new_values=changed_new,
+        request=request,
+        user=current_user,
+    )
+    return _redirect(f"/b2b/commercial-agreements/{generated.id}")
+
+
+@app.get("/b2b/commercial-agreements/{agreement_id}/download-pdf")
+def download_b2b_commercial_agreement_pdf(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "b2b_commercial_agreement.view")
+    agreement = get_commercial_agreement(db, agreement_id)
+    try:
+        pdf_bytes, filename = get_stored_b2b_commercial_agreement_pdf(agreement)
+    except B2BCommercialAgreementPDFNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
