@@ -105,10 +105,13 @@
                   <span class="nav-user-name">{{ current_user.full_name }}</span>
                 {% endif %}
               </span>
-              {% if can(request, "admin.users.manage") or can(request, "audit.view") %}
+              {% if can(request, "admin.users.manage") or can(request, "admin.roles.manage") or can(request, "audit.view") %}
                 <span class="nav-context">Admin</span>
                 {% if can(request, "admin.users.manage") %}
                   <a class="nav-link" href="/admin/users">Users</a>
+                {% endif %}
+                {% if can(request, "admin.roles.manage") %}
+                  <a class="nav-link" href="/admin/roles-permissions">Roles y permisos</a>
                 {% endif %}
                 {% if can(request, "audit.view") %}
                   <a class="nav-link" href="/admin/audit-logs">Audit Logs</a>

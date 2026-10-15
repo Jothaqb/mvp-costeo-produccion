@@ -358,6 +358,18 @@ from app.services.admin_user_service import (
     send_password_setup_link_for_user,
     update_admin_user,
 )
+from app.services.admin_role_permission_service import (
+    RolePermissionCSRFError,
+    RolePermissionConcurrentUpdateError,
+    RolePermissionNotFoundError,
+    RolePermissionProtectedRoleError,
+    RolePermissionValidationError,
+    build_role_permissions_csrf_token,
+    list_role_permission_panel_state,
+    update_role_permissions,
+    validate_role_permissions_csrf_token,
+    validate_role_permissions_request_origin,
+)
 from app.services.audit_service import (
     diff_audit_snapshot_rows,
     diff_audit_snapshots,
@@ -1844,6 +1856,133 @@ async def admin_users_activate(request: Request, user_id: int, db: Session = Dep
         user=current_user,
     )
     return _redirect(_append_query_message(redirect_to, key="message", value="User activated successfully."))
+
+
+@app.get("/admin/roles-permissions", response_class=HTMLResponse)
+def admin_roles_permissions_page(
+    request: Request,
+    role_id: int | None = Query(default=None),
+    message: str = Query(""),
+    error: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "admin.roles.manage")
+    try:
+        panel_state = list_role_permission_panel_state(db, selected_role_id=role_id)
+        csrf_token = build_role_permissions_csrf_token(request.cookies.get(SESSION_COOKIE_NAME))
+    except RolePermissionCSRFError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RolePermissionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_roles_permissions.html",
+        context={
+            "title": "Administración / Roles y permisos",
+            "panel": panel_state,
+            "csrf_token": csrf_token,
+            "message": message.strip() or None,
+            "error": error.strip() or None,
+        },
+    )
+
+
+@app.post("/admin/roles-permissions", response_class=HTMLResponse)
+async def admin_roles_permissions_submit(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "admin.roles.manage")
+    form = await request.form()
+    try:
+        validate_role_permissions_csrf_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            str(form.get("csrf_token", "")),
+        )
+        validate_role_permissions_request_origin(
+            origin_header=request.headers.get("origin"),
+            referer_header=request.headers.get("referer"),
+        )
+    except RolePermissionCSRFError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    try:
+        role_id = int(str(form.get("role_id", "")).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="El rol seleccionado no es válido.")
+    permission_codes = {
+        str(code).strip()
+        for code in form.getlist("permission_codes")
+        if str(code).strip()
+    }
+    expected_version = str(form.get("permission_version", "")).strip()
+
+    try:
+        result = update_role_permissions(
+            db,
+            role_id=role_id,
+            permission_codes=permission_codes,
+            expected_version=expected_version,
+            acting_user=current_user,
+            request_path=request.url.path,
+            request_method=request.method,
+            ip_address=request.client.host if request.client else None,
+        )
+        db.commit()
+    except RolePermissionProtectedRoleError as exc:
+        db.rollback()
+        raise HTTPException(status_code=403, detail=str(exc))
+    except RolePermissionConcurrentUpdateError as exc:
+        db.rollback()
+        panel_state = list_role_permission_panel_state(db, selected_role_id=role_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_roles_permissions.html",
+            context={
+                "title": "Administración / Roles y permisos",
+                "panel": panel_state,
+                "csrf_token": build_role_permissions_csrf_token(
+                    request.cookies.get(SESSION_COOKIE_NAME)
+                ),
+                "message": None,
+                "error": str(exc),
+            },
+            status_code=409,
+        )
+    except (RolePermissionNotFoundError, RolePermissionValidationError) as exc:
+        db.rollback()
+        try:
+            panel_state = list_role_permission_panel_state(db, selected_role_id=role_id)
+        except RolePermissionNotFoundError:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_roles_permissions.html",
+            context={
+                "title": "Administración / Roles y permisos",
+                "panel": panel_state,
+                "csrf_token": build_role_permissions_csrf_token(
+                    request.cookies.get(SESSION_COOKIE_NAME)
+                ),
+                "message": None,
+                "error": str(exc),
+            },
+            status_code=400,
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+    if result.changed:
+        message = (
+            f"Permisos de {result.role_code} actualizados. "
+            f"Agregados: {len(result.added_permission_codes)}; "
+            f"eliminados: {len(result.removed_permission_codes)}; "
+            f"usuarios afectados: {result.affected_user_count}."
+        )
+    else:
+        message = f"No hubo cambios en los permisos de {result.role_code}."
+    redirect_url = f"/admin/roles-permissions?role_id={result.role_id}"
+    return _redirect(_append_query_message(redirect_url, key="message", value=message))
 
 
 @app.get("/admin/branding", response_class=HTMLResponse)

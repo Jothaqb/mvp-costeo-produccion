@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Administración</p>
+    <h1>Roles y permisos</h1>
+    <p class="lead">
+      Configure los accesos efectivos de cada perfil. Los cambios se aplican a todos los usuarios
+      asociados y serán visibles en su siguiente petición al ERP.
+    </p>
+  </section>
+
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  {% if message %}<p class="success" role="status">{{ message }}</p>{% endif %}
+
+  <section style="margin-bottom: 24px;">
+    <form method="get" action="/admin/roles-permissions" style="max-width: none;">
+      <label for="role_id">Perfil</label>
+      <select id="role_id" name="role_id" onchange="this.form.submit()">
+        {% for role in panel.roles %}
+          <option value="{{ role.id }}" {% if role.id == panel.selected_role.id %}selected{% endif %}>
+            {{ role.name }} ({{ role.code }}){% if role.protected %} — protegido{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+      <noscript><button type="submit">Cargar perfil</button></noscript>
+    </form>
+  </section>
+
+  <section class="module-card" style="min-height: 0; margin-bottom: 24px; padding: 22px;">
+    <div>
+      <p class="eyebrow">Perfil seleccionado</p>
+      <h2>{{ panel.selected_role.name }}</h2>
+      <p>
+        Código: <code>{{ panel.selected_role.code }}</code><br>
+        Usuarios asociados: <strong>{{ panel.selected_role.user_count }}</strong>
+        ({{ panel.selected_role.active_user_count }} activos)
+      </p>
+    </div>
+    {% if panel.selected_role.protected %}
+      <p class="error" style="margin-bottom: 0;">
+        El rol administrador es visible para consulta, pero está protegido contra modificaciones.
+        El seed mantiene todos sus permisos activos.
+      </p>
+    {% endif %}
+  </section>
+
+  <form
+    id="role-permissions-form"
+    method="post"
+    action="/admin/roles-permissions"
+    style="max-width: none;"
+  >
+    <input type="hidden" name="role_id" value="{{ panel.selected_role.id }}">
+    <input type="hidden" name="permission_version" value="{{ panel.permission_version }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <p class="error" style="margin-bottom: 20px;">
+      Estos cambios modificarán los accesos de todos los usuarios asociados al perfil seleccionado.
+    </p>
+
+    {% for group in panel.permission_groups %}
+      <section style="margin-bottom: 28px;">
+        <h2>{{ group.name }}</h2>
+        <div class="table-wrap">
+          <table style="min-width: 980px;">
+            <thead>
+              <tr>
+                <th style="width: 74px;">Activo</th>
+                <th>Permiso</th>
+                <th style="width: 145px;">Tipo</th>
+                <th style="width: 250px;">Cobertura real</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for permission in group.permissions %}
+                <tr>
+                  <td>
+                    <input
+                      type="checkbox"
+                      name="permission_codes"
+                      value="{{ permission.code }}"
+                      data-permission-label="{{ permission.label }}"
+                      data-initially-assigned="{{ 'true' if permission.assigned else 'false' }}"
+                      aria-label="{{ permission.label }}"
+                      {% if permission.assigned %}checked{% endif %}
+                      {% if panel.selected_role.protected %}disabled{% endif %}
+                    >
+                  </td>
+                  <td>
+                    <strong>{{ permission.label }}</strong>
+                    <div>{{ permission.description }}</div>
+                    <small><code>{{ permission.code }}</code></small>
+                  </td>
+                  <td>{{ permission.action_group_label }}</td>
+                  <td>
+                    {% if permission.coverage_status == "not_enforced" %}
+                      <strong style="color: #9b2c2c;">{{ permission.coverage_label }}</strong>
+                    {% elif permission.coverage_status == "shared" %}
+                      <strong style="color: #805b10;">{{ permission.coverage_label }}</strong>
+                    {% else %}
+                      <strong style="color: #24613b;">{{ permission.coverage_label }}</strong>
+                    {% endif %}
+                    <div><small>{{ permission.coverage_note }}</small></div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    {% endfor %}
+
+    {% if not panel.selected_role.protected %}
+      <button type="submit">Guardar cambios</button>
+    {% endif %}
+  </form>
+
+  <script>
+    (() => {
+      const form = document.getElementById("role-permissions-form");
+      if (!form || {{ 'true' if panel.selected_role.protected else 'false' }}) {
+        return;
+      }
+      form.addEventListener("submit", (event) => {
+        const added = [];
+        const removed = [];
+        form.querySelectorAll('input[name="permission_codes"]').forEach((checkbox) => {
+          const initiallyAssigned = checkbox.dataset.initiallyAssigned === "true";
+          const label = `${checkbox.dataset.permissionLabel} (${checkbox.value})`;
+          if (checkbox.checked && !initiallyAssigned) {
+            added.push(label);
+          } else if (!checkbox.checked && initiallyAssigned) {
+            removed.push(label);
+          }
+        });
+        const changeLines = [
+          "Estos cambios modificarán los accesos de todos los usuarios asociados al perfil seleccionado.",
+          "",
+          `Permisos agregados: ${added.length ? added.join(", ") : "ninguno"}`,
+          `Permisos eliminados: ${removed.length ? removed.join(", ") : "ninguno"}`,
+          "",
+          "¿Desea guardar estos cambios?",
+        ];
+        if (!window.confirm(changeLines.join("\n"))) {
+          event.preventDefault();
+        }
+      });
+    })();
+  </script>
+{% endblock %}
