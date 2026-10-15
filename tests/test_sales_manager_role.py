@@ -50,24 +50,6 @@ class SalesManagerRoleTests(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
         with self.SessionLocal.begin() as db:
-            db.add_all(
-                (
-                    Role(
-                        code="general_operator",
-                        name="General Operator",
-                        description="General operator role.",
-                        is_system=True,
-                        active=True,
-                    ),
-                    Role(
-                        code="general_approver",
-                        name="General Approver",
-                        description="General approver role.",
-                        is_system=True,
-                        active=True,
-                    ),
-                )
-            )
             ensure_auth_seed_state(db)
 
     def tearDown(self) -> None:
@@ -129,6 +111,73 @@ class SalesManagerRoleTests(unittest.TestCase):
         expected_permissions = {definition[0] for definition in BASE_PERMISSION_DEFINITIONS}
         with self.SessionLocal() as db:
             self.assertEqual(self._permission_codes(db, "admin"), expected_permissions)
+
+    def test_revoked_non_admin_permission_is_not_restored(self) -> None:
+        with self.SessionLocal.begin() as db:
+            role = db.query(Role).filter(Role.code == "sales_manager").one()
+            permission = db.query(Permission).filter(Permission.code == "sales.view").one()
+            db.query(RolePermission).filter(
+                RolePermission.role_id == role.id,
+                RolePermission.permission_id == permission.id,
+            ).delete(synchronize_session=False)
+            ensure_auth_seed_state(db)
+
+        with self.SessionLocal() as db:
+            self.assertNotIn("sales.view", self._permission_codes(db, "sales_manager"))
+
+    def test_manual_non_admin_permission_is_preserved(self) -> None:
+        with self.SessionLocal.begin() as db:
+            role = db.query(Role).filter(Role.code == "general_operator").one()
+            permission = db.query(Permission).filter(Permission.code == "reporting.view").one()
+            db.add(RolePermission(role_id=role.id, permission_id=permission.id))
+            ensure_auth_seed_state(db)
+
+        with self.SessionLocal() as db:
+            self.assertIn("reporting.view", self._permission_codes(db, "general_operator"))
+
+    def test_existing_non_admin_role_with_zero_permissions_stays_empty(self) -> None:
+        with self.SessionLocal.begin() as db:
+            role = db.query(Role).filter(Role.code == "general_operator").one()
+            db.query(RolePermission).filter(RolePermission.role_id == role.id).delete(
+                synchronize_session=False
+            )
+            ensure_auth_seed_state(db)
+            ensure_auth_seed_state(db)
+
+        with self.SessionLocal() as db:
+            self.assertEqual(self._permission_codes(db, "general_operator"), set())
+
+    def test_new_catalog_permission_is_not_assigned_to_existing_non_admin_roles(self) -> None:
+        with self.SessionLocal.begin() as db:
+            db.add(
+                Permission(
+                    code="future.example",
+                    module="future",
+                    action="example",
+                    description="Future permission used to verify seed behavior.",
+                    active=True,
+                )
+            )
+            db.flush()
+            ensure_auth_seed_state(db)
+
+        with self.SessionLocal() as db:
+            self.assertIn("future.example", self._permission_codes(db, "admin"))
+            for role_code in ("sales_manager", "general_approver", "general_operator"):
+                self.assertNotIn("future.example", self._permission_codes(db, role_code))
+
+    def test_admin_permission_is_restored_by_seed(self) -> None:
+        with self.SessionLocal.begin() as db:
+            role = db.query(Role).filter(Role.code == "admin").one()
+            permission = db.query(Permission).filter(Permission.code == "admin.roles.manage").one()
+            db.query(RolePermission).filter(
+                RolePermission.role_id == role.id,
+                RolePermission.permission_id == permission.id,
+            ).delete(synchronize_session=False)
+            ensure_auth_seed_state(db)
+
+        with self.SessionLocal() as db:
+            self.assertIn("admin.roles.manage", self._permission_codes(db, "admin"))
 
     def test_sales_manager_can_replace_general_operator_as_the_functional_role(self) -> None:
         with self.SessionLocal.begin() as db:

@@ -83,6 +83,49 @@ BASE_PERMISSION_DEFINITIONS = (
     ("inventory.preview_erp_loyverse_cost", "inventory", "preview_erp_loyverse_cost", "Preview ERP standard cost vs Loyverse cost without updating either system."),
     ("audit.view", "audit", "view", "View audit trails."),
 )
+NON_ADMIN_ROLE_DEFINITIONS = (
+    (
+        "sales_manager",
+        "Sales Manager",
+        "Manage B2B customer catalogs and customer-specific pricing.",
+        frozenset(
+            {
+                "sales.view",
+                "product.view",
+                "b2b_customer_products.edit_prices",
+                "b2b_sales.cancel_invoice",
+                "b2b_commercial_agreement.view",
+                "b2b_commercial_agreement.edit",
+                "b2b_commercial_agreement.generate",
+            }
+        ),
+    ),
+    (
+        "general_approver",
+        "General Approver",
+        "General approver role.",
+        frozenset(
+            {
+                "sales.view",
+                "product.view",
+                "b2b_customer_products.edit_prices",
+                "b2b_commercial_agreement.view",
+                "b2b_commercial_agreement.edit",
+                "b2b_commercial_agreement.generate",
+                "b2b_commercial_agreement.sign_archive",
+                "ar.view",
+                "ar.record_payment",
+                "ar.export",
+            }
+        ),
+    ),
+    (
+        "general_operator",
+        "General Operator",
+        "General operator role.",
+        frozenset({"ar.view", "ar.record_payment", "ar.export"}),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -185,24 +228,27 @@ def ensure_admin_role(db: Session) -> Role:
     return role
 
 
-def ensure_sales_manager_role(db: Session) -> Role:
-    role = db.query(Role).filter(Role.code == "sales_manager").one_or_none()
-    if role is None:
-        role = Role(
-            code="sales_manager",
-            name="Sales Manager",
-            description="Manage B2B customer catalogs and customer-specific pricing.",
-            is_system=True,
-            active=True,
-        )
-        db.add(role)
-        db.flush()
-    else:
-        role.name = "Sales Manager"
-        role.description = "Manage B2B customer catalogs and customer-specific pricing."
-        role.is_system = True
-        role.active = True
-    return role
+def ensure_non_admin_role(
+    db: Session,
+    *,
+    code: str,
+    name: str,
+    description: str,
+) -> tuple[Role, bool]:
+    role = db.query(Role).filter(Role.code == code).one_or_none()
+    if role is not None:
+        return role, False
+
+    role = Role(
+        code=code,
+        name=name,
+        description=description,
+        is_system=True,
+        active=True,
+    )
+    db.add(role)
+    db.flush()
+    return role, True
 
 
 def sync_admin_role_permissions(db: Session, role: Role) -> None:
@@ -217,11 +263,11 @@ def sync_admin_role_permissions(db: Session, role: Role) -> None:
     db.flush()
 
 
-def sync_role_permissions_by_code_if_present(db: Session, role_code: str, permission_codes: set[str]) -> None:
-    role = db.query(Role).filter(Role.code == role_code, Role.active.is_(True)).one_or_none()
-    if role is None:
-        return
-
+def assign_initial_role_permissions(
+    db: Session,
+    role: Role,
+    permission_codes: frozenset[str],
+) -> None:
     permission_ids = {
         permission.id
         for permission in db.query(Permission).filter(Permission.code.in_(sorted(permission_codes))).all()
@@ -242,42 +288,16 @@ def sync_role_permissions_by_code_if_present(db: Session, role_code: str, permis
 def ensure_auth_seed_state(db: Session) -> None:
     ensure_base_permissions(db)
     admin_role = ensure_admin_role(db)
-    ensure_sales_manager_role(db)
     sync_admin_role_permissions(db, admin_role)
-    sync_role_permissions_by_code_if_present(
-        db,
-        "sales_manager",
-        {
-            "sales.view",
-            "product.view",
-            "b2b_customer_products.edit_prices",
-            "b2b_sales.cancel_invoice",
-            "b2b_commercial_agreement.view",
-            "b2b_commercial_agreement.edit",
-            "b2b_commercial_agreement.generate",
-        },
-    )
-    sync_role_permissions_by_code_if_present(
-        db,
-        "general_approver",
-        {
-            "sales.view",
-            "product.view",
-            "b2b_customer_products.edit_prices",
-            "b2b_commercial_agreement.view",
-            "b2b_commercial_agreement.edit",
-            "b2b_commercial_agreement.generate",
-            "b2b_commercial_agreement.sign_archive",
-            "ar.view",
-            "ar.record_payment",
-            "ar.export",
-        },
-    )
-    sync_role_permissions_by_code_if_present(
-        db,
-        "general_operator",
-        {"ar.view", "ar.record_payment", "ar.export"},
-    )
+    for role_code, role_name, role_description, permission_codes in NON_ADMIN_ROLE_DEFINITIONS:
+        role, created = ensure_non_admin_role(
+            db,
+            code=role_code,
+            name=role_name,
+            description=role_description,
+        )
+        if created:
+            assign_initial_role_permissions(db, role, permission_codes)
     db.flush()
 
 

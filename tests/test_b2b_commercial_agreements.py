@@ -602,12 +602,6 @@ class B2BCommercialAgreementTests(unittest.TestCase):
 
     def test_permission_assignments_and_route_guards(self) -> None:
         with self.Session.begin() as db:
-            db.add_all(
-                (
-                    Role(code="general_operator", name="General Operator", is_system=True, active=True),
-                    Role(code="general_approver", name="General Approver", is_system=True, active=True),
-                )
-            )
             ensure_auth_seed_state(db)
 
         def role_permissions(db, role_code: str) -> set[str]:

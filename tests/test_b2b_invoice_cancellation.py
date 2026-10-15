@@ -46,12 +46,6 @@ class B2BInvoiceCancellationTests(unittest.TestCase):
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         with self.Session.begin() as db:
-            db.add_all(
-                [
-                    Role(code="general_operator", name="General Operator", is_system=True, active=True),
-                    Role(code="general_approver", name="General Approver", is_system=True, active=True),
-                ]
-            )
             ensure_auth_seed_state(db)
             user = User(
                 username="invoice.canceller",
