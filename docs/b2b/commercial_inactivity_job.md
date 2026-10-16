@@ -10,6 +10,28 @@
 No modifica `Product`, inventario, Kardex, BOM, producción, pedidos, facturación,
 CxC, acuerdos comerciales ni Loyverse. No configura ningún Cron.
 
+## Alcance por canal
+
+El universo se limita por el `B2BCustomer.channel_id` vigente del cliente. Los
+únicos nombres autorizados son, con coincidencia exacta:
+
+1. `Tiendas Naturales (Minisuper)`
+2. `Tiendas Naturas (Macobioticas)`
+3. `Tiendas Naturales (Supermercados)`
+4. `Tienda Online (Terceros)`
+
+Los IDs no están fijados en el código: cada corrida resuelve los registros de
+`Channel` por su nombre exacto. No se normalizan tildes, espacios ni variantes
+ortográficas. Si falta un nombre o el registro no aplica a B2B, el dry-run lo
+reporta en `channel_scope_resolutions` y `--execute` queda bloqueado. Los
+clientes de otros canales y los clientes sin canal quedan totalmente fuera de
+las clasificaciones `eligible`, `review_pending` y `excluded`.
+
+Para un cliente incluido se consideran todas sus facturas B2B históricas,
+independientemente del canal que hubiera quedado guardado en la orden. Un
+cambio de `channel_id` después del dry-run modifica el fingerprint y bloquea
+la ejecución.
+
 ## Ventana y fecha
 
 La fecha predeterminada se obtiene en hora de Costa Rica. El inicio se calcula
@@ -59,7 +81,8 @@ de evidencia debe ser nuevo o estar vacío.
 
 ## Evidencia
 
-- `summary.json`: fechas, cobertura, conteos, IDs elegibles y fingerprint.
+- `summary.json`: fechas, cobertura, resolución exacta de canales, universo
+  incluido/excluido, desglose por canal, IDs elegibles y fingerprint.
 - `catalog_products.csv`: todos los productos evaluados.
 - `customers.csv`: todos los clientes evaluados, incluyendo CxC y acuerdos.
 - `history_coverage.csv`: conteos mensuales de facturas regulares e importadas
@@ -93,6 +116,10 @@ La ejecución vuelve a calcular el universo dentro de una sola transacción,
 bloquea los registros objetivo, compara el fingerprint y escribe los cambios
 de estado y los `AuditLog` en la misma transacción. Cualquier diferencia o
 error provoca rollback.
+
+Los dry-runs generados antes de la revisión de alcance
+`b2b-commercial-inactivity-authorized-channels-v1` son obsoletos: el job exige
+esa revisión en el `summary.json` aprobado y obliga a generar evidencia nueva.
 
 ## Reglas conservadoras
 

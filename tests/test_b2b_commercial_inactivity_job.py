@@ -17,6 +17,7 @@ from app.models import (
     B2BCustomerProduct,
     B2BSalesOrder,
     B2BSalesOrderLine,
+    Channel,
     Product,
     Role,
     User,
@@ -24,6 +25,8 @@ from app.models import (
 )
 from app.services.b2b_commercial_inactivity_service import (
     B2BCommercialInactivityError,
+    AUTHORIZED_B2B_CHANNEL_NAMES,
+    CHANNEL_SCOPE_REVISION,
     CLASSIFICATION_ELIGIBLE,
     CLASSIFICATION_EXCLUDED,
     CLASSIFICATION_REVIEW_PENDING,
@@ -31,10 +34,15 @@ from app.services.b2b_commercial_inactivity_service import (
     InactivityConfig,
     build_b2b_commercial_inactivity_plan,
     execute_b2b_commercial_inactivity_plan,
+    plan_summary,
     subtract_calendar_months,
 )
 from app.services.accounts_receivable_service import build_accounts_receivable_dashboard
-from tools.b2b_commercial_inactivity_job import _prepare_export_dir, _write_evidence
+from tools.b2b_commercial_inactivity_job import (
+    _load_approved_fingerprint,
+    _prepare_export_dir,
+    _write_evidence,
+)
 
 
 AS_OF_DATE = date(2026, 10, 16)
@@ -58,6 +66,11 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
         )
         self.admin = self._admin_user()
         self.admin_username = self.admin.username
+        self.channels = {
+            name: self._channel(name)
+            for name in AUTHORIZED_B2B_CHANNEL_NAMES
+        }
+        self.db.commit()
 
     def tearDown(self):
         self.db.close()
@@ -79,17 +92,41 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
         self.db.commit()
         return user
 
+    def _channel(
+        self,
+        name: str,
+        *,
+        active: bool = True,
+        applies_to_b2b: bool = True,
+    ) -> Channel:
+        channel = Channel(
+            name=name,
+            active=active,
+            applies_to_b2b=applies_to_b2b,
+            applies_to_b2c=False,
+        )
+        self.db.add(channel)
+        self.db.flush()
+        return channel
+
     def _customer(
         self,
         name: str = "Cliente",
         *,
         active: bool = True,
+        channel_name: str | None = AUTHORIZED_B2B_CHANNEL_NAMES[0],
         created_at: datetime = OLD_TIMESTAMP,
         updated_at: datetime = OLD_TIMESTAMP,
     ) -> B2BCustomer:
+        channel = (
+            self.db.query(Channel).filter(Channel.name == channel_name).one()
+            if channel_name is not None
+            else None
+        )
         customer = B2BCustomer(
             customer_name=name,
             credit_days=0,
+            channel_id=channel.id if channel is not None else None,
             active=active,
             created_at=created_at,
             updated_at=updated_at,
@@ -146,11 +183,18 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
         delivery_date: date = date(2024, 1, 1),
         observations: str | None = None,
         total_amount: Decimal = Decimal("1000"),
+        order_channel_name: str | None = None,
     ) -> B2BSalesOrder:
+        order_channel = (
+            self.db.query(Channel).filter(Channel.name == order_channel_name).one()
+            if order_channel_name is not None
+            else None
+        )
         order = B2BSalesOrder(
             order_number=order_number,
             customer_id=customer.id,
             customer_name_snapshot=customer.customer_name,
+            channel_id=order_channel.id if order_channel is not None else None,
             delivery_date=delivery_date,
             status=status,
             total_amount=total_amount,
@@ -194,6 +238,196 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
         customer_row = next(row for row in plan.customers if row.customer_id == customer.id)
         self.assertEqual(product_row.classification, CLASSIFICATION_ELIGIBLE)
         self.assertEqual(customer_row.classification, CLASSIFICATION_ELIGIBLE)
+
+    def test_scope_resolves_only_the_four_exact_authorized_channel_names(self):
+        for index, channel_name in enumerate(AUTHORIZED_B2B_CHANNEL_NAMES, start=1):
+            customer = self._customer(
+                f"Cliente {index}",
+                channel_name=channel_name,
+            )
+            self._catalog_product(customer, f"SKU-{index}")
+        outside_channel = self._channel("Canal no autorizado")
+        outside_customer = self._customer(
+            "Fuera de alcance",
+            channel_name=outside_channel.name,
+        )
+        outside_product = self._catalog_product(outside_customer, "OUTSIDE")
+        no_channel_customer = self._customer("Sin canal", channel_name=None)
+        no_channel_product = self._catalog_product(no_channel_customer, "NO-CHANNEL")
+
+        plan = self._plan()
+        summary = plan_summary(plan)
+
+        self.assertTrue(plan.channel_scope_is_valid)
+        self.assertEqual(
+            tuple(row.expected_name for row in plan.channel_scope_resolutions),
+            AUTHORIZED_B2B_CHANNEL_NAMES,
+        )
+        self.assertEqual({row.status for row in plan.channel_scope_resolutions}, {"resolved"})
+        self.assertEqual(len(plan.customers), 4)
+        self.assertEqual(len(plan.catalog_products), 4)
+        self.assertNotIn(outside_product.id, {row.catalog_product_id for row in plan.catalog_products})
+        self.assertNotIn(no_channel_product.id, {row.catalog_product_id for row in plan.catalog_products})
+        self.assertEqual(summary["customers_registered_total"], 6)
+        self.assertEqual(summary["customers_in_authorized_channels"], 4)
+        self.assertEqual(summary["customers_excluded_other_channels"], 1)
+        self.assertEqual(summary["customers_without_channel"], 1)
+        self.assertEqual(summary["catalog_products_evaluated_in_scope"], 4)
+        self.assertEqual(summary["catalog_products_outside_scope"], 2)
+        self.assertEqual(
+            {row.channel_name: row.customers_evaluated for row in plan.channel_breakdown},
+            {name: 1 for name in AUTHORIZED_B2B_CHANNEL_NAMES},
+        )
+        self.assertEqual(
+            {row.channel_name: row.catalog_products_potentially_inactive for row in plan.channel_breakdown},
+            {name: 1 for name in AUTHORIZED_B2B_CHANNEL_NAMES},
+        )
+
+    def test_in_scope_customer_activity_counts_even_when_order_had_another_channel(self):
+        outside_channel = self._channel("Canal histórico distinto")
+        customer = self._customer()
+        catalog_product = self._catalog_product(customer, "100")
+        self._order(
+            customer,
+            "B2B-DIFFERENT-HISTORICAL-CHANNEL",
+            status="invoiced",
+            sku="100",
+            invoice_date=date(2026, 9, 1),
+            order_channel_name=outside_channel.name,
+        )
+
+        plan = self._plan()
+        product_row = next(
+            row for row in plan.catalog_products
+            if row.catalog_product_id == catalog_product.id
+        )
+        customer_row = next(
+            row for row in plan.customers if row.customer_id == customer.id
+        )
+
+        self.assertEqual(product_row.classification, CLASSIFICATION_EXCLUDED)
+        self.assertEqual(customer_row.rolling_invoice_count, 1)
+        self.assertEqual(customer_row.classification, CLASSIFICATION_EXCLUDED)
+
+    def test_channel_change_invalidates_approved_fingerprint_and_preserves_flags(self):
+        customer = self._customer()
+        catalog_product = self._catalog_product(customer, "100")
+        self.db.commit()
+        approved_plan = build_b2b_commercial_inactivity_plan(self.db, config=self.config)
+        customer.channel_id = self.channels[AUTHORIZED_B2B_CHANNEL_NAMES[1]].id
+        self.db.commit()
+        customer_id = customer.id
+        catalog_product_id = catalog_product.id
+        self.db.close()
+
+        with self.assertRaisesRegex(B2BCommercialInactivityError, "differs"):
+            execute_b2b_commercial_inactivity_plan(
+                self.Session,
+                config=self.config,
+                approved_plan_fingerprint=approved_plan.plan_fingerprint,
+                actor_username=self.admin_username,
+                confirmation=EXECUTION_CONFIRMATION,
+            )
+
+        self.db = self.Session()
+        self.assertTrue(self.db.get(B2BCustomer, customer_id).active)
+        self.assertTrue(self.db.get(B2BCustomerProduct, catalog_product_id).active)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
+
+    def test_execute_blocks_unresolved_channel_scope(self):
+        customer = self._customer()
+        catalog_product = self._catalog_product(customer, "100")
+        missing_channel = self.channels[AUTHORIZED_B2B_CHANNEL_NAMES[-1]]
+        self.db.delete(missing_channel)
+        self.db.commit()
+        plan = build_b2b_commercial_inactivity_plan(self.db, config=self.config)
+        self.assertFalse(plan.channel_scope_is_valid)
+        customer_id = customer.id
+        catalog_product_id = catalog_product.id
+        self.db.close()
+
+        with self.assertRaisesRegex(B2BCommercialInactivityError, "could not be resolved"):
+            execute_b2b_commercial_inactivity_plan(
+                self.Session,
+                config=self.config,
+                approved_plan_fingerprint=plan.plan_fingerprint,
+                actor_username=self.admin_username,
+                confirmation=EXECUTION_CONFIRMATION,
+            )
+
+        self.db = self.Session()
+        self.assertTrue(self.db.get(B2BCustomer, customer_id).active)
+        self.assertTrue(self.db.get(B2BCustomerProduct, catalog_product_id).active)
+
+    def test_execute_never_deactivates_customers_or_products_outside_scope(self):
+        included_customer = self._customer("Incluido")
+        included_product = self._catalog_product(included_customer, "IN")
+        outside_channel = self._channel("Canal fuera de alcance")
+        outside_customer = self._customer(
+            "Excluido",
+            channel_name=outside_channel.name,
+        )
+        outside_product = self._catalog_product(outside_customer, "OUT")
+        no_channel_customer = self._customer("Sin canal", channel_name=None)
+        no_channel_product = self._catalog_product(no_channel_customer, "NONE")
+        self.db.commit()
+        plan = build_b2b_commercial_inactivity_plan(self.db, config=self.config)
+        ids = {
+            "included_customer": included_customer.id,
+            "included_product": included_product.id,
+            "outside_customer": outside_customer.id,
+            "outside_product": outside_product.id,
+            "no_channel_customer": no_channel_customer.id,
+            "no_channel_product": no_channel_product.id,
+        }
+        self.db.close()
+
+        result = execute_b2b_commercial_inactivity_plan(
+            self.Session,
+            config=self.config,
+            approved_plan_fingerprint=plan.plan_fingerprint,
+            actor_username=self.admin_username,
+            confirmation=EXECUTION_CONFIRMATION,
+        )
+
+        self.db = self.Session()
+        self.assertFalse(self.db.get(B2BCustomer, ids["included_customer"]).active)
+        self.assertFalse(self.db.get(B2BCustomerProduct, ids["included_product"]).active)
+        self.assertTrue(self.db.get(B2BCustomer, ids["outside_customer"]).active)
+        self.assertTrue(self.db.get(B2BCustomerProduct, ids["outside_product"]).active)
+        self.assertTrue(self.db.get(B2BCustomer, ids["no_channel_customer"]).active)
+        self.assertTrue(self.db.get(B2BCustomerProduct, ids["no_channel_product"]).active)
+        self.assertEqual(
+            {(change.entity_type, change.entity_id) for change in result.changes},
+            {
+                ("b2b_customer", ids["included_customer"]),
+                ("b2b_customer_product", ids["included_product"]),
+            },
+        )
+
+    def test_pre_channel_scope_summary_is_rejected_as_obsolete(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            summary_path = Path(temp_dir) / "summary.json"
+            summary_path.write_text(
+                json.dumps({"plan_fingerprint": "legacy-fingerprint"}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(B2BCommercialInactivityError, "obsolete"):
+                _load_approved_fingerprint(summary_path)
+
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "channel_scope_revision": CHANNEL_SCOPE_REVISION,
+                        "plan_fingerprint": "current-fingerprint",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _load_approved_fingerprint(summary_path),
+                "current-fingerprint",
+            )
 
     def test_current_invoice_uses_canonical_date_and_excludes_activity(self):
         customer = self._customer()

@@ -19,6 +19,7 @@ from app.services.b2b_commercial_inactivity_service import (
     B2BCommercialInactivityError,
     B2BCommercialInactivityPlan,
     CatalogProductInactivityEvidence,
+    CHANNEL_SCOPE_REVISION,
     CustomerInactivityEvidence,
     EXECUTION_CONFIRMATION,
     HistoryCoverageEvidence,
@@ -121,6 +122,11 @@ def _load_approved_fingerprint(summary_path: Path) -> str:
         raise B2BCommercialInactivityError(
             f"Could not read approved dry-run summary: {summary_path}"
         ) from exc
+    if payload.get("channel_scope_revision") != CHANNEL_SCOPE_REVISION:
+        raise B2BCommercialInactivityError(
+            "Approved dry-run summary uses an obsolete or missing channel scope revision. "
+            "Generate and approve a new dry-run."
+        )
     fingerprint = str(payload.get("plan_fingerprint") or "").strip()
     if not fingerprint:
         raise B2BCommercialInactivityError(
@@ -233,6 +239,13 @@ def _print_summary(plan: B2BCommercialInactivityPlan, *, mode: str) -> None:
     print(f"as_of_date: {plan.config.as_of_date.isoformat()}")
     print(f"cutoff_date: {plan.config.cutoff_date.isoformat()}")
     print(f"history_is_sufficient: {str(plan.config.history_is_sufficient).lower()}")
+    print(f"channel_scope_is_valid: {str(plan.channel_scope_is_valid).lower()}")
+    print(f"customers_registered_total: {plan.registered_customers_total}")
+    print(f"customers_in_authorized_channels: {len(plan.customers)}")
+    print(f"customers_excluded_other_channels: {plan.customers_excluded_other_channels}")
+    print(f"customers_without_channel: {plan.customers_without_channel}")
+    print(f"catalog_products_evaluated_in_scope: {len(plan.catalog_products)}")
+    print(f"catalog_products_outside_scope: {plan.catalog_products_outside_scope}")
     print(f"catalog_products_eligible: {len(plan.eligible_catalog_products)}")
     print(f"customers_eligible: {len(plan.eligible_customers)}")
     print(f"review_pending: {plan.review_pending_count}")

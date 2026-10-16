@@ -14,6 +14,7 @@ from app.models import (
     B2BCustomer,
     B2BCustomerProduct,
     B2BSalesOrder,
+    Channel,
     Product,
     User,
 )
@@ -32,6 +33,13 @@ CLASSIFICATION_REVIEW_PENDING = "review_pending"
 CLASSIFICATION_EXCLUDED = "excluded"
 EXECUTION_CONFIRMATION = "DEACTIVATE_CONFIRMED_B2B_INACTIVITY_CANDIDATES"
 COSTA_RICA_TIMEZONE = timezone(timedelta(hours=-6), name="America/Costa_Rica")
+CHANNEL_SCOPE_REVISION = "b2b-commercial-inactivity-authorized-channels-v1"
+AUTHORIZED_B2B_CHANNEL_NAMES = (
+    "Tiendas Naturales (Minisuper)",
+    "Tiendas Naturas (Macobioticas)",
+    "Tiendas Naturales (Supermercados)",
+    "Tienda Online (Terceros)",
+)
 
 
 class B2BCommercialInactivityError(RuntimeError):
@@ -61,6 +69,8 @@ class CatalogProductInactivityEvidence:
     catalog_product_id: int
     customer_id: int
     customer_name: str
+    channel_id: int
+    channel_name: str
     sku: str
     description: str
     active_before: bool
@@ -77,6 +87,8 @@ class CatalogProductInactivityEvidence:
 class CustomerInactivityEvidence:
     customer_id: int
     customer_name: str
+    channel_id: int
+    channel_name: str
     active_before: bool
     proposed_active: bool
     last_invoice_date: date | None
@@ -100,14 +112,50 @@ class HistoryCoverageEvidence:
 
 
 @dataclass(frozen=True)
+class ChannelScopeResolutionEvidence:
+    expected_name: str
+    status: str
+    channel_id: int | None
+    stored_name: str | None
+    active: bool | None
+    applies_to_b2b: bool | None
+
+
+@dataclass(frozen=True)
+class ChannelBreakdownEvidence:
+    channel_name: str
+    channel_id: int | None
+    customers_evaluated: int
+    catalog_products_evaluated: int
+    customers_potentially_inactive: int
+    catalog_products_potentially_inactive: int
+
+
+@dataclass(frozen=True)
 class B2BCommercialInactivityPlan:
     config: InactivityConfig
+    channel_scope_revision: str
+    channel_scope_resolutions: tuple[ChannelScopeResolutionEvidence, ...]
+    available_b2b_channel_names: tuple[str, ...]
+    channel_breakdown: tuple[ChannelBreakdownEvidence, ...]
+    registered_customers_total: int
+    customers_excluded_other_channels: int
+    customers_without_channel: int
+    registered_catalog_products_total: int
+    catalog_products_outside_scope: int
     catalog_products: tuple[CatalogProductInactivityEvidence, ...]
     customers: tuple[CustomerInactivityEvidence, ...]
     history_coverage: tuple[HistoryCoverageEvidence, ...]
     earliest_invoice_date: date | None
     latest_invoice_date: date | None
     plan_fingerprint: str
+
+    @property
+    def channel_scope_is_valid(self) -> bool:
+        return all(
+            row.status == "resolved"
+            for row in self.channel_scope_resolutions
+        )
 
     @property
     def eligible_catalog_products(self) -> tuple[CatalogProductInactivityEvidence, ...]:
@@ -177,34 +225,74 @@ def build_b2b_commercial_inactivity_plan(
     if config.history_complete_since is not None and config.history_complete_since > config.as_of_date:
         raise B2BCommercialInactivityError("History coverage cannot start after the report date.")
 
-    customers = (
+    channels = db.query(Channel).order_by(Channel.id).all()
+    channel_scope_resolutions = _resolve_authorized_channel_scope(channels)
+    authorized_channel_ids = {
+        row.channel_id
+        for row in channel_scope_resolutions
+        if row.status == "resolved" and row.channel_id is not None
+    }
+    all_customers = (
         db.query(B2BCustomer)
         .options(
             selectinload(B2BCustomer.products),
             selectinload(B2BCustomer.commercial_agreements),
+            selectinload(B2BCustomer.channel_record),
         )
         .order_by(B2BCustomer.id)
         .all()
+    )
+    customers = [
+        customer
+        for customer in all_customers
+        if customer.channel_id in authorized_channel_ids
+    ]
+    included_customer_ids = {customer.id for customer in customers}
+    customers_without_channel = sum(
+        customer.channel_id is None for customer in all_customers
+    )
+    customers_excluded_other_channels = sum(
+        customer.channel_id is not None
+        and customer.channel_id not in authorized_channel_ids
+        for customer in all_customers
+    )
+    registered_catalog_products_total = sum(
+        len(customer.products) for customer in all_customers
+    )
+    catalog_products_outside_scope = sum(
+        len(customer.products)
+        for customer in all_customers
+        if customer.id not in included_customer_ids
     )
     products_by_sku = {
         product.sku: product
         for product in db.query(Product).order_by(Product.id).all()
         if (product.sku or "").strip()
     }
-    invoiced_orders = (
-        db.query(B2BSalesOrder)
-        .filter(B2BSalesOrder.status == "invoiced")
-        .options(selectinload(B2BSalesOrder.lines))
-        .order_by(B2BSalesOrder.id)
-        .all()
-    )
-    open_orders = (
-        db.query(B2BSalesOrder)
-        .filter(B2BSalesOrder.status.in_(sorted(OPEN_ORDER_STATUSES)))
-        .options(selectinload(B2BSalesOrder.lines))
-        .order_by(B2BSalesOrder.id)
-        .all()
-    )
+    if included_customer_ids:
+        invoiced_orders = (
+            db.query(B2BSalesOrder)
+            .filter(
+                B2BSalesOrder.status == "invoiced",
+                B2BSalesOrder.customer_id.in_(sorted(included_customer_ids)),
+            )
+            .options(selectinload(B2BSalesOrder.lines))
+            .order_by(B2BSalesOrder.id)
+            .all()
+        )
+        open_orders = (
+            db.query(B2BSalesOrder)
+            .filter(
+                B2BSalesOrder.status.in_(sorted(OPEN_ORDER_STATUSES)),
+                B2BSalesOrder.customer_id.in_(sorted(included_customer_ids)),
+            )
+            .options(selectinload(B2BSalesOrder.lines))
+            .order_by(B2BSalesOrder.id)
+            .all()
+        )
+    else:
+        invoiced_orders = []
+        open_orders = []
 
     sales = _build_sales_facts(invoiced_orders, config)
     open_customer_ids = {order.customer_id for order in open_orders}
@@ -250,9 +338,17 @@ def build_b2b_commercial_inactivity_plan(
         )
         for customer in customers
     ]
+    channel_breakdown = _build_channel_breakdown(
+        channel_scope_resolutions,
+        catalog_rows,
+        customer_rows,
+    )
 
     fingerprint = _plan_fingerprint(
         config,
+        channel_scope_resolutions,
+        [(customer.id, customer.channel_id) for customer in all_customers],
+        registered_catalog_products_total,
         catalog_rows,
         customer_rows,
         sales.history_coverage,
@@ -261,12 +357,90 @@ def build_b2b_commercial_inactivity_plan(
     )
     return B2BCommercialInactivityPlan(
         config=config,
+        channel_scope_revision=CHANNEL_SCOPE_REVISION,
+        channel_scope_resolutions=channel_scope_resolutions,
+        available_b2b_channel_names=tuple(
+            channel.name for channel in channels if channel.applies_to_b2b
+        ),
+        channel_breakdown=channel_breakdown,
+        registered_customers_total=len(all_customers),
+        customers_excluded_other_channels=customers_excluded_other_channels,
+        customers_without_channel=customers_without_channel,
+        registered_catalog_products_total=registered_catalog_products_total,
+        catalog_products_outside_scope=catalog_products_outside_scope,
         catalog_products=tuple(catalog_rows),
         customers=tuple(customer_rows),
         history_coverage=sales.history_coverage,
         earliest_invoice_date=sales.earliest_invoice_date,
         latest_invoice_date=sales.latest_invoice_date,
         plan_fingerprint=fingerprint,
+    )
+
+
+def _resolve_authorized_channel_scope(
+    channels: list[Channel],
+) -> tuple[ChannelScopeResolutionEvidence, ...]:
+    channels_by_name = {channel.name: channel for channel in channels}
+    resolutions: list[ChannelScopeResolutionEvidence] = []
+    for expected_name in AUTHORIZED_B2B_CHANNEL_NAMES:
+        channel = channels_by_name.get(expected_name)
+        if channel is None:
+            resolutions.append(
+                ChannelScopeResolutionEvidence(
+                    expected_name=expected_name,
+                    status="missing",
+                    channel_id=None,
+                    stored_name=None,
+                    active=None,
+                    applies_to_b2b=None,
+                )
+            )
+            continue
+        status = "resolved" if channel.applies_to_b2b else "not_b2b"
+        resolutions.append(
+            ChannelScopeResolutionEvidence(
+                expected_name=expected_name,
+                status=status,
+                channel_id=channel.id,
+                stored_name=channel.name,
+                active=bool(channel.active),
+                applies_to_b2b=bool(channel.applies_to_b2b),
+            )
+        )
+    return tuple(resolutions)
+
+
+def _build_channel_breakdown(
+    resolutions: tuple[ChannelScopeResolutionEvidence, ...],
+    catalog_rows: list[CatalogProductInactivityEvidence],
+    customer_rows: list[CustomerInactivityEvidence],
+) -> tuple[ChannelBreakdownEvidence, ...]:
+    potentially_inactive = {
+        CLASSIFICATION_ELIGIBLE,
+        CLASSIFICATION_REVIEW_PENDING,
+    }
+    return tuple(
+        ChannelBreakdownEvidence(
+            channel_name=resolution.expected_name,
+            channel_id=resolution.channel_id,
+            customers_evaluated=sum(
+                row.channel_id == resolution.channel_id for row in customer_rows
+            ) if resolution.status == "resolved" else 0,
+            catalog_products_evaluated=sum(
+                row.channel_id == resolution.channel_id for row in catalog_rows
+            ) if resolution.status == "resolved" else 0,
+            customers_potentially_inactive=sum(
+                row.channel_id == resolution.channel_id
+                and row.classification in potentially_inactive
+                for row in customer_rows
+            ) if resolution.status == "resolved" else 0,
+            catalog_products_potentially_inactive=sum(
+                row.channel_id == resolution.channel_id
+                and row.classification in potentially_inactive
+                for row in catalog_rows
+            ) if resolution.status == "resolved" else 0,
+        )
+        for resolution in resolutions
     )
 
 
@@ -430,6 +604,8 @@ def _classify_catalog_product(
         catalog_product_id=catalog_product.id,
         customer_id=customer.id,
         customer_name=customer.customer_name,
+        channel_id=customer.channel_id,
+        channel_name=customer.channel_record.name,
         sku=catalog_product.sku,
         description=catalog_product.description,
         active_before=bool(catalog_product.active),
@@ -508,6 +684,8 @@ def _classify_customer(
     return CustomerInactivityEvidence(
         customer_id=customer.id,
         customer_name=customer.customer_name,
+        channel_id=customer.channel_id,
+        channel_name=customer.channel_record.name,
         active_before=bool(customer.active),
         proposed_active=False if classification == CLASSIFICATION_ELIGIBLE else bool(customer.active),
         last_invoice_date=last_invoice_date,
@@ -536,6 +714,9 @@ def _is_within_grace(value: datetime, config: InactivityConfig) -> bool:
 
 def _plan_fingerprint(
     config: InactivityConfig,
+    channel_scope_resolutions: tuple[ChannelScopeResolutionEvidence, ...],
+    customer_channel_assignments: list[tuple[int, int | None]],
+    registered_catalog_products_total: int,
     catalog_rows: list[CatalogProductInactivityEvidence],
     customer_rows: list[CustomerInactivityEvidence],
     history_coverage: tuple[HistoryCoverageEvidence, ...],
@@ -543,6 +724,12 @@ def _plan_fingerprint(
     latest_invoice_date: date | None,
 ) -> str:
     payload = {
+        "channel_scope_revision": CHANNEL_SCOPE_REVISION,
+        "channel_scope_resolutions": [
+            evidence_dict(row) for row in channel_scope_resolutions
+        ],
+        "customer_channel_assignments": sorted(customer_channel_assignments),
+        "registered_catalog_products_total": registered_catalog_products_total,
         "as_of_date": config.as_of_date.isoformat(),
         "cutoff_date": config.cutoff_date.isoformat(),
         "history_complete_since": (
@@ -608,6 +795,11 @@ def execute_b2b_commercial_inactivity_plan(
                     )
 
                 initial_plan = build_b2b_commercial_inactivity_plan(db, config=config)
+                if not initial_plan.channel_scope_is_valid:
+                    raise B2BCommercialInactivityError(
+                        "Execute is blocked because one or more authorized B2B channels "
+                        "could not be resolved exactly."
+                    )
                 if initial_plan.plan_fingerprint != approved_plan_fingerprint:
                     raise B2BCommercialInactivityError(
                         "The recalculated plan differs from the approved dry-run; execute was blocked."
@@ -803,6 +995,16 @@ def _validate_applied_changes(
 def plan_summary(plan: B2BCommercialInactivityPlan) -> dict[str, object]:
     return {
         "mode": "dry-run",
+        "channel_scope_revision": plan.channel_scope_revision,
+        "channel_scope_is_valid": plan.channel_scope_is_valid,
+        "authorized_channel_names": list(AUTHORIZED_B2B_CHANNEL_NAMES),
+        "channel_scope_resolutions": [
+            evidence_dict(row) for row in plan.channel_scope_resolutions
+        ],
+        "available_b2b_channel_names": list(plan.available_b2b_channel_names),
+        "channel_breakdown": [
+            evidence_dict(row) for row in plan.channel_breakdown
+        ],
         "as_of_date": plan.config.as_of_date.isoformat(),
         "cutoff_date": plan.config.cutoff_date.isoformat(),
         "history_complete_since": (
@@ -822,10 +1024,33 @@ def plan_summary(plan: B2BCommercialInactivityPlan) -> dict[str, object]:
             if plan.latest_invoice_date is not None
             else None
         ),
+        "customers_registered_total": plan.registered_customers_total,
+        "customers_in_authorized_channels": len(plan.customers),
+        "customers_excluded_other_channels": plan.customers_excluded_other_channels,
+        "customers_without_channel": plan.customers_without_channel,
+        "catalog_products_registered_total": plan.registered_catalog_products_total,
+        "catalog_products_evaluated_in_scope": len(plan.catalog_products),
+        "catalog_products_outside_scope": plan.catalog_products_outside_scope,
         "catalog_products_total": len(plan.catalog_products),
         "catalog_products_eligible": len(plan.eligible_catalog_products),
+        "catalog_products_review_pending": sum(
+            row.classification == CLASSIFICATION_REVIEW_PENDING
+            for row in plan.catalog_products
+        ),
+        "catalog_products_excluded_other_conditions": sum(
+            row.classification == CLASSIFICATION_EXCLUDED
+            for row in plan.catalog_products
+        ),
         "customers_total": len(plan.customers),
         "customers_eligible": len(plan.eligible_customers),
+        "customers_review_pending": sum(
+            row.classification == CLASSIFICATION_REVIEW_PENDING
+            for row in plan.customers
+        ),
+        "customers_excluded_other_conditions": sum(
+            row.classification == CLASSIFICATION_EXCLUDED
+            for row in plan.customers
+        ),
         "review_pending": plan.review_pending_count,
         "excluded": plan.excluded_count,
         "eligible_catalog_product_ids": [
