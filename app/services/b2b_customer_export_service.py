@@ -18,48 +18,41 @@ from app.services.accounts_receivable_service import HISTORICAL_CSV_IMPORT_PREFI
 
 B2B_CUSTOMER_EXPORT_HEADERS = (
     "Nombre del cliente",
+    "Canal B2B",
+    "Estado del cliente",
+    "Razón social",
+    "Cédula jurídica",
     "Dirección",
     "Provincia",
     "Cantón",
     "Distrito",
-    "Razón social",
-    "Cédula jurídica",
     "Teléfono",
-    "Días de crédito",
     "Forma de pago",
-    "Canal B2B",
-    "Estado del cliente",
+    "Días de crédito",
     "Estado del último acuerdo",
     "¿Tenemos acuerdo firmado?",
-    "Versión del último acuerdo",
-    "Fecha de generación del último acuerdo",
-    "Fecha de firma registrada",
 )
 
 NO_REGISTERED_SIGNATURE = "Sin firma registrada"
-_TEXT_COLUMN_INDEXES = (7, 8)
-_AGREEMENT_DATE_COLUMN_INDEXES = (16, 17)
-_SALES_COLUMN_INDEXES = (18, 19)
-_LAST_INVOICE_DATE_COLUMN_INDEX = 20
+_TEXT_COLUMN_INDEXES = (5, 10)
+_SALES_COLUMN_INDEXES = (15, 16)
+_LAST_INVOICE_DATE_COLUMN_INDEX = 17
 _COSTA_RICA_TIMEZONE = timezone(timedelta(hours=-6), name="America/Costa_Rica")
 _COLUMN_WIDTHS = (
     30,
+    30,
+    20,
+    34,
+    22,
     46,
     18,
     20,
     20,
-    34,
-    22,
     20,
-    16,
     38,
-    30,
-    20,
+    16,
     28,
     28,
-    25,
-    34,
-    26,
     20,
     24,
     24,
@@ -162,24 +155,19 @@ def _customer_export_row(
 
     return (
         customer.customer_name,
+        customer.channel_record.name if customer.channel_record is not None else None,
+        "Activo" if customer.active else "Inactivo",
+        customer.legal_name,
+        _text_or_none(customer.legal_id),
         customer.address,
         customer.province,
         customer.canton,
         customer.district,
-        customer.legal_name,
-        _text_or_none(customer.legal_id),
         _text_or_none(customer.phone),
-        customer.credit_days,
         customer.default_payment_terms,
-        customer.channel_record.name if customer.channel_record is not None else None,
-        "Activo" if customer.active else "Inactivo",
+        customer.credit_days,
         latest_agreement.status if latest_agreement is not None else None,
         "Sí" if latest_registered_signature is not None else NO_REGISTERED_SIGNATURE,
-        latest_agreement.version_number if latest_agreement is not None else None,
-        _date_value(latest_agreement.generated_at) if latest_agreement is not None else None,
-        _date_value(latest_registered_signature.signed_at)
-        if latest_registered_signature is not None
-        else None,
         sales_summary.previous_year_sales,
         sales_summary.current_year_sales,
         sales_summary.last_invoice_date,
@@ -371,8 +359,6 @@ def _format_worksheet(worksheet, *, headers: tuple[str, ...]) -> None:
                 cell.data_type = "s"
         for column_index in _TEXT_COLUMN_INDEXES:
             worksheet.cell(row=row_index, column=column_index).number_format = "@"
-        for column_index in _AGREEMENT_DATE_COLUMN_INDEXES:
-            worksheet.cell(row=row_index, column=column_index).number_format = "yyyy-mm-dd"
         for column_index in _SALES_COLUMN_INDEXES:
             worksheet.cell(row=row_index, column=column_index).number_format = "₡ #,##0.00"
         worksheet.cell(

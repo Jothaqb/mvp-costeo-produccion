@@ -296,9 +296,15 @@ class B2BCustomersExportTests(unittest.TestCase):
             tuple(cell.value for cell in worksheet[1]),
             b2b_customer_export_headers(2026),
         )
-        self.assertEqual(tuple(cell.value for cell in worksheet[1][:17]), B2B_CUSTOMER_EXPORT_HEADERS)
-        self.assertEqual(worksheet.max_column, 20)
+        self.assertEqual(tuple(cell.value for cell in worksheet[1][:14]), B2B_CUSTOMER_EXPORT_HEADERS)
+        self.assertEqual(worksheet.max_column, 17)
         self.assertEqual(worksheet.max_row, 4)
+        removed_headers = {
+            "Versión del último acuerdo",
+            "Fecha de generación del último acuerdo",
+            "Fecha de firma registrada",
+        }
+        self.assertTrue(removed_headers.isdisjoint(cell.value for cell in worksheet[1]))
         rows_by_name = {
             worksheet.cell(row=row_index, column=1).value: row_index
             for row_index in range(2, worksheet.max_row + 1)
@@ -307,8 +313,31 @@ class B2BCustomersExportTests(unittest.TestCase):
             set(rows_by_name),
             {"Cliente 001", "Cliente generado", "Cliente inactivo"},
         )
-        self.assertEqual(worksheet.cell(rows_by_name["Cliente 001"], 12).value, "Activo")
-        self.assertEqual(worksheet.cell(rows_by_name["Cliente inactivo"], 12).value, "Inactivo")
+        self.assertEqual(worksheet.cell(rows_by_name["Cliente 001"], 3).value, "Activo")
+        self.assertEqual(worksheet.cell(rows_by_name["Cliente inactivo"], 3).value, "Inactivo")
+
+    def test_reordered_customer_values_align_with_the_requested_headers(self) -> None:
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(
+            tuple(worksheet.cell(customer_row, column).value for column in range(1, 15)),
+            (
+                "Cliente 001",
+                "Tiendas Naturales",
+                "Activo",
+                "Cliente Uno S.A.",
+                "001234567890",
+                "Dirección principal",
+                "San José",
+                "San José",
+                "Carmen",
+                "0011223344",
+                "Crédito comercial aprobado",
+                15,
+                "draft",
+                "Sí",
+            ),
+        )
 
     def test_latest_agreement_and_any_registered_signature_are_independent(self) -> None:
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
@@ -321,15 +350,9 @@ class B2BCustomersExportTests(unittest.TestCase):
 
         self.assertEqual(worksheet.cell(signed_customer_row, 13).value, "draft")
         self.assertEqual(worksheet.cell(signed_customer_row, 14).value, "Sí")
-        self.assertEqual(worksheet.cell(signed_customer_row, 15).value, 2)
-        self.assertIsNone(worksheet.cell(signed_customer_row, 16).value)
-        self.assertEqual(worksheet.cell(signed_customer_row, 17).value.date(), date(2026, 9, 3))
 
         self.assertEqual(worksheet.cell(generated_customer_row, 13).value, "generated")
         self.assertEqual(worksheet.cell(generated_customer_row, 14).value, NO_REGISTERED_SIGNATURE)
-        self.assertEqual(worksheet.cell(generated_customer_row, 15).value, 0)
-        self.assertEqual(worksheet.cell(generated_customer_row, 16).value.date(), date(2026, 10, 1))
-        self.assertIsNone(worksheet.cell(generated_customer_row, 17).value)
 
     def test_identifiers_are_text_and_empty_values_remain_empty(self) -> None:
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
@@ -340,12 +363,12 @@ class B2BCustomersExportTests(unittest.TestCase):
         populated_row = rows["Cliente 001"]
         empty_row = rows["Cliente inactivo"]
 
-        self.assertEqual(worksheet.cell(populated_row, 7).value, "001234567890")
-        self.assertEqual(worksheet.cell(populated_row, 8).value, "0011223344")
-        self.assertEqual(worksheet.cell(populated_row, 7).number_format, "@")
-        self.assertEqual(worksheet.cell(populated_row, 8).number_format, "@")
+        self.assertEqual(worksheet.cell(populated_row, 5).value, "001234567890")
+        self.assertEqual(worksheet.cell(populated_row, 10).value, "0011223344")
+        self.assertEqual(worksheet.cell(populated_row, 5).number_format, "@")
+        self.assertEqual(worksheet.cell(populated_row, 10).number_format, "@")
         self.assertIsNone(worksheet.cell(empty_row, 2).value)
-        self.assertIsNone(worksheet.cell(empty_row, 10).value)
+        self.assertIsNone(worksheet.cell(empty_row, 6).value)
         self.assertIsNone(worksheet.cell(empty_row, 11).value)
         self.assertIsNone(worksheet.cell(empty_row, 13).value)
         self.assertEqual(worksheet.cell(empty_row, 14).value, NO_REGISTERED_SIGNATURE)
@@ -357,7 +380,7 @@ class B2BCustomersExportTests(unittest.TestCase):
             for row_index in range(2, worksheet.max_row + 1)
             if worksheet.cell(row=row_index, column=1).value == "Cliente generado"
         )
-        address_cell = worksheet.cell(row=generated_row, column=2)
+        address_cell = worksheet.cell(row=generated_row, column=6)
 
         self.assertEqual(
             address_cell.value,
@@ -370,7 +393,7 @@ class B2BCustomersExportTests(unittest.TestCase):
         worksheet = load_workbook(io.BytesIO(response.body))["Clientes B2B"]
 
         self.assertEqual(worksheet.freeze_panes, "A2")
-        self.assertEqual(worksheet.auto_filter.ref, "A1:T4")
+        self.assertEqual(worksheet.auto_filter.ref, "A1:Q4")
         self.assertTrue(worksheet["A1"].font.bold)
         self.assertEqual(
             response.media_type,
@@ -406,7 +429,7 @@ class B2BCustomersExportTests(unittest.TestCase):
             'attachment; filename="Reporte_Clientes_B2B_2026-10-15.xlsx"',
         )
         workbook = load_workbook(io.BytesIO(body))
-        self.assertEqual(workbook["Clientes B2B"].max_column, 20)
+        self.assertEqual(workbook["Clientes B2B"].max_column, 17)
 
         forbidden_status, _forbidden_headers, forbidden_body = self._http_get(
             "/b2b/customers/export.xlsx",
@@ -419,8 +442,8 @@ class B2BCustomersExportTests(unittest.TestCase):
         still_2026_in_costa_rica = datetime(2027, 1, 1, 4, 30, tzinfo=timezone.utc)
         response_2026 = self._export(generated_at=still_2026_in_costa_rica)
         worksheet_2026 = load_workbook(io.BytesIO(response_2026.body))["Clientes B2B"]
-        self.assertEqual(worksheet_2026.cell(1, 18).value, "Ventas 2025")
-        self.assertEqual(worksheet_2026.cell(1, 19).value, "Ventas acumuladas 2026")
+        self.assertEqual(worksheet_2026.cell(1, 15).value, "Ventas 2025")
+        self.assertEqual(worksheet_2026.cell(1, 16).value, "Ventas acumuladas 2026")
         self.assertEqual(
             response_2026.headers["content-disposition"],
             'attachment; filename="Reporte_Clientes_B2B_2026-12-31.xlsx"',
@@ -429,8 +452,8 @@ class B2BCustomersExportTests(unittest.TestCase):
         already_2027_in_costa_rica = datetime(2027, 1, 1, 6, 30, tzinfo=timezone.utc)
         response_2027 = self._export(generated_at=already_2027_in_costa_rica)
         worksheet_2027 = load_workbook(io.BytesIO(response_2027.body))["Clientes B2B"]
-        self.assertEqual(worksheet_2027.cell(1, 18).value, "Ventas 2026")
-        self.assertEqual(worksheet_2027.cell(1, 19).value, "Ventas acumuladas 2027")
+        self.assertEqual(worksheet_2027.cell(1, 15).value, "Ventas 2026")
+        self.assertEqual(worksheet_2027.cell(1, 16).value, "Ventas acumuladas 2027")
 
     def test_sales_use_canonical_invoice_date_precedence(self) -> None:
         with main.SessionLocal.begin() as db:
@@ -475,10 +498,10 @@ class B2BCustomersExportTests(unittest.TestCase):
 
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
         customer_row = self._row_for_customer(worksheet, "Cliente 001")
-        self.assertEqual(worksheet.cell(customer_row, 18).value, 700)
-        self.assertEqual(worksheet.cell(customer_row, 19).value, 300)
+        self.assertEqual(worksheet.cell(customer_row, 15).value, 700)
+        self.assertEqual(worksheet.cell(customer_row, 16).value, 300)
         self.assertEqual(
-            self._cell_date(worksheet.cell(customer_row, 20).value),
+            self._cell_date(worksheet.cell(customer_row, 17).value),
             date(2026, 7, 1),
         )
 
@@ -524,8 +547,8 @@ class B2BCustomersExportTests(unittest.TestCase):
 
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
         customer_row = self._row_for_customer(worksheet, "Cliente generado")
-        self.assertEqual(worksheet.cell(customer_row, 18).value, 0)
-        self.assertEqual(worksheet.cell(customer_row, 19).value, 50)
+        self.assertEqual(worksheet.cell(customer_row, 15).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 16).value, 50)
 
     def test_previous_year_uses_complete_calendar_year_and_current_year_is_accumulated(self) -> None:
         with main.SessionLocal.begin() as db:
@@ -566,8 +589,8 @@ class B2BCustomersExportTests(unittest.TestCase):
 
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
         customer_row = self._row_for_customer(worksheet, "Cliente 001")
-        self.assertEqual(worksheet.cell(customer_row, 18).value, 50)
-        self.assertEqual(worksheet.cell(customer_row, 19).value, 90)
+        self.assertEqual(worksheet.cell(customer_row, 15).value, 50)
+        self.assertEqual(worksheet.cell(customer_row, 16).value, 90)
 
     def test_order_total_is_counted_once_without_b2c_lines_or_payments(self) -> None:
         with main.SessionLocal.begin() as db:
@@ -621,14 +644,14 @@ class B2BCustomersExportTests(unittest.TestCase):
 
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
         customer_row = self._row_for_customer(worksheet, "Cliente 001")
-        self.assertEqual(worksheet.cell(customer_row, 19).value, 150)
+        self.assertEqual(worksheet.cell(customer_row, 16).value, 150)
 
     def test_customer_without_invoiced_sales_has_zero_totals_and_blank_last_date(self) -> None:
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
         customer_row = self._row_for_customer(worksheet, "Cliente inactivo")
-        self.assertEqual(worksheet.cell(customer_row, 18).value, 0)
-        self.assertEqual(worksheet.cell(customer_row, 19).value, 0)
-        self.assertIsNone(worksheet.cell(customer_row, 20).value)
+        self.assertEqual(worksheet.cell(customer_row, 15).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 16).value, 0)
+        self.assertIsNone(worksheet.cell(customer_row, 17).value)
 
     def test_last_invoice_date_uses_full_history_and_excludes_cancelled_orders(self) -> None:
         with main.SessionLocal.begin() as db:
@@ -652,10 +675,10 @@ class B2BCustomersExportTests(unittest.TestCase):
 
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
         customer_row = self._row_for_customer(worksheet, "Cliente generado")
-        self.assertEqual(worksheet.cell(customer_row, 18).value, 0)
-        self.assertEqual(worksheet.cell(customer_row, 19).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 15).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 16).value, 0)
         self.assertEqual(
-            self._cell_date(worksheet.cell(customer_row, 20).value),
+            self._cell_date(worksheet.cell(customer_row, 17).value),
             date(2020, 2, 3),
         )
 
@@ -672,8 +695,8 @@ class B2BCustomersExportTests(unittest.TestCase):
 
         worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
         customer_row = self._row_for_customer(worksheet, "Cliente 001")
-        sales_cell = worksheet.cell(customer_row, 19)
-        last_invoice_cell = worksheet.cell(customer_row, 20)
+        sales_cell = worksheet.cell(customer_row, 16)
+        last_invoice_cell = worksheet.cell(customer_row, 17)
         self.assertEqual(sales_cell.data_type, "n")
         self.assertEqual(sales_cell.number_format, "₡ #,##0.00")
         self.assertEqual(last_invoice_cell.number_format, "dd/mm/yyyy")
