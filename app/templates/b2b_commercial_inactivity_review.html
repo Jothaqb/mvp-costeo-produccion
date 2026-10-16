@@ -6,14 +6,42 @@
     <h1>Revisión comercial de inactividad</h1>
     <p class="lead">
       Descargue una propuesta firmada, elimine del Excel las filas que deben mantenerse activas
-      y cargue el archivo para revisar una vista previa. Esta etapa no ejecuta inactivaciones.
+      y cargue el archivo para revisar y confirmar únicamente las asignaciones aprobadas.
     </p>
   </section>
 
   <p class="error" role="alert">
-    La cobertura histórica todavía no está certificada. Conservar una fila constituye una
-    aprobación comercial manual para una etapa futura; hoy no modifica ningún catálogo.
+    La cobertura histórica todavía no está certificada. Cada inactivación requiere una revisión
+    comercial manual, una carga validada y una confirmación expresa.
   </p>
+
+  {% if execution_result %}
+    <section class="module-card" role="status" aria-labelledby="execution-result-title" style="margin-bottom: 28px;">
+      <p class="eyebrow">Proceso completado</p>
+      <h2 id="execution-result-title">Inactivación confirmada</h2>
+      <p>
+        Se desactivaron <strong>{{ execution_result.deactivated|length }}</strong> asignaciones
+        de <strong>{{ execution_result.affected_customer_count }}</strong> clientes. No se
+        modificaron clientes, productos globales, precios, pedidos ni movimientos operativos.
+      </p>
+      <p>Revisión: <code>{{ execution_result.review_id }}</code></p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Cliente</th><th>SKU</th><th>Producto</th><th>Resultado</th></tr></thead>
+          <tbody>
+            {% for item in execution_result.deactivated %}
+              <tr>
+                <td>{{ item.customer_name }}</td>
+                <td>{{ item.sku }}</td>
+                <td>{{ item.description }}</td>
+                <td>{{ item.decision }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
 
   {% if errors %}
     <section aria-labelledby="validation-errors-title">
@@ -65,13 +93,14 @@
     </article>
 
     <article class="module-card">
-      <p class="eyebrow">Paso 3 — no habilitado</p>
+      <p class="eyebrow">Paso 3</p>
       <h2>Confirmar inactivaciones</h2>
       <p>
-        La ejecución definitiva se diseñará con revalidación, bloqueo de filas, auditoría,
-        confirmación explícita y rollback. No existe endpoint ni botón de ejecución en esta fase.
+        Después de validar el Excel, confirme únicamente las filas conservadas y aprobadas. El
+        sistema vuelve a validar ventas, pedidos, canal, SKU, estados y fingerprint antes de
+        modificar el catálogo.
       </p>
-      <button type="button" disabled>Confirmación no disponible</button>
+      <p class="muted-inline">La confirmación aparece debajo de una vista previa válida.</p>
     </article>
   </section>
 
@@ -96,7 +125,7 @@
 
       <div class="module-grid" style="margin-bottom: 24px;">
         <article class="module-card">
-          <h3>Aprobados para etapa futura</h3>
+          <h3>Aprobados para inactivar</h3>
           <p style="font-size: 1.8rem; margin: 0;">{{ preview.approved|length }}</p>
         </article>
         <article class="module-card">
@@ -115,6 +144,53 @@
           {% for change in preview.changes %}<li>{{ change }}</li>{% endfor %}
         </ul>
       {% endif %}
+
+      <section class="module-card" style="margin: 24px 0;" aria-labelledby="confirmation-title">
+        <p class="eyebrow">Confirmación definitiva</p>
+        <h3 id="confirmation-title">Confirmar inactivación</h3>
+        <p>
+          Clientes afectados: <strong>{{ preview.affected_customer_count }}</strong> ·
+          Asignaciones a desactivar: <strong>{{ preview.approved|length }}</strong> ·
+          Filas eliminadas que permanecerán activas: <strong>{{ preview.maintained|length }}</strong> ·
+          Registros protegidos o rechazados: <strong>{{ preview.protected|length }}</strong>
+        </p>
+
+        {% if preview.plan_changed %}
+          <p class="error" role="alert">
+            El fingerprint cambió. Descargue y cargue una nueva revisión antes de confirmar.
+          </p>
+        {% elif not preview.approved %}
+          <p class="muted-inline">
+            El archivo no contiene filas aprobadas. No hay asignaciones que modificar.
+          </p>
+        {% elif not can(request, "b2b_commercial_inactivity.execute") %}
+          <p class="muted-inline">Su perfil no tiene permiso para confirmar inactivaciones.</p>
+        {% elif execution_token %}
+          <form method="post" action="/b2b/commercial-inactivity-review/execute">
+            <input type="hidden" name="csrf_token" value="{{ execute_csrf_token }}">
+            <input type="hidden" name="execution_token" value="{{ execution_token }}">
+            <label style="display: flex; gap: 10px; align-items: flex-start;">
+              <input
+                type="checkbox"
+                name="manual_acceptance"
+                value="{{ execution_acceptance }}"
+                required
+                style="width: auto; margin-top: 4px;"
+              >
+              <span>
+                Confirmo que esta es una revisión comercial manual, que el histórico de ventas
+                del ERP todavía no está certificado como completo y que deseo inactivar únicamente
+                las asignaciones aprobadas que aparecen en esta vista previa.
+              </span>
+            </label>
+            <button type="submit">Confirmar inactivación</button>
+          </form>
+        {% else %}
+          <p class="error" role="alert">
+            No fue posible emitir una autorización de confirmación. Cargue nuevamente el Excel.
+          </p>
+        {% endif %}
+      </section>
 
       <h3>Totales por canal</h3>
       <div class="table-wrap">
@@ -151,7 +227,7 @@
       </div>
 
       {% for heading, items in [
-        ("Productos aprobados para inactivación futura", preview.approved),
+        ("Productos aprobados para inactivación", preview.approved),
         ("Productos mantenidos activos", preview.maintained),
         ("Productos protegidos por restricciones", preview.protected)
       ] %}

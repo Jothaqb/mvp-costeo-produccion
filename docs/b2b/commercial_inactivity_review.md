@@ -1,17 +1,18 @@
 # Revisión comercial de inactividad B2B mediante Excel
 
-## Alcance de la primera etapa
+## Alcance
 
 La pantalla `/b2b/commercial-inactivity-review` permite:
 
 1. descargar un XLSX firmado con propuestas de inactivación de asignaciones
    `B2BCustomerProduct`;
 2. eliminar las filas que deben mantenerse activas;
-3. cargar el mismo archivo y revisar una vista previa revalidada.
+3. cargar el mismo archivo y revisar una vista previa revalidada;
+4. confirmar expresamente la inactivación de las filas conservadas y aprobadas.
 
-Esta etapa no expone ruta, botón ni servicio web para ejecutar inactivaciones. Tampoco modifica
-`B2BCustomer.active`, `B2BCustomerProduct.active`, `Product.active` ni
-`Product.available_for_sale_gc`.
+La confirmación modifica exclusivamente `B2BCustomerProduct.active`, de `true` a `false`. Nunca
+modifica `B2BCustomer.active`, `Product.active`, `Product.available_for_sale_gc`, precios,
+pedidos, facturación, CxC, inventario, Kardex, producción ni Loyverse.
 
 ## Configuración requerida
 
@@ -26,8 +27,7 @@ roles y permisos. En producción debe configurarse el origen público real del E
 
 - `b2b_commercial_inactivity.download`: descargar el XLSX firmado.
 - `b2b_commercial_inactivity.validate`: cargar y validar el XLSX.
-- `b2b_commercial_inactivity.execute`: reservado para una fase futura; no protege ningún endpoint
-  porque la ejecución está deshabilitada.
+- `b2b_commercial_inactivity.execute`: confirmar la inactivación de asignaciones aprobadas.
 
 El seed crea los permisos en el catálogo y el rol `admin` conserva todos los permisos. Los roles
 no administradores existentes no reciben permisos nuevos automáticamente; deben asignarse desde
@@ -73,7 +73,7 @@ motivo.
 
 ## Reglas de carga
 
-- Fila conservada y aprobable: propuesta aprobada para una futura confirmación.
+- Fila conservada y aprobable: propuesta aprobada para confirmación.
 - Fila eliminada y aprobable: mantener activa.
 - Archivo sin filas: cero aprobaciones.
 - Fila protegida: nunca se autoriza, se conserve o se elimine.
@@ -86,35 +86,51 @@ motivo.
 
 La importación vuelve a construir el plan con datos actuales. Ventas recientes, pedidos abiertos,
 cambios de canal, cambios de SKU, inactivaciones previas o desaparición del registro convierten la
-fila en protegida. Un cambio global de fingerprint se muestra claramente en la vista previa.
+fila en protegida. Un cambio global de fingerprint se muestra claramente en la vista previa y
+bloquea la confirmación.
 
 ## CSRF y origen
 
-El POST exige:
+Tanto la importación como la confirmación exigen:
 
 1. sesión válida;
-2. permiso `b2b_commercial_inactivity.validate` en backend;
-3. token CSRF HMAC vinculado a la cookie de sesión y a este formulario;
+2. su permiso específico (`validate` o `execute`) verificado en backend;
+3. token CSRF HMAC vinculado a la cookie de sesión y al propósito específico del formulario;
 4. `Origin` o `Referer` coincidente con el origen público configurado;
-5. archivo `.xlsx` de máximo 10 MB.
+5. para la carga, archivo `.xlsx` de máximo 10 MB.
 
 Una falla produce HTTP 403 o una carga rechazada sin escrituras.
 
-## Diseño propuesto para la confirmación definitiva
+## Confirmación definitiva
 
-La fase futura debe implementar una operación separada que:
+Después de una carga válida, el servidor emite una autorización HMAC de corta duración vinculada a:
 
-1. exija `b2b_commercial_inactivity.execute` y un segundo CSRF/origen;
-2. muestre una frase de confirmación explícita sobre el uso de histórico no certificado;
-3. acepte únicamente IDs aprobados de una revisión firmada y recién revalidada;
-4. rechace cualquier fingerprint diferente;
-5. bloquee con `FOR UPDATE` las asignaciones y clientes relacionados;
-6. reconstruya el plan dentro de la misma transacción;
-7. modifique únicamente `B2BCustomerProduct.active` de las filas aprobadas;
-8. registre auditoría con actor, review ID, fingerprints, fecha, IDs, estado anterior/nuevo y
-   aceptación explícita del alcance histórico;
-9. haga rollback completo ante cualquier error;
-10. sea idempotente y no modifique clientes ni productos globales.
+- la sesión autenticada;
+- el identificador y hash del manifiesto firmado;
+- el fingerprint y fecha operativa del plan revalidado;
+- la lista exacta de asignaciones aprobadas, con cliente, canal y SKU.
 
-Antes de habilitar esa fase debe resolverse el requisito pendiente de reactivaciones manuales con
-una excepción persistente o `protected_until` aprobado. No se agregó esquema en esta etapa.
+El navegador envía esa autorización firmada; no envía una lista libre de IDs. El POST separado
+`/b2b/commercial-inactivity-review/execute` exige además una aceptación expresa de que se trata de
+una revisión comercial manual con histórico todavía no certificado. Esta aceptación no modifica
+la cobertura declarada del job automático.
+
+La ejecución bloquea con `FOR UPDATE` los clientes y asignaciones, reconstruye el plan dentro de
+la misma transacción y exige el fingerprint exacto. Revalida canal autorizado, cliente activo,
+asignación activa, SKU, ventas facturadas recientes, pedidos abiertos y demás protecciones. Si
+cualquier fila cambió, se rechaza el lote completo y se solicita una nueva revisión; no hay
+ejecución parcial. Cada cambio registra actor, fecha, cliente, SKU, ID de asignación, review ID,
+hash del manifiesto, fingerprint y resultado en `audit_logs`. Cualquier error provoca rollback
+completo. Una segunda confirmación se rechaza porque las asignaciones ya no están activas y el
+fingerprint deja de coincidir.
+
+## Reactivaciones manuales y automatización futura
+
+No existe Cron ni ejecución automática en este flujo. Si una asignación se reactiva manualmente,
+solo podrá volver a inactivarse después de una nueva descarga, carga, vista previa y confirmación
+expresa. La autorización vence en una hora, está ligada a la sesión y cualquier cambio en la
+asignación invalida el fingerprint.
+
+Antes de automatizar mensualmente el proceso debe diseñarse una excepción persistente o un campo
+`protected_until` aprobado para distinguir reactivaciones deliberadas. No se agregó esquema ni se
+marcó el histórico como certificado en esta implementación.

@@ -4,8 +4,10 @@ import zipfile
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+from fastapi import HTTPException
 from openpyxl import load_workbook
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -13,18 +15,30 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base
 from app.models import (
+    AuditLog,
     B2BCustomer,
     B2BCustomerProduct,
     B2BSalesOrder,
     B2BSalesOrderLine,
     Channel,
+    InventoryBalance,
+    InventoryTransaction,
     Product,
+    User,
 )
+from app.services.admin_role_permission_service import (
+    RolePermissionCSRFError,
+    validate_role_permissions_request_origin,
+)
+from app.services.audit_service import parse_audit_payload
 from app.services.auth_service import BASE_PERMISSION_DEFINITIONS
+from app.services.auth_service import require_permission
 from app.services import b2b_commercial_inactivity_review_service as review_service
 from app.services.b2b_commercial_inactivity_review_service import (
+    B2BCommercialInactivityReviewExecutionError,
     B2BCommercialInactivityReviewImportError,
     B2BCommercialInactivityReviewSecurityError,
+    EXECUTION_ACCEPTANCE,
     MANIFEST_SHEET_NAME,
     MAX_UPLOAD_BYTES,
     REVIEW_HEADERS,
@@ -32,10 +46,14 @@ from app.services.b2b_commercial_inactivity_review_service import (
     REVIEW_PERMISSION_EXECUTE,
     REVIEW_PERMISSION_VALIDATE,
     REVIEW_SHEET_NAME,
+    build_b2b_inactivity_execution_token,
     build_b2b_inactivity_review_xlsx,
     build_inactivity_review_csrf_token,
+    build_inactivity_review_execute_csrf_token,
+    execute_b2b_inactivity_review,
     preview_b2b_inactivity_review_xlsx,
     validate_inactivity_review_csrf_token,
+    validate_inactivity_review_execute_csrf_token,
 )
 from app.services.b2b_commercial_inactivity_service import AUTHORIZED_B2B_CHANNEL_NAMES
 
@@ -43,6 +61,8 @@ from app.services.b2b_commercial_inactivity_service import AUTHORIZED_B2B_CHANNE
 AS_OF_DATE = date(2026, 10, 16)
 SIGNING_SECRET = "review-test-secret-32-characters-minimum"
 OLD_TIMESTAMP = datetime(2024, 1, 1, 8, 0, 0)
+EXECUTION_TIME = datetime(2026, 10, 16, 15, 30, tzinfo=timezone.utc)
+SESSION_TOKEN = "secure-review-session-token"
 
 
 class B2BCommercialInactivityReviewTests(unittest.TestCase):
@@ -72,7 +92,14 @@ class B2BCommercialInactivityReviewTests(unittest.TestCase):
             applies_to_b2b=True,
             applies_to_b2c=False,
         )
-        self.db.add(self.outside_channel)
+        self.actor = User(
+            username="inactivity.reviewer",
+            full_name="Inactivity Reviewer",
+            email="inactivity.reviewer@example.com",
+            password_hash="test-only",
+            is_active=True,
+        )
+        self.db.add_all((self.outside_channel, self.actor))
         self.db.commit()
 
     def tearDown(self):
@@ -162,6 +189,38 @@ class B2BCommercialInactivityReviewTests(unittest.TestCase):
             review_id=review_id,
             generated_at=datetime(2026, 10, 16, 15, 0, tzinfo=timezone.utc),
             signing_secret=SIGNING_SECRET,
+        )
+
+    def _preview(self, content):
+        return preview_b2b_inactivity_review_xlsx(
+            self.db,
+            content,
+            current_as_of_date=AS_OF_DATE,
+            signing_secret=SIGNING_SECRET,
+        )
+
+    def _execution_token(self, preview):
+        return build_b2b_inactivity_execution_token(
+            preview,
+            session_token=SESSION_TOKEN,
+            issued_at=EXECUTION_TIME,
+            signing_secret=SIGNING_SECRET,
+        )
+
+    def _execute(self, token, *, acceptance=EXECUTION_ACCEPTANCE, before_commit=None):
+        return execute_b2b_inactivity_review(
+            self.db,
+            authorization_token=token,
+            session_token=SESSION_TOKEN,
+            acceptance=acceptance,
+            acting_user_id=self.actor.id,
+            request_path="/b2b/commercial-inactivity-review/execute",
+            request_method="POST",
+            ip_address="127.0.0.1",
+            current_as_of_date=AS_OF_DATE,
+            current_time=EXECUTION_TIME,
+            signing_secret=SIGNING_SECRET,
+            before_commit=before_commit,
         )
 
     @staticmethod
@@ -418,7 +477,220 @@ class B2BCommercialInactivityReviewTests(unittest.TestCase):
         with self.assertRaises(B2BCommercialInactivityReviewSecurityError):
             validate_inactivity_review_csrf_token("session-one", "")
 
-    def test_permissions_routes_and_disabled_execute_are_explicit(self):
+        execute_token = build_inactivity_review_execute_csrf_token("session-one")
+        validate_inactivity_review_execute_csrf_token("session-one", execute_token)
+        with self.assertRaises(B2BCommercialInactivityReviewSecurityError):
+            validate_inactivity_review_execute_csrf_token("session-two", execute_token)
+
+    def test_execute_deactivates_only_retained_approved_assignment_and_audits_it(self):
+        customer = self._customer()
+        approved = self._catalog(customer, "APPROVED")
+        maintained = self._catalog(customer, "MAINTAINED")
+        approved_product = self.db.query(Product).filter(Product.sku == "APPROVED").one()
+        approved_price = approved.distributor_price
+        review = self._workbook()
+        workbook = load_workbook(io.BytesIO(review.content))
+        worksheet = workbook[REVIEW_SHEET_NAME]
+        maintained_row = next(
+            row for row in range(2, worksheet.max_row + 1)
+            if worksheet.cell(row, 3).value == "MAINTAINED"
+        )
+        worksheet.delete_rows(maintained_row)
+        preview = self._preview(self._save_workbook(workbook))
+
+        result = self._execute(self._execution_token(preview))
+
+        self.db.refresh(approved)
+        self.db.refresh(maintained)
+        self.db.refresh(customer)
+        self.db.refresh(approved_product)
+        self.assertFalse(approved.active)
+        self.assertTrue(maintained.active)
+        self.assertTrue(customer.active)
+        self.assertTrue(approved_product.active)
+        self.assertTrue(approved_product.available_for_sale_gc)
+        self.assertEqual(approved.distributor_price, approved_price)
+        self.assertEqual([item.catalog_product_id for item in result.deactivated], [approved.id])
+        self.assertEqual(result.affected_customer_count, 1)
+        audit = self.db.query(AuditLog).one()
+        self.assertEqual(audit.action, "b2b_customer_product_inactivity_review_deactivated")
+        self.assertEqual(audit.entity_id, str(approved.id))
+        audit_payload = parse_audit_payload(audit.new_values)
+        self.assertEqual(audit_payload["review_id"], review.review_id)
+        self.assertEqual(audit_payload["sku"], "APPROVED")
+        self.assertTrue(audit_payload["manual_history_acknowledgement"])
+        self.assertEqual(self.db.query(InventoryTransaction).count(), 0)
+        self.assertEqual(self.db.query(InventoryBalance).count(), 0)
+
+    def test_empty_uploaded_review_cannot_issue_or_execute_an_authorization(self):
+        customer = self._customer()
+        catalog = self._catalog(customer, "FIRST")
+        review = self._workbook()
+        workbook = load_workbook(io.BytesIO(review.content))
+        worksheet = workbook[REVIEW_SHEET_NAME]
+        worksheet.delete_rows(2, worksheet.max_row - 1)
+        preview = self._preview(self._save_workbook(workbook))
+
+        with self.assertRaises(B2BCommercialInactivityReviewExecutionError):
+            self._execution_token(preview)
+        self.db.refresh(catalog)
+        self.assertTrue(catalog.active)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
+
+    def test_new_purchase_after_preview_blocks_the_entire_confirmation(self):
+        customer = self._customer()
+        catalog = self._catalog(customer, "FIRST")
+        preview = self._preview(self._workbook().content)
+        token = self._execution_token(preview)
+        self._order(
+            customer,
+            "NEW-AFTER-PREVIEW",
+            "FIRST",
+            invoice_date=date(2026, 10, 10),
+        )
+        self.db.commit()
+
+        with self.assertRaises(B2BCommercialInactivityReviewExecutionError) as raised:
+            self._execute(token)
+
+        self.assertIn("fingerprint", str(raised.exception).lower())
+        self.db.refresh(catalog)
+        self.assertTrue(catalog.active)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
+
+    def test_channel_or_sku_change_after_preview_blocks_confirmation(self):
+        for changed_field in ("channel", "sku"):
+            with self.subTest(changed_field=changed_field):
+                customer = self._customer(f"Cliente {changed_field}")
+                catalog = self._catalog(customer, f"ORIGINAL-{changed_field}")
+                preview = self._preview(self._workbook(review_id=f"review-{changed_field}").content)
+                token = self._execution_token(preview)
+                if changed_field == "channel":
+                    customer.channel_id = self.outside_channel.id
+                else:
+                    self.db.add(
+                        Product(
+                            sku=f"CHANGED-{changed_field}",
+                            name="Changed",
+                            active=True,
+                            available_for_sale_gc=True,
+                            created_at=OLD_TIMESTAMP,
+                            updated_at=OLD_TIMESTAMP,
+                        )
+                    )
+                    catalog.sku = f"CHANGED-{changed_field}"
+                self.db.commit()
+
+                with self.assertRaises(B2BCommercialInactivityReviewExecutionError):
+                    self._execute(token)
+                self.db.refresh(catalog)
+                self.assertTrue(catalog.active)
+
+                # Restore this subtest's data so the next workbook starts from a stable plan.
+                if changed_field == "channel":
+                    customer.channel_id = self.channels[AUTHORIZED_B2B_CHANNEL_NAMES[0]].id
+                else:
+                    catalog.sku = f"ORIGINAL-{changed_field}"
+                self.db.commit()
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
+
+    def test_tampered_expired_and_other_session_execution_tokens_are_rejected(self):
+        customer = self._customer()
+        catalog = self._catalog(customer, "FIRST")
+        preview = self._preview(self._workbook().content)
+        token = self._execution_token(preview)
+
+        altered = token[:-1] + ("0" if token[-1] != "0" else "1")
+        with self.assertRaises(B2BCommercialInactivityReviewSecurityError):
+            execute_b2b_inactivity_review(
+                self.db,
+                authorization_token=altered,
+                session_token=SESSION_TOKEN,
+                acceptance=EXECUTION_ACCEPTANCE,
+                acting_user_id=self.actor.id,
+                request_path="/b2b/commercial-inactivity-review/execute",
+                request_method="POST",
+                ip_address=None,
+                current_as_of_date=AS_OF_DATE,
+                current_time=EXECUTION_TIME,
+                signing_secret=SIGNING_SECRET,
+            )
+        with self.assertRaises(B2BCommercialInactivityReviewSecurityError):
+            execute_b2b_inactivity_review(
+                self.db,
+                authorization_token=token,
+                session_token="different-session",
+                acceptance=EXECUTION_ACCEPTANCE,
+                acting_user_id=self.actor.id,
+                request_path="/b2b/commercial-inactivity-review/execute",
+                request_method="POST",
+                ip_address=None,
+                current_as_of_date=AS_OF_DATE,
+                current_time=EXECUTION_TIME,
+                signing_secret=SIGNING_SECRET,
+            )
+        with self.assertRaises(B2BCommercialInactivityReviewSecurityError):
+            execute_b2b_inactivity_review(
+                self.db,
+                authorization_token=token,
+                session_token=SESSION_TOKEN,
+                acceptance=EXECUTION_ACCEPTANCE,
+                acting_user_id=self.actor.id,
+                request_path="/b2b/commercial-inactivity-review/execute",
+                request_method="POST",
+                ip_address=None,
+                current_as_of_date=AS_OF_DATE,
+                current_time=datetime(2026, 10, 16, 17, 0, tzinfo=timezone.utc),
+                signing_secret=SIGNING_SECRET,
+            )
+        self.db.refresh(catalog)
+        self.assertTrue(catalog.active)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
+
+    def test_explicit_acceptance_is_required(self):
+        customer = self._customer()
+        catalog = self._catalog(customer, "FIRST")
+        preview = self._preview(self._workbook().content)
+
+        with self.assertRaises(B2BCommercialInactivityReviewExecutionError):
+            self._execute(self._execution_token(preview), acceptance="")
+
+        self.db.refresh(catalog)
+        self.assertTrue(catalog.active)
+
+    def test_second_confirmation_is_rejected_without_duplicate_audit(self):
+        customer = self._customer()
+        catalog = self._catalog(customer, "FIRST")
+        preview = self._preview(self._workbook().content)
+        token = self._execution_token(preview)
+        self._execute(token)
+
+        with self.assertRaises(B2BCommercialInactivityReviewExecutionError):
+            self._execute(token)
+
+        self.db.refresh(catalog)
+        self.assertFalse(catalog.active)
+        self.assertEqual(self.db.query(AuditLog).count(), 1)
+
+    def test_failure_before_commit_rolls_back_assignment_and_audit(self):
+        customer = self._customer()
+        catalog = self._catalog(customer, "FIRST")
+        preview = self._preview(self._workbook().content)
+
+        def fail_before_commit(_db):
+            raise RuntimeError("forced rollback")
+
+        with self.assertRaisesRegex(RuntimeError, "forced rollback"):
+            self._execute(
+                self._execution_token(preview),
+                before_commit=fail_before_commit,
+            )
+
+        self.db.refresh(catalog)
+        self.assertTrue(catalog.active)
+        self.assertEqual(self.db.query(AuditLog).count(), 0)
+
+    def test_permissions_routes_and_execute_security_are_explicit(self):
         permission_codes = {row[0] for row in BASE_PERMISSION_DEFINITIONS}
         self.assertTrue(
             {
@@ -445,8 +717,49 @@ class B2BCommercialInactivityReviewTests(unittest.TestCase):
             "await file.read(B2B_INACTIVITY_REVIEW_MAX_UPLOAD_BYTES + 1)",
             main_source,
         )
-        self.assertNotIn('/b2b/commercial-inactivity-review/execute', main_source)
-        self.assertIn("Confirmación no disponible", template)
+        execute_route = main_source.index(
+            '@app.post("/b2b/commercial-inactivity-review/execute"'
+        )
+        customers_route = main_source.index('@app.get("/b2b/customers"', execute_route)
+        execute_source = main_source[execute_route:customers_route]
+        self.assertIn(
+            "current_user = require_permission(request, REVIEW_PERMISSION_EXECUTE)",
+            execute_source,
+        )
+        self.assertLess(
+            execute_source.index("require_permission(request, REVIEW_PERMISSION_EXECUTE)"),
+            execute_source.index("validate_inactivity_review_execute_csrf_token("),
+        )
+        self.assertLess(
+            execute_source.index("validate_role_permissions_request_origin("),
+            execute_source.index("execute_b2b_inactivity_review("),
+        )
+        denied_request = SimpleNamespace(
+            state=SimpleNamespace(current_user=self.actor, current_permissions=set())
+        )
+        with self.assertRaises(HTTPException) as denied:
+            require_permission(denied_request, REVIEW_PERMISSION_EXECUTE)
+        self.assertEqual(denied.exception.status_code, 403)
+        self.assertIn("Confirmar inactivación", template)
+        self.assertIn("execution_token", template)
+        self.assertNotIn('name="catalog_product_id"', template)
+
+    def test_external_or_missing_origin_is_rejected_before_execution(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"APP_BASE_URL": "https://erp.example.com", "RENDER_EXTERNAL_URL": ""},
+            clear=False,
+        ):
+            with self.assertRaises(RolePermissionCSRFError):
+                validate_role_permissions_request_origin(
+                    origin_header="https://evil.example",
+                    referer_header=None,
+                )
+            with self.assertRaises(RolePermissionCSRFError):
+                validate_role_permissions_request_origin(
+                    origin_header=None,
+                    referer_header=None,
+                )
 
     def test_secret_is_required_and_no_data_is_modified(self):
         customer = self._customer()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -10,15 +12,16 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
-from typing import Any
+from typing import Any, Callable
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import B2BSalesOrder
+from app.models import AuditLog, B2BCustomer, B2BCustomerProduct, B2BSalesOrder, User
 from app.services.accounts_receivable_service import resolve_b2b_invoice_date
+from app.services.audit_service import serialize_audit_payload
 from app.services.b2b_commercial_inactivity_service import (
     B2BCommercialInactivityPlan,
     CatalogProductInactivityEvidence,
@@ -40,6 +43,11 @@ MAX_XLSX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
 MAX_XLSX_ZIP_ENTRIES = 1_000
 MANIFEST_CHUNK_SIZE = 30_000
 CSRF_PURPOSE = b"green-corner:b2b-commercial-inactivity-review:import:v1"
+EXECUTION_CSRF_PURPOSE = b"green-corner:b2b-commercial-inactivity-review:execute:v1"
+EXECUTION_TOKEN_PURPOSE = b"green-corner:b2b-commercial-inactivity-review:authorization:v1:"
+EXECUTION_TOKEN_VERSION = "b2b-inactivity-review-execute-v1"
+EXECUTION_TOKEN_MAX_AGE_SECONDS = 60 * 60
+EXECUTION_ACCEPTANCE = "MANUAL_REVIEW_UNCERTIFIED_HISTORY_ACCEPTED"
 HISTORY_COVERAGE_REASON = (
     "No existe una confirmación de cobertura histórica completa desde el inicio de la ventana."
 )
@@ -69,6 +77,10 @@ class B2BCommercialInactivityReviewImportError(B2BCommercialInactivityReviewErro
     def __init__(self, errors: list[str] | tuple[str, ...]):
         self.errors = tuple(errors)
         super().__init__(" ".join(self.errors))
+
+
+class B2BCommercialInactivityReviewExecutionError(B2BCommercialInactivityReviewError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -105,6 +117,8 @@ class InactivityReviewWorkbook:
 @dataclass(frozen=True)
 class InactivityReviewPreviewItem:
     catalog_product_id: int
+    customer_id: int
+    channel_id: int
     channel_name: str
     customer_name: str
     sku: str
@@ -129,6 +143,7 @@ class InactivityReviewPreview:
     current_as_of_date: date
     original_plan_fingerprint: str
     current_plan_fingerprint: str
+    manifest_sha256: str
     plan_changed: bool
     approved: tuple[InactivityReviewPreviewItem, ...]
     maintained: tuple[InactivityReviewPreviewItem, ...]
@@ -138,6 +153,39 @@ class InactivityReviewPreview:
     customer_totals: tuple[InactivityReviewGroupTotal, ...]
     original_row_count: int
     uploaded_row_count: int
+
+    @property
+    def affected_customer_count(self) -> int:
+        return len({item.customer_id for item in self.approved})
+
+
+@dataclass(frozen=True)
+class InactivityReviewExecutionResult:
+    review_id: str
+    plan_fingerprint: str
+    deactivated: tuple[InactivityReviewPreviewItem, ...]
+
+    @property
+    def affected_customer_count(self) -> int:
+        return len({item.customer_id for item in self.deactivated})
+
+
+@dataclass(frozen=True)
+class InactivityReviewApprovedClaim:
+    catalog_product_id: int
+    customer_id: int
+    channel_id: int
+    sku: str
+
+
+@dataclass(frozen=True)
+class InactivityReviewExecutionAuthorization:
+    review_id: str
+    manifest_sha256: str
+    plan_fingerprint: str
+    as_of_date: date
+    issued_at_utc: datetime
+    approved: tuple[InactivityReviewApprovedClaim, ...]
 
 
 def build_inactivity_review_csrf_token(session_token: str | None) -> str:
@@ -162,6 +210,35 @@ def validate_inactivity_review_csrf_token(
     if not hmac.compare_digest(submitted, expected):
         raise B2BCommercialInactivityReviewSecurityError(
             "El token CSRF no es válido para esta sesión."
+        )
+
+
+def build_inactivity_review_execute_csrf_token(session_token: str | None) -> str:
+    normalized = (session_token or "").strip()
+    if not normalized:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "No hay una sesión válida para generar la protección CSRF de confirmación."
+        )
+    return hmac.new(
+        normalized.encode("utf-8"),
+        EXECUTION_CSRF_PURPOSE,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def validate_inactivity_review_execute_csrf_token(
+    session_token: str | None,
+    submitted_token: str | None,
+) -> None:
+    submitted = (submitted_token or "").strip()
+    if not submitted:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "Falta el token CSRF de confirmación."
+        )
+    expected = build_inactivity_review_execute_csrf_token(session_token)
+    if not hmac.compare_digest(submitted, expected):
+        raise B2BCommercialInactivityReviewSecurityError(
+            "El token CSRF de confirmación no es válido para esta sesión."
         )
 
 
@@ -234,7 +311,10 @@ def preview_b2b_inactivity_review_xlsx(
             ["El archivo no es un XLSX válido o está dañado."]
         ) from exc
     try:
-        manifest = _read_and_validate_manifest(workbook, signing_secret=signing_secret)
+        manifest, manifest_sha256 = _read_and_validate_manifest(
+            workbook,
+            signing_secret=signing_secret,
+        )
         retained_ids = _validate_visible_rows(workbook, manifest)
     finally:
         workbook.close()
@@ -278,6 +358,8 @@ def preview_b2b_inactivity_review_xlsx(
     for catalog_product_id, original in sorted(original_rows.items()):
         item_base = {
             "catalog_product_id": catalog_product_id,
+            "customer_id": int(original["customer_id"]),
+            "channel_id": int(original["channel_id"]),
             "channel_name": str(original["channel_name"]),
             "customer_name": str(original["customer_name"]),
             "sku": str(original["sku"]),
@@ -322,7 +404,7 @@ def preview_b2b_inactivity_review_xlsx(
         approved.append(
             InactivityReviewPreviewItem(
                 **item_base,
-                decision="Aprobado para una confirmación futura",
+                decision="Aprobado para confirmar",
                 detail=(
                     "La fila se conservó y continúa sin compras facturadas en la ventana; "
                     "todavía no se realizó ninguna inactivación."
@@ -344,6 +426,7 @@ def preview_b2b_inactivity_review_xlsx(
         current_as_of_date=effective_current_date,
         original_plan_fingerprint=str(manifest["plan_fingerprint"]),
         current_plan_fingerprint=current_plan.plan_fingerprint,
+        manifest_sha256=manifest_sha256,
         plan_changed=plan_changed,
         approved=tuple(approved),
         maintained=tuple(maintained),
@@ -354,6 +437,364 @@ def preview_b2b_inactivity_review_xlsx(
         original_row_count=len(original_rows),
         uploaded_row_count=len(retained_ids),
     )
+
+
+def build_b2b_inactivity_execution_token(
+    preview: InactivityReviewPreview,
+    *,
+    session_token: str | None,
+    issued_at: datetime | None = None,
+    signing_secret: str | None = None,
+) -> str:
+    if not preview.approved:
+        raise B2BCommercialInactivityReviewExecutionError(
+            "No hay asignaciones aprobadas para confirmar."
+        )
+    if preview.plan_changed:
+        raise B2BCommercialInactivityReviewExecutionError(
+            "El plan cambió desde la descarga; genere y valide una nueva revisión."
+        )
+    normalized_session = (session_token or "").strip()
+    if not normalized_session:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "No hay una sesión válida para autorizar la confirmación."
+        )
+    secret = _review_secret(signing_secret)
+    effective_issued_at = issued_at or datetime.now(timezone.utc)
+    if effective_issued_at.tzinfo is None:
+        effective_issued_at = effective_issued_at.replace(tzinfo=timezone.utc)
+    payload = {
+        "version": EXECUTION_TOKEN_VERSION,
+        "review_id": preview.review_id,
+        "manifest_sha256": preview.manifest_sha256,
+        "plan_fingerprint": preview.current_plan_fingerprint,
+        "as_of_date": preview.current_as_of_date.isoformat(),
+        "issued_at_utc": effective_issued_at.astimezone(timezone.utc).isoformat(),
+        "session_binding": _execution_session_binding(secret, normalized_session),
+        "approved": [
+            {
+                "catalog_product_id": item.catalog_product_id,
+                "customer_id": item.customer_id,
+                "channel_id": item.channel_id,
+                "sku": item.sku,
+            }
+            for item in sorted(preview.approved, key=lambda row: row.catalog_product_id)
+        ],
+    }
+    canonical = _canonical_json(payload).encode("utf-8")
+    signature = hmac.new(secret, EXECUTION_TOKEN_PURPOSE + canonical, hashlib.sha256).hexdigest()
+    encoded = base64.urlsafe_b64encode(canonical).decode("ascii").rstrip("=")
+    return f"{encoded}.{signature}"
+
+
+def validate_b2b_inactivity_execution_token(
+    token: str | None,
+    *,
+    session_token: str | None,
+    current_time: datetime | None = None,
+    signing_secret: str | None = None,
+) -> InactivityReviewExecutionAuthorization:
+    normalized_token = (token or "").strip()
+    normalized_session = (session_token or "").strip()
+    if not normalized_token or len(normalized_token) > 1_000_000:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización firmada de confirmación no es válida."
+        )
+    if not normalized_session:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "No hay una sesión válida para confirmar la revisión."
+        )
+    try:
+        encoded, signature = normalized_token.split(".", 1)
+        padded = encoded + "=" * (-len(encoded) % 4)
+        canonical = base64.urlsafe_b64decode(padded.encode("ascii"))
+    except (binascii.Error, ValueError, UnicodeEncodeError) as exc:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización firmada de confirmación no es válida."
+        ) from exc
+    secret = _review_secret(signing_secret)
+    expected_signature = hmac.new(
+        secret,
+        EXECUTION_TOKEN_PURPOSE + canonical,
+        hashlib.sha256,
+    ).hexdigest()
+    if not signature or not hmac.compare_digest(signature, expected_signature):
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización de confirmación fue alterada o no pertenece a este ERP."
+        )
+    try:
+        payload = json.loads(canonical.decode("utf-8"))
+        issued_at = datetime.fromisoformat(str(payload["issued_at_utc"]))
+        as_of_date = date.fromisoformat(str(payload["as_of_date"]))
+        approved_payload = payload["approved"]
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización firmada de confirmación está incompleta."
+        ) from exc
+    if payload.get("version") != EXECUTION_TOKEN_VERSION or not isinstance(approved_payload, list):
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La versión de la autorización de confirmación no es compatible."
+        )
+    if issued_at.tzinfo is None:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización de confirmación no contiene una fecha UTC válida."
+        )
+    effective_now = current_time or datetime.now(timezone.utc)
+    if effective_now.tzinfo is None:
+        effective_now = effective_now.replace(tzinfo=timezone.utc)
+    age_seconds = (
+        effective_now.astimezone(timezone.utc) - issued_at.astimezone(timezone.utc)
+    ).total_seconds()
+    if age_seconds < -300 or age_seconds > EXECUTION_TOKEN_MAX_AGE_SECONDS:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización de confirmación venció; cargue nuevamente el Excel."
+        )
+    expected_binding = _execution_session_binding(secret, normalized_session)
+    if not hmac.compare_digest(str(payload.get("session_binding") or ""), expected_binding):
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización de confirmación no pertenece a esta sesión."
+        )
+    review_id = str(payload.get("review_id") or "").strip()
+    manifest_sha256 = str(payload.get("manifest_sha256") or "").strip()
+    plan_fingerprint = str(payload.get("plan_fingerprint") or "").strip()
+    if not review_id or not _is_sha256(manifest_sha256) or not _is_sha256(plan_fingerprint):
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización firmada no identifica una revisión válida."
+        )
+    approved: list[InactivityReviewApprovedClaim] = []
+    approved_ids: set[int] = set()
+    try:
+        for raw_claim in approved_payload:
+            claim = InactivityReviewApprovedClaim(
+                catalog_product_id=int(raw_claim["catalog_product_id"]),
+                customer_id=int(raw_claim["customer_id"]),
+                channel_id=int(raw_claim["channel_id"]),
+                sku=str(raw_claim["sku"]).strip(),
+            )
+            if claim.catalog_product_id <= 0 or claim.customer_id <= 0 or claim.channel_id <= 0:
+                raise ValueError("Invalid claim identifier")
+            if not claim.sku or claim.catalog_product_id in approved_ids:
+                raise ValueError("Invalid or duplicate approved assignment")
+            approved_ids.add(claim.catalog_product_id)
+            approved.append(claim)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise B2BCommercialInactivityReviewSecurityError(
+            "La autorización contiene asignaciones inválidas o duplicadas."
+        ) from exc
+    if not approved:
+        raise B2BCommercialInactivityReviewExecutionError(
+            "La revisión no contiene asignaciones aprobadas para confirmar."
+        )
+    return InactivityReviewExecutionAuthorization(
+        review_id=review_id,
+        manifest_sha256=manifest_sha256,
+        plan_fingerprint=plan_fingerprint,
+        as_of_date=as_of_date,
+        issued_at_utc=issued_at.astimezone(timezone.utc),
+        approved=tuple(approved),
+    )
+
+
+def execute_b2b_inactivity_review(
+    db: Session,
+    *,
+    authorization_token: str | None,
+    session_token: str | None,
+    acceptance: str | None,
+    acting_user_id: int,
+    request_path: str,
+    request_method: str,
+    ip_address: str | None,
+    current_as_of_date: date | None = None,
+    current_time: datetime | None = None,
+    signing_secret: str | None = None,
+    before_commit: Callable[[Session], None] | None = None,
+) -> InactivityReviewExecutionResult:
+    if (acceptance or "").strip() != EXECUTION_ACCEPTANCE:
+        raise B2BCommercialInactivityReviewExecutionError(
+            "Debe aceptar expresamente que esta es una revisión comercial manual con histórico no certificado."
+        )
+    authorization = validate_b2b_inactivity_execution_token(
+        authorization_token,
+        session_token=session_token,
+        current_time=current_time,
+        signing_secret=signing_secret,
+    )
+    effective_date = current_as_of_date or current_costa_rica_date()
+    if effective_date != authorization.as_of_date:
+        raise B2BCommercialInactivityReviewExecutionError(
+            "La fecha operativa cambió; genere y valide una nueva revisión."
+        )
+    try:
+        actor = (
+            db.query(User)
+            .filter(User.id == acting_user_id, User.is_active.is_(True))
+            .one_or_none()
+        )
+        if actor is None:
+            raise B2BCommercialInactivityReviewExecutionError(
+                "Se requiere un usuario activo para registrar la confirmación."
+            )
+        approved_ids = sorted(claim.catalog_product_id for claim in authorization.approved)
+        customer_ids = sorted({claim.customer_id for claim in authorization.approved})
+        locked_customers = (
+            db.query(B2BCustomer)
+            .filter(B2BCustomer.id.in_(customer_ids))
+            .with_for_update()
+            .all()
+        )
+        locked_assignments = (
+            db.query(B2BCustomerProduct)
+            .filter(B2BCustomerProduct.id.in_(approved_ids))
+            .with_for_update()
+            .all()
+        )
+        if len(locked_customers) != len(customer_ids) or len(locked_assignments) != len(approved_ids):
+            raise B2BCommercialInactivityReviewExecutionError(
+                "Una asignación o cliente aprobado ya no existe; genere una nueva revisión."
+            )
+
+        db.expire_all()
+        plan = build_b2b_commercial_inactivity_plan(
+            db,
+            config=InactivityConfig(as_of_date=effective_date, history_complete_since=None),
+        )
+        if not plan.channel_scope_is_valid:
+            raise B2BCommercialInactivityReviewExecutionError(
+                "Los cuatro canales autorizados ya no se resuelven exactamente."
+            )
+        if not hmac.compare_digest(plan.plan_fingerprint, authorization.plan_fingerprint):
+            raise B2BCommercialInactivityReviewExecutionError(
+                "El fingerprint cambió desde la aprobación; genere y valide una nueva revisión."
+            )
+        current_evidence = {
+            row.catalog_product_id: row for row in plan.catalog_products
+        }
+        validation_errors: list[str] = []
+        for claim in authorization.approved:
+            evidence = current_evidence.get(claim.catalog_product_id)
+            original = {
+                "customer_id": claim.customer_id,
+                "channel_id": claim.channel_id,
+                "sku": claim.sku,
+            }
+            blockers = _current_blockers(original, evidence, plan)
+            if evidence is None or not _is_inactivity_proposal(evidence, plan):
+                blockers = (*blockers, "La asignación ya no es una propuesta de inactividad.")
+            if blockers:
+                validation_errors.append(
+                    f"Asignación {claim.catalog_product_id}: " + " | ".join(dict.fromkeys(blockers))
+                )
+        if validation_errors:
+            raise B2BCommercialInactivityReviewExecutionError(
+                "La revisión cambió y no puede ejecutarse parcialmente. "
+                + " ".join(validation_errors)
+            )
+
+        assignments_by_id = {
+            row.id: row
+            for row in (
+                db.query(B2BCustomerProduct)
+                .filter(B2BCustomerProduct.id.in_(approved_ids))
+                .order_by(B2BCustomerProduct.id)
+                .all()
+            )
+        }
+        deactivated: list[InactivityReviewPreviewItem] = []
+        for claim in sorted(authorization.approved, key=lambda row: row.catalog_product_id):
+            assignment = assignments_by_id[claim.catalog_product_id]
+            evidence = current_evidence[claim.catalog_product_id]
+            if not assignment.active:
+                raise B2BCommercialInactivityReviewExecutionError(
+                    f"La asignación {assignment.id} ya no está activa."
+                )
+            assignment.active = False
+            audit_detail = {
+                "active": False,
+                "result": "deactivated",
+                "review_id": authorization.review_id,
+                "manifest_sha256": authorization.manifest_sha256,
+                "plan_fingerprint": authorization.plan_fingerprint,
+                "customer_id": evidence.customer_id,
+                "customer_name": evidence.customer_name,
+                "sku": evidence.sku,
+                "manual_history_acknowledgement": True,
+            }
+            db.add(
+                AuditLog(
+                    user_id=actor.id,
+                    username=actor.username,
+                    module="sales",
+                    action="b2b_customer_product_inactivity_review_deactivated",
+                    entity_type="b2b_customer_product",
+                    entity_id=str(assignment.id),
+                    entity_label=f"{evidence.customer_name} - {evidence.sku}"[:255],
+                    old_values=serialize_audit_payload({"active": True}),
+                    new_values=serialize_audit_payload(audit_detail),
+                    request_path=request_path,
+                    method=request_method,
+                    ip_address=((ip_address or "")[:255] or None),
+                    notes=(
+                        "Confirmación manual mediante revisión Excel firmada; "
+                        "la cobertura histórica no se marcó como certificada."
+                    ),
+                )
+            )
+            deactivated.append(
+                InactivityReviewPreviewItem(
+                    catalog_product_id=assignment.id,
+                    customer_id=evidence.customer_id,
+                    channel_id=evidence.channel_id,
+                    channel_name=evidence.channel_name,
+                    customer_name=evidence.customer_name,
+                    sku=evidence.sku,
+                    description=evidence.description,
+                    decision="Inactivado",
+                    detail="Asignación producto–cliente desactivada mediante confirmación manual.",
+                )
+            )
+        db.flush()
+        remaining_active = (
+            db.query(B2BCustomerProduct.id)
+            .filter(
+                B2BCustomerProduct.id.in_(approved_ids),
+                B2BCustomerProduct.active.is_(True),
+            )
+            .count()
+        )
+        if remaining_active:
+            raise B2BCommercialInactivityReviewExecutionError(
+                "No fue posible verificar todas las inactivaciones aprobadas."
+            )
+        if before_commit is not None:
+            before_commit(db)
+        db.commit()
+        return InactivityReviewExecutionResult(
+            review_id=authorization.review_id,
+            plan_fingerprint=authorization.plan_fingerprint,
+            deactivated=tuple(deactivated),
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _execution_session_binding(secret: bytes, session_token: str) -> str:
+    return hmac.new(
+        secret,
+        b"session:" + session_token.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _is_sha256(value: str) -> bool:
+    if len(value) != 64:
+        return False
+    try:
+        int(value, 16)
+    except ValueError:
+        return False
+    return True
 
 
 def _validate_xlsx_container(content: bytes) -> None:
@@ -589,7 +1030,11 @@ def _render_workbook(
     return buffer.getvalue()
 
 
-def _read_and_validate_manifest(workbook, *, signing_secret: str | None) -> dict[str, Any]:
+def _read_and_validate_manifest(
+    workbook,
+    *,
+    signing_secret: str | None,
+) -> tuple[dict[str, Any], str]:
     if REVIEW_SHEET_NAME not in workbook.sheetnames or MANIFEST_SHEET_NAME not in workbook.sheetnames:
         raise B2BCommercialInactivityReviewImportError(
             ["El archivo no contiene las hojas originales de la revisión comercial."]
@@ -646,7 +1091,7 @@ def _read_and_validate_manifest(workbook, *, signing_secret: str | None) -> dict
         raise B2BCommercialInactivityReviewImportError(
             ["El manifiesto pertenece a otra versión del proceso de revisión."]
         )
-    return manifest
+    return manifest, hashlib.sha256(canonical_manifest.encode("utf-8")).hexdigest()
 
 
 def _validate_visible_rows(workbook, manifest: dict[str, Any]) -> set[int]:
