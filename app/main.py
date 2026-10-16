@@ -203,6 +203,17 @@ from app.services.b2b_customer_export_service import (
     build_b2b_customers_export_xlsx,
     current_b2b_customer_export_datetime,
 )
+from app.services.b2b_commercial_inactivity_review_service import (
+    B2BCommercialInactivityReviewImportError,
+    B2BCommercialInactivityReviewSecurityError,
+    MAX_UPLOAD_BYTES as B2B_INACTIVITY_REVIEW_MAX_UPLOAD_BYTES,
+    REVIEW_PERMISSION_DOWNLOAD,
+    REVIEW_PERMISSION_VALIDATE,
+    build_b2b_inactivity_review_xlsx,
+    build_inactivity_review_csrf_token,
+    preview_b2b_inactivity_review_xlsx,
+    validate_inactivity_review_csrf_token,
+)
 from app.services.b2b_sales_historical_import_service import (
     B2BHistoricalSalesImportResult,
     B2BHistoricalSalesImportValidationError,
@@ -7374,6 +7385,108 @@ def _planning_view_sync_summary(rows: list) -> dict[str, str]:
         "inventory_last_sync": _format_sync_timestamp(max(inventory_times) if inventory_times else None),
         "cost_last_sync": _format_sync_timestamp(max(cost_times) if cost_times else None),
     }
+
+
+def _require_b2b_inactivity_review_access(request: Request) -> None:
+    if not (
+        can(request, REVIEW_PERMISSION_DOWNLOAD)
+        or can(request, REVIEW_PERMISSION_VALIDATE)
+    ):
+        raise HTTPException(status_code=403, detail="Permission denied.")
+
+
+def _render_b2b_inactivity_review_page(
+    request: Request,
+    *,
+    preview=None,
+    errors: tuple[str, ...] | list[str] = (),
+    status_code: int = 200,
+) -> HTMLResponse:
+    try:
+        csrf_token = build_inactivity_review_csrf_token(
+            request.cookies.get(SESSION_COOKIE_NAME)
+        )
+    except B2BCommercialInactivityReviewSecurityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_commercial_inactivity_review.html",
+        context={
+            "title": "Revisión comercial de inactividad B2B",
+            "csrf_token": csrf_token,
+            "preview": preview,
+            "errors": tuple(errors),
+        },
+        status_code=status_code,
+    )
+
+
+@app.get("/b2b/commercial-inactivity-review", response_class=HTMLResponse)
+def b2b_commercial_inactivity_review_page(request: Request) -> HTMLResponse:
+    _require_b2b_inactivity_review_access(request)
+    return _render_b2b_inactivity_review_page(request)
+
+
+@app.get("/b2b/commercial-inactivity-review/download.xlsx")
+def download_b2b_commercial_inactivity_review(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, REVIEW_PERMISSION_DOWNLOAD)
+    try:
+        review = build_b2b_inactivity_review_xlsx(db)
+    except B2BCommercialInactivityReviewSecurityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return Response(
+        content=review.content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{review.filename}"',
+            "X-B2B-Inactivity-Review-Id": review.review_id,
+        },
+    )
+
+
+@app.post("/b2b/commercial-inactivity-review/import", response_class=HTMLResponse)
+async def import_b2b_commercial_inactivity_review(
+    request: Request,
+    csrf_token: str = Form(""),
+    file: UploadFile | None = File(None),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, REVIEW_PERMISSION_VALIDATE)
+    try:
+        validate_inactivity_review_csrf_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            csrf_token,
+        )
+        validate_role_permissions_request_origin(
+            origin_header=request.headers.get("origin"),
+            referer_header=request.headers.get("referer"),
+        )
+    except (B2BCommercialInactivityReviewSecurityError, RolePermissionCSRFError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+    if file is None or not (file.filename or "").lower().endswith(".xlsx"):
+        return _render_b2b_inactivity_review_page(
+            request,
+            errors=("Seleccione un archivo .xlsx generado por esta pantalla.",),
+            status_code=400,
+        )
+    content = await file.read(B2B_INACTIVITY_REVIEW_MAX_UPLOAD_BYTES + 1)
+    try:
+        preview = preview_b2b_inactivity_review_xlsx(db, content)
+    except B2BCommercialInactivityReviewImportError as exc:
+        return _render_b2b_inactivity_review_page(
+            request,
+            errors=exc.errors,
+            status_code=400,
+        )
+    except B2BCommercialInactivityReviewSecurityError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    finally:
+        await file.close()
+    return _render_b2b_inactivity_review_page(request, preview=preview)
 
 @app.get("/b2b/customers", response_class=HTMLResponse)
 def b2b_customers(

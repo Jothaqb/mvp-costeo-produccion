@@ -9,6 +9,9 @@
       {% if can(request, "sales.view") %}
         <a class="button" href="/b2b/customers/export.xlsx">Exportar clientes B2B</a>
       {% endif %}
+      {% if can(request, "b2b_commercial_inactivity.download") or can(request, "b2b_commercial_inactivity.validate") %}
+        <a class="button" href="/b2b/commercial-inactivity-review">Revisión de inactividad</a>
+      {% endif %}
       <a class="button" href="/b2b/orders">B2B orders</a>
     </section>
     <form method="get" action="/b2b/customers">

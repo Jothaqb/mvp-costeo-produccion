@@ -53,6 +53,9 @@ PERMISSION_TEXT_ES = {
     "bom.edit": ("Editar BOM", "Crear o modificar componentes mediante el editor actual de BOM."),
     "bom.delete": ("Eliminar componentes BOM", "Permiso definido para eliminar componentes de listas de materiales."),
     "b2b_customer_products.edit_prices": ("Editar catálogo B2B", "Agregar, editar, activar o desactivar productos y precios por cliente B2B."),
+    "b2b_commercial_inactivity.download": ("Descargar revisión de inactividad B2B", "Generar y descargar el Excel firmado de propuestas de inactividad comercial."),
+    "b2b_commercial_inactivity.validate": ("Validar revisión de inactividad B2B", "Cargar un Excel firmado y revisar la vista previa sin modificar catálogos."),
+    "b2b_commercial_inactivity.execute": ("Confirmar inactivaciones B2B", "Permiso reservado para una futura confirmación transaccional de las asignaciones aprobadas."),
     "b2b_sales.cancel_invoice": ("Anular factura B2B", "Anular facturas B2B y registrar el reverso formal de inventario."),
     "b2b_commercial_agreement.view": ("Ver acuerdos comerciales", "Consultar acuerdos comerciales B2B y descargar sus PDF generados."),
     "b2b_commercial_agreement.edit": ("Editar acuerdos comerciales", "Crear y editar borradores de acuerdos comerciales B2B."),
@@ -96,6 +99,7 @@ NOT_BACKEND_ENFORCED = {
     "bom.create": "El editor actual utiliza bom.edit; este código no protege una ruta backend independiente.",
     "bom.delete": "La eliminación de componentes se procesa bajo bom.edit; este código no se valida por separado.",
     "b2b_commercial_agreement.sign_archive": "La funcionalidad de firma y archivo todavía no tiene endpoints operativos.",
+    "b2b_commercial_inactivity.execute": "La confirmación definitiva está deshabilitada en esta primera etapa; no existe un endpoint de ejecución.",
     "sales.export": "Las exportaciones actuales usan permisos específicos o sales.view; este código no protege una ruta backend.",
 }
 
@@ -520,6 +524,8 @@ def _module_name(permission: Permission) -> str:
     if permission.code.startswith("admin.") or permission.code == "audit.view":
         return "Administración"
     if permission.code.startswith("b2b_customer_products."):
+        return "Clientes y catálogo B2B"
+    if permission.code.startswith("b2b_commercial_inactivity."):
         return "Clientes y catálogo B2B"
     if permission.code.startswith("b2b_commercial_agreement."):
         return "Acuerdos comerciales"

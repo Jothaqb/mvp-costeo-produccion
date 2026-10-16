@@ -1,5 +1,9 @@
 # Depuración por inactividad comercial B2B
 
+La revisión manual mediante XLSX se documenta por separado en
+`docs/b2b/commercial_inactivity_review.md`. Esa interfaz no ejecuta este job ni habilita
+inactivaciones.
+
 ## Alcance
 
 `tools/b2b_commercial_inactivity_job.py` evalúa exclusivamente:

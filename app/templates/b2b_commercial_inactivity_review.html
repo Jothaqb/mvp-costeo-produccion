@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="page-hero">
+    <p class="eyebrow">Administración comercial B2B</p>
+    <h1>Revisión comercial de inactividad</h1>
+    <p class="lead">
+      Descargue una propuesta firmada, elimine del Excel las filas que deben mantenerse activas
+      y cargue el archivo para revisar una vista previa. Esta etapa no ejecuta inactivaciones.
+    </p>
+  </section>
+
+  <p class="error" role="alert">
+    La cobertura histórica todavía no está certificada. Conservar una fila constituye una
+    aprobación comercial manual para una etapa futura; hoy no modifica ningún catálogo.
+  </p>
+
+  {% if errors %}
+    <section aria-labelledby="validation-errors-title">
+      <h2 id="validation-errors-title">Errores de validación</h2>
+      <ul class="error" role="alert">
+        {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <section class="module-grid" style="margin-bottom: 28px;">
+    <article class="module-card">
+      <p class="eyebrow">Paso 1</p>
+      <h2>Descargar propuestas</h2>
+      <p>
+        El archivo contiene asignaciones activas sin compra facturada en la ventana móvil y
+        separa las que están protegidas por pedidos abiertos u otras restricciones.
+      </p>
+      {% if can(request, "b2b_commercial_inactivity.download") %}
+        <a class="button" href="/b2b/commercial-inactivity-review/download.xlsx">
+          Descargar propuestas de inactivación
+        </a>
+      {% else %}
+        <p class="muted-inline">Su perfil no tiene permiso para descargar.</p>
+      {% endif %}
+    </article>
+
+    <article class="module-card">
+      <p class="eyebrow">Paso 2</p>
+      <h2>Cargar Excel validado</h2>
+      <p>
+        Solo elimine filas completas. No edite celdas, identificadores, hojas ni encabezados.
+        Archivo sin filas equivale a cero aprobaciones.
+      </p>
+      {% if can(request, "b2b_commercial_inactivity.validate") %}
+        <form
+          method="post"
+          action="/b2b/commercial-inactivity-review/import"
+          enctype="multipart/form-data"
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label for="review-file">Archivo XLSX</label>
+          <input id="review-file" type="file" name="file" accept=".xlsx" required>
+          <button type="submit">Cargar y revisar resultados</button>
+        </form>
+      {% else %}
+        <p class="muted-inline">Su perfil no tiene permiso para validar archivos.</p>
+      {% endif %}
+    </article>
+
+    <article class="module-card">
+      <p class="eyebrow">Paso 3 — no habilitado</p>
+      <h2>Confirmar inactivaciones</h2>
+      <p>
+        La ejecución definitiva se diseñará con revalidación, bloqueo de filas, auditoría,
+        confirmación explícita y rollback. No existe endpoint ni botón de ejecución en esta fase.
+      </p>
+      <button type="button" disabled>Confirmación no disponible</button>
+    </article>
+  </section>
+
+  {% if preview %}
+    <section>
+      <h2>Vista previa de la carga</h2>
+      <dl>
+        <dt>Identificador de revisión</dt><dd><code>{{ preview.review_id }}</code></dd>
+        <dt>Fecha del archivo</dt><dd>{{ preview.original_as_of_date }}</dd>
+        <dt>Fecha de revalidación</dt><dd>{{ preview.current_as_of_date }}</dd>
+        <dt>Filas del proceso original</dt><dd>{{ preview.original_row_count }}</dd>
+        <dt>Filas conservadas en el archivo</dt><dd>{{ preview.uploaded_row_count }}</dd>
+        <dt>Fingerprint</dt>
+        <dd>
+          {% if preview.plan_changed %}
+            <strong style="color: #9b2c2c;">Cambió desde la descarga</strong>
+          {% else %}
+            <strong style="color: #24613b;">Sin cambios</strong>
+          {% endif %}
+        </dd>
+      </dl>
+
+      <div class="module-grid" style="margin-bottom: 24px;">
+        <article class="module-card">
+          <h3>Aprobados para etapa futura</h3>
+          <p style="font-size: 1.8rem; margin: 0;">{{ preview.approved|length }}</p>
+        </article>
+        <article class="module-card">
+          <h3>Mantenidos activos</h3>
+          <p style="font-size: 1.8rem; margin: 0;">{{ preview.maintained|length }}</p>
+        </article>
+        <article class="module-card">
+          <h3>Protegidos</h3>
+          <p style="font-size: 1.8rem; margin: 0;">{{ preview.protected|length }}</p>
+        </article>
+      </div>
+
+      {% if preview.changes %}
+        <h3>Cambios desde la descarga</h3>
+        <ul class="error">
+          {% for change in preview.changes %}<li>{{ change }}</li>{% endfor %}
+        </ul>
+      {% endif %}
+
+      <h3>Totales por canal</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Canal</th><th>Aprobados</th><th>Mantener activos</th><th>Protegidos</th></tr></thead>
+          <tbody>
+            {% for total in preview.channel_totals %}
+              <tr>
+                <td>{{ total.label }}</td>
+                <td>{{ total.approved }}</td>
+                <td>{{ total.maintained }}</td>
+                <td>{{ total.protected }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Totales por cliente</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Cliente</th><th>Aprobados</th><th>Mantener activos</th><th>Protegidos</th></tr></thead>
+          <tbody>
+            {% for total in preview.customer_totals %}
+              <tr>
+                <td>{{ total.label }}</td>
+                <td>{{ total.approved }}</td>
+                <td>{{ total.maintained }}</td>
+                <td>{{ total.protected }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% for heading, items in [
+        ("Productos aprobados para inactivación futura", preview.approved),
+        ("Productos mantenidos activos", preview.maintained),
+        ("Productos protegidos por restricciones", preview.protected)
+      ] %}
+        <h3>{{ heading }}</h3>
+        <div class="table-wrap">
+          <table style="min-width: 980px;">
+            <thead>
+              <tr>
+                <th>Canal</th><th>Cliente</th><th>SKU</th><th>Producto</th>
+                <th>Resultado</th><th>Detalle</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in items %}
+                <tr>
+                  <td>{{ item.channel_name }}</td>
+                  <td>{{ item.customer_name }}</td>
+                  <td>{{ item.sku }}</td>
+                  <td>{{ item.description }}</td>
+                  <td>{{ item.decision }}</td>
+                  <td>{{ item.detail }}</td>
+                </tr>
+              {% else %}
+                <tr><td colspan="6">No hay registros en esta categoría.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endfor %}
+    </section>
+  {% endif %}
+{% endblock %}
