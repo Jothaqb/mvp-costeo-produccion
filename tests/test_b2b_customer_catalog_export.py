@@ -29,6 +29,7 @@ from app.models import (  # noqa: E402
     ProductCategory,
     Role,
     RolePermission,
+    Route,
 )
 from app.services.b2b_catalog_export_service import (  # noqa: E402
     format_crc_catalog_price,
@@ -39,6 +40,10 @@ from app.services.b2b_commercial_inactivity_service import (  # noqa: E402
 )
 from app.services.b2b_updated_catalog_export_service import (  # noqa: E402
     MISSING_B2C_PRICE_LABEL,
+    PRODUCT_SCOPE_ALL,
+    PRODUCT_SCOPE_BULK,
+    PRODUCT_SCOPE_PACKAGED,
+    REVIEW_HEADERS,
     UPDATED_B2B_CATALOG_HEADERS,
 )
 
@@ -59,11 +64,19 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             db.query(B2BCustomer).delete()
             db.query(Channel).delete()
             db.query(Product).delete()
+            db.query(Route).delete()
             db.query(ProductCategory).delete()
             db.query(AppSettings).delete()
             channel = Channel(name="Tiendas Naturales (Minisuper)", active=True, applies_to_b2b=True)
-            db.add(channel)
+            base_packaging_route = Route(
+                code="R-BASE-PACKAGING",
+                name="Ruta base de envasado",
+                process_type="packaging",
+                active=True,
+            )
+            db.add_all((channel, base_packaging_route))
             db.flush()
+            self.base_packaging_route_id = base_packaging_route.id
             customer_a = B2BCustomer(
                 customer_name="Café Cliente A",
                 legal_name="Grupo Café Cliente A S.A.",
@@ -107,7 +120,15 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
                     ),
                 )
             )
-            db.add(Product(sku="A-001", name="Té limón", b2c_price=Decimal("3200.0000")))
+            db.add(
+                Product(
+                    sku="A-001",
+                    name="Té limón",
+                    b2c_price=Decimal("3200.0000"),
+                    default_route_id=base_packaging_route.id,
+                    is_manufactured=True,
+                )
+            )
 
     def _export_customer(self, customer_id: int):
         with main.SessionLocal() as db, mock.patch.object(main, "require_permission") as permission:
@@ -126,12 +147,14 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         self,
         discount_percent: str = "26.8",
         permission_codes: set[str] | None = None,
+        product_scope: str = PRODUCT_SCOPE_ALL,
     ):
         request = self._request_with_permissions(permission_codes or {"sales.view"})
         with main.SessionLocal() as db:
             response = main.export_updated_b2b_catalog_xlsx(
                 request=request,
                 discount_percent=discount_percent,
+                product_scope=product_scope,
                 db=db,
             )
             self.assertFalse(db.dirty)
@@ -240,6 +263,13 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         self.assertIn("Catálogo B2B actualizado", customer_list)
         self.assertIn('action="/b2b/customers/catalog-updated.xlsx"', customer_list)
         self.assertIn('name="discount_percent"', customer_list)
+        self.assertIn('name="product_scope"', customer_list)
+        self.assertIn('value="packaged"', customer_list)
+        self.assertIn('value="bulk"', customer_list)
+        self.assertIn('value="all"', customer_list)
+        self.assertIn("Envasados", customer_list)
+        self.assertIn("A granel", customer_list)
+        self.assertIn("Todos los productos comerciales", customer_list)
         self.assertIn('min="0"', customer_list)
         self.assertIn('max="100"', customer_list)
         self.assertIn("Descargar Excel", customer_list)
@@ -283,7 +313,13 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             db.add_all(
                 (
                     Product(sku="A-002", name="Producto inactivo", b2c_price=Decimal("900")),
-                    Product(sku="NO-PRICE", name="Producto sin precio", b2c_price=None),
+                    Product(
+                        sku="NO-PRICE",
+                        name="Producto sin precio",
+                        b2c_price=None,
+                        default_route_id=self.base_packaging_route_id,
+                        is_manufactured=True,
+                    ),
                     Product(
                         sku="GLOBAL-INACTIVE",
                         name="Producto globalmente inactivo",
@@ -386,6 +422,157 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
                 catalog_states_before,
             )
 
+    def test_updated_catalog_filters_packaged_bulk_and_reports_unclassified(self) -> None:
+        with main.SessionLocal.begin() as db:
+            packaging_route = Route(
+                code="R-PACKAGING-TEST",
+                name="Envasado de prueba",
+                process_type="packaging",
+                active=True,
+            )
+            bulk_route = Route(
+                code="R-BULK-TEST",
+                name="Proceso a granel de prueba",
+                process_type="dehydration",
+                active=True,
+            )
+            db.add_all((packaging_route, bulk_route))
+            db.flush()
+
+            products = (
+                Product(
+                    sku="PACKAGED",
+                    name="Producto envasado",
+                    b2c_price=Decimal("1000"),
+                    default_route_id=packaging_route.id,
+                    is_manufactured=True,
+                ),
+                Product(
+                    sku="BULK-ROUTE",
+                    name="Producto a granel fabricado",
+                    b2c_price=Decimal("1200"),
+                    default_route_id=bulk_route.id,
+                    is_manufactured=True,
+                ),
+                Product(
+                    sku="BULK-PURCHASED",
+                    name="Producto a granel comprado",
+                    b2c_price=Decimal("1400"),
+                    is_purchased_product=True,
+                ),
+                Product(
+                    sku="UNCLASSIFIED",
+                    name="Producto sin clasificación",
+                    b2c_price=Decimal("1600"),
+                ),
+                Product(
+                    sku="SHIPPING",
+                    name="Envío",
+                    b2c_price=Decimal("1800"),
+                    is_purchased_product=True,
+                ),
+            )
+            db.add_all(products)
+            db.flush()
+            db.add_all(
+                B2BCustomerProduct(
+                    customer_id=self.customer_a_id,
+                    sku=product.sku,
+                    description=product.name,
+                    distributor_price=Decimal("900"),
+                    active=True,
+                )
+                for product in products
+            )
+
+        packaged_workbook = load_workbook(
+            io.BytesIO(self._export_updated_catalog(product_scope=PRODUCT_SCOPE_PACKAGED).body),
+            data_only=False,
+        )
+        packaged_skus = {
+            row[0]
+            for row in packaged_workbook["Catálogo B2B"].iter_rows(min_row=2, values_only=True)
+        }
+        self.assertEqual(packaged_skus, {"A-001", "PACKAGED"})
+
+        bulk_workbook = load_workbook(
+            io.BytesIO(self._export_updated_catalog(product_scope=PRODUCT_SCOPE_BULK).body),
+            data_only=False,
+        )
+        bulk_skus = {
+            row[0]
+            for row in bulk_workbook["Catálogo B2B"].iter_rows(min_row=2, values_only=True)
+        }
+        self.assertEqual(bulk_skus, set())
+
+        all_workbook = load_workbook(
+            io.BytesIO(self._export_updated_catalog(product_scope=PRODUCT_SCOPE_ALL).body),
+            data_only=False,
+        )
+        all_skus = {
+            row[0]
+            for row in all_workbook["Catálogo B2B"].iter_rows(min_row=2, values_only=True)
+        }
+        self.assertEqual(
+            all_skus,
+            {"A-001", "PACKAGED"},
+        )
+        review_worksheet = all_workbook["Revisión"]
+        self.assertEqual(tuple(cell.value for cell in review_worksheet[1]), REVIEW_HEADERS)
+        review_skus = {
+            row[0] for row in review_worksheet.iter_rows(min_row=2, values_only=True)
+        }
+        self.assertEqual(
+            review_skus,
+            {"BULK-ROUTE", "BULK-PURCHASED", "UNCLASSIFIED", "SHIPPING"},
+        )
+        self.assertNotIn("BULK-ROUTE", all_skus)
+        self.assertNotIn("BULK-PURCHASED", all_skus)
+        self.assertNotIn("SHIPPING", all_skus)
+
+    def test_non_packaging_route_is_not_assumed_to_be_bulk(self) -> None:
+        with main.SessionLocal.begin() as db:
+            sterilized_jars_route = Route(
+                code="R ESTERILIZADO FRASCOS",
+                name="Esterilizado Frascos",
+                process_type="dehydration",
+                active=True,
+            )
+            db.add(sterilized_jars_route)
+            db.flush()
+            product = Product(
+                sku="STERILIZED-JARS",
+                name="Producto con ruta de esterilizado",
+                b2c_price=Decimal("2000"),
+                default_route_id=sterilized_jars_route.id,
+                is_manufactured=True,
+            )
+            db.add(product)
+            db.flush()
+            db.add(
+                B2BCustomerProduct(
+                    customer_id=self.customer_a_id,
+                    sku=product.sku,
+                    description=product.name,
+                    distributor_price=Decimal("1500"),
+                    active=True,
+                )
+            )
+
+        workbook = load_workbook(
+            io.BytesIO(self._export_updated_catalog(product_scope=PRODUCT_SCOPE_ALL).body),
+            data_only=False,
+        )
+        catalog_skus = {
+            row[0]
+            for row in workbook["Catálogo B2B"].iter_rows(min_row=2, values_only=True)
+        }
+        review_skus = {
+            row[0] for row in workbook["Revisión"].iter_rows(min_row=2, values_only=True)
+        }
+        self.assertNotIn("STERILIZED-JARS", catalog_skus)
+        self.assertIn("STERILIZED-JARS", review_skus)
+
     def test_updated_catalog_rejects_missing_or_ambiguous_canonical_skus(self) -> None:
         with main.SessionLocal.begin() as db:
             db.add(
@@ -439,6 +626,10 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as unauthorized:
             self._export_updated_catalog("10", {"product.view"})
         self.assertEqual(unauthorized.exception.status_code, 403)
+
+        with self.assertRaises(HTTPException) as invalid_scope:
+            self._export_updated_catalog(product_scope="not-a-scope")
+        self.assertEqual(invalid_scope.exception.status_code, 400)
 
         self.assertEqual(
             sum(

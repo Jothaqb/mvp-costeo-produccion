@@ -27,6 +27,12 @@
         <form method="get" action="/b2b/customers/catalog-updated.xlsx">
           <h2 id="updated-b2b-catalog-title">Catálogo B2B actualizado</h2>
           <p>Aplicá un mismo descuento sobre el precio B2C vigente de todos los productos.</p>
+          <label for="updated-catalog-product-scope">Productos incluidos</label>
+          <select id="updated-catalog-product-scope" name="product_scope" required>
+            <option value="packaged">Envasados</option>
+            <option value="bulk">A granel</option>
+            <option value="all" selected>Todos los productos comerciales</option>
+          </select>
           <label for="updated-catalog-discount">Descuento sobre precio B2C (%)</label>
           <input
             id="updated-catalog-discount"

@@ -7625,6 +7625,7 @@ def export_b2b_customers_xlsx(
 def export_updated_b2b_catalog_xlsx(
     request: Request,
     discount_percent: str = Query(...),
+    product_scope: str = Query("all"),
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "sales.view")
@@ -7632,6 +7633,7 @@ def export_updated_b2b_catalog_xlsx(
         workbook_bytes = build_updated_b2b_catalog_xlsx(
             db,
             discount_percent=discount_percent,
+            product_scope=product_scope,
         )
     except B2BUpdatedCatalogExportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
