@@ -549,6 +549,91 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             self.assertNotIn(excluded_sku, all_skus)
             self.assertNotIn(excluded_sku, review_skus)
 
+    def test_sauces_are_packaged_and_consumables_are_excluded_by_exact_category(self) -> None:
+        sauce_skus = {
+            "10405",
+            "10446",
+            "10377",
+            "10378",
+            "10379",
+            "10381",
+            "10382",
+        }
+        consumable_sku = "10112"
+        with main.SessionLocal.begin() as db:
+            sauces = ProductCategory(name="Salsas", active=True)
+            consumables = ProductCategory(name="Consumibles", active=True)
+            non_packaging_route = Route(
+                code="R-SAUCE-NON-PACKAGING",
+                name="Proceso de salsa sin empaque",
+                process_type="mixing",
+                active=True,
+            )
+            db.add_all((sauces, consumables, non_packaging_route))
+            db.flush()
+
+            sauce_products = tuple(
+                Product(
+                    sku=sku,
+                    name=f"Salsa comercial {index}",
+                    category_id=sauces.id,
+                    b2c_price=Decimal("2500"),
+                    default_route_id=non_packaging_route.id if index % 2 else None,
+                    is_manufactured=True,
+                )
+                for index, sku in enumerate(sorted(sauce_skus), start=1)
+            )
+            consumable = Product(
+                sku=consumable_sku,
+                name="Doypack pequeño 12x18",
+                category_id=consumables.id,
+                b2c_price=Decimal("100"),
+                default_route_id=self.base_packaging_route_id,
+                is_purchased_product=True,
+            )
+            products = (*sauce_products, consumable)
+            db.add_all(products)
+            db.flush()
+            db.add_all(
+                B2BCustomerProduct(
+                    customer_id=self.customer_a_id,
+                    sku=product.sku,
+                    description=product.name,
+                    distributor_price=Decimal("90"),
+                    active=True,
+                )
+                for product in products
+            )
+
+        workbook_by_scope = {
+            scope: load_workbook(
+                io.BytesIO(self._export_updated_catalog(product_scope=scope).body),
+                data_only=False,
+            )
+            for scope in (PRODUCT_SCOPE_PACKAGED, PRODUCT_SCOPE_BULK, PRODUCT_SCOPE_ALL)
+        }
+        skus_by_scope = {
+            scope: {
+                row[0]
+                for row in workbook["Catálogo B2B"].iter_rows(min_row=2, values_only=True)
+            }
+            for scope, workbook in workbook_by_scope.items()
+        }
+
+        self.assertTrue(sauce_skus.issubset(skus_by_scope[PRODUCT_SCOPE_PACKAGED]))
+        self.assertTrue(sauce_skus.isdisjoint(skus_by_scope[PRODUCT_SCOPE_BULK]))
+        self.assertTrue(sauce_skus.issubset(skus_by_scope[PRODUCT_SCOPE_ALL]))
+        for scoped_skus in skus_by_scope.values():
+            self.assertNotIn(consumable_sku, scoped_skus)
+        review_skus = {
+            row[0]
+            for row in workbook_by_scope[PRODUCT_SCOPE_ALL]["Revisión"].iter_rows(
+                min_row=2,
+                values_only=True,
+            )
+        }
+        self.assertNotIn(consumable_sku, review_skus)
+
     def test_non_packaging_route_is_classified_as_bulk(self) -> None:
         with main.SessionLocal.begin() as db:
             sterilized_jars_route = Route(

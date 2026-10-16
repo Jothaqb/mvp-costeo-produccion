@@ -39,6 +39,8 @@ VALID_PRODUCT_SCOPES = frozenset(
     }
 )
 EXCLUDED_SERVICE_SKUS = frozenset({"10219", "10258", "10297", "10298", "10299"})
+EXCLUDED_CATEGORY_NAMES = frozenset({"consumibles"})
+PACKAGED_CATEGORY_NAMES = frozenset({"salsas"})
 _REVIEW_COLUMN_WIDTHS = (20, 46, 72)
 
 
@@ -222,18 +224,30 @@ def _load_unique_catalog_products(db: Session) -> tuple[UpdatedB2BCatalogProduct
             ),
         )
     )
-    _reject_ambiguous_skus(products)
-    return tuple(
+    commercial_products = tuple(
         product
         for product in products
-        if product.active and product.sku.strip() not in EXCLUDED_SERVICE_SKUS
+        if product.sku.strip() not in EXCLUDED_SERVICE_SKUS
+        and _normalized_category_name(product.category_name) not in EXCLUDED_CATEGORY_NAMES
+    )
+    _reject_ambiguous_skus(commercial_products)
+    return tuple(
+        product
+        for product in commercial_products
+        if product.active
     )
 
 
 def _commercial_presentation(product: UpdatedB2BCatalogProduct) -> str | None:
+    if _normalized_category_name(product.category_name) in PACKAGED_CATEGORY_NAMES:
+        return PRODUCT_SCOPE_PACKAGED
     if product.route_process_type == "packaging":
         return PRODUCT_SCOPE_PACKAGED
     return PRODUCT_SCOPE_BULK
+
+
+def _normalized_category_name(category_name: str | None) -> str:
+    return (category_name or "").strip().casefold()
 
 
 def _review_reason(product: UpdatedB2BCatalogProduct) -> str:
