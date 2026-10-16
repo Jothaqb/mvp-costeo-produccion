@@ -214,6 +214,37 @@ _TEMPLATE_VARIABLE_FIELDS = {
     "client_signer_id": "client_signer_id",
     "client_signer_position": "client_signer_position",
 }
+_TEMPLATE_VARIABLE_LABELS = {
+    "customer_name": "Nombre comercial",
+    "legal_name": "Razón social",
+    "legal_id": "Cédula jurídica",
+    "phone": "Teléfono del cliente",
+    "address": "Dirección",
+    "province": "Provincia",
+    "canton": "Cantón",
+    "district": "Distrito",
+    "credit_days": "Días de crédito del cliente",
+    "b2b_channel_name": "Canal B2B",
+    "legal_representative_name": "Representante legal",
+    "legal_representative_id": "Identificación del representante",
+    "legal_representative_position": "Cargo del representante",
+    "billing_address": "Dirección de facturación",
+    "billing_email": "Correo de facturación",
+    "administrative_email": "Correo administrativo",
+    "whatsapp": "WhatsApp",
+    "b2b_discount_percent": "Descuento comercial B2B",
+    "payment_terms": "Forma de pago",
+    "contract_credit_days": "Días de crédito contractual",
+    "credit_limit": "Límite de crédito",
+    "order_reception_days": "Días de recepción de pedidos",
+    "usual_prep_time": "Tiempo habitual de alisto",
+    "usual_delivery_type": "Entrega habitual",
+    "signature_place": "Lugar de firma",
+    "signature_date": "Fecha de firma",
+    "client_signer_name": "Nombre del firmante del cliente",
+    "client_signer_id": "Identificación del firmante del cliente",
+    "client_signer_position": "Cargo del firmante del cliente",
+}
 
 
 class B2BCommercialAgreementValidationError(Exception):
@@ -504,52 +535,97 @@ def update_commercial_agreement_draft(
 
 def validate_commercial_agreement(agreement: B2BCommercialAgreement) -> list[str]:
     missing: list[str] = []
+    reported_field_names: set[str] = set()
     if not agreement.customer_active_snapshot:
         missing.append("El cliente debe estar activo en el snapshot del acuerdo.")
-    _append_missing(missing, agreement.customer_name_snapshot, "Nombre comercial")
-    _append_missing(missing, agreement.legal_name_snapshot, "Razón social")
-    _append_missing(missing, agreement.legal_id_snapshot, "Cédula jurídica")
-    _append_missing(missing, agreement.address_snapshot, "Dirección")
-    _append_missing(missing, agreement.province_snapshot, "Provincia")
-    _append_missing(missing, agreement.canton_snapshot, "Cantón")
-    _append_missing(missing, agreement.district_snapshot, "Distrito")
-    _append_missing(missing, agreement.legal_representative_name, "Representante legal")
-    _append_missing(missing, agreement.legal_representative_id, "Identificación del representante")
-    _append_missing(missing, agreement.legal_representative_position, "Cargo del representante")
-    _append_missing(missing, agreement.billing_email, "Correo de facturación")
+    for field_name, label in (
+        ("customer_name_snapshot", "Nombre comercial"),
+        ("legal_name_snapshot", "Razón social"),
+        ("legal_id_snapshot", "Cédula jurídica"),
+        ("address_snapshot", "Dirección"),
+        ("province_snapshot", "Provincia"),
+        ("canton_snapshot", "Cantón"),
+        ("district_snapshot", "Distrito"),
+        ("legal_representative_name", "Representante legal"),
+        ("legal_representative_id", "Identificación del representante"),
+        ("legal_representative_position", "Cargo del representante"),
+        ("billing_email", "Correo de facturación"),
+    ):
+        _append_missing_field(
+            missing,
+            reported_field_names,
+            field_name,
+            getattr(agreement, field_name),
+            label,
+        )
     payment_terms = normalize_payment_terms(agreement.payment_terms)
     if payment_terms not in PAYMENT_TERM_OPTIONS:
         missing.append("Forma de pago debe ser una de las opciones permitidas.")
+        reported_field_names.add("payment_terms")
     if agreement.b2b_discount_percent is None:
         missing.append("Descuento comercial B2B")
+        reported_field_names.add("b2b_discount_percent")
     elif agreement.b2b_discount_percent < 0 or agreement.b2b_discount_percent > 100:
         missing.append("El descuento comercial B2B debe estar entre 0 y 100.")
+        reported_field_names.add("b2b_discount_percent")
 
     people = list(agreement.authorized_people or [])
-    if not any(person.authorization_type == "orders" and person.name.strip() for person in people):
-        missing.append("Al menos una persona autorizada para pedidos")
-    if not any(person.authorization_type == "receiving" and person.name.strip() for person in people):
-        missing.append("Al menos una persona autorizada para recibir mercadería")
-    for person in people:
-        if person.name.strip() and not (person.phone or "").strip() and not (person.email or "").strip():
-            missing.append(
-                f"Teléfono / correo de la persona autorizada: {person.name.strip()}"
-            )
+    if not any(
+        person.authorization_type == "orders" and _is_complete_authorized_person(person)
+        for person in people
+    ):
+        missing.append(
+            "Al menos una persona autorizada para pedidos "
+            "(nombre, cargo y teléfono o correo)."
+        )
+    if not any(
+        person.authorization_type == "receiving" and _is_complete_authorized_person(person)
+        for person in people
+    ):
+        missing.append(
+            "Al menos una persona autorizada para recibir mercadería "
+            "(nombre, cargo y teléfono o correo)."
+        )
 
-    _append_missing(missing, agreement.order_reception_days, "Días de recepción de pedidos")
-    _append_missing(missing, agreement.usual_prep_time, "Tiempo habitual de alisto")
+    for field_name, label in (
+        ("order_reception_days", "Días de recepción de pedidos"),
+        ("usual_prep_time", "Tiempo habitual de alisto"),
+    ):
+        _append_missing_field(
+            missing,
+            reported_field_names,
+            field_name,
+            getattr(agreement, field_name),
+            label,
+        )
     if agreement.usual_delivery_type not in USUAL_DELIVERY_TYPE_OPTIONS:
         missing.append("Entrega habitual debe ser una de las opciones permitidas.")
-    _append_missing(missing, agreement.signature_place, "Lugar de firma")
+        reported_field_names.add("usual_delivery_type")
+    _append_missing_field(
+        missing,
+        reported_field_names,
+        "signature_place",
+        agreement.signature_place,
+        "Lugar de firma",
+    )
     if agreement.signature_date is None:
         missing.append("Fecha de firma")
-    _append_missing(missing, agreement.catalog_reference, "Referencia al catálogo")
+        reported_field_names.add("signature_date")
+    _append_missing_field(
+        missing,
+        reported_field_names,
+        "catalog_reference",
+        agreement.catalog_reference,
+        "Referencia al catálogo",
+    )
 
     if payment_terms == "Crédito comercial aprobado":
         if agreement.contract_credit_days is None or agreement.contract_credit_days <= 0:
             missing.append("Los días de crédito contractual deben ser mayores a 0.")
+            reported_field_names.add("contract_credit_days")
         if agreement.credit_limit is None or agreement.credit_limit <= 0:
             missing.append("El límite de crédito debe ser mayor a 0.")
+            reported_field_names.add("credit_limit")
 
     expected_keys = {section_key for section_key, _title in DEFAULT_AGREEMENT_SECTIONS}
     sections_by_key = {section.section_key: section for section in agreement.sections or []}
@@ -564,9 +640,11 @@ def validate_commercial_agreement(agreement: B2BCommercialAgreement) -> list[str
             missing.append(f"Texto del apartado {section_number}: {section.title or default_title}")
             continue
         for variable_name in find_missing_template_variables(section.body_text, agreement):
-            missing.append(
-                f"Variable pendiente en apartado {section_number}: {{{{{variable_name}}}}}"
-            )
+            field_name = _TEMPLATE_VARIABLE_FIELDS[variable_name]
+            if field_name in reported_field_names:
+                continue
+            missing.append(_TEMPLATE_VARIABLE_LABELS[variable_name])
+            reported_field_names.add(field_name)
     extra_keys = sorted(set(sections_by_key) - expected_keys)
     if extra_keys:
         missing.append(f"Apartados no reconocidos: {', '.join(extra_keys)}.")
@@ -629,9 +707,24 @@ def _normalize_people(people: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
-def _append_missing(missing: list[str], value: Any, label: str) -> None:
+def _is_complete_authorized_person(person: B2BCommercialAgreementPerson) -> bool:
+    return bool(
+        (person.name or "").strip()
+        and (person.position or "").strip()
+        and ((person.phone or "").strip() or (person.email or "").strip())
+    )
+
+
+def _append_missing_field(
+    missing: list[str],
+    reported_field_names: set[str],
+    field_name: str,
+    value: Any,
+    label: str,
+) -> None:
     if value is None or not str(value).strip():
         missing.append(label)
+        reported_field_names.add(field_name)
 
 
 def _optional_text(value: Any) -> str | None:

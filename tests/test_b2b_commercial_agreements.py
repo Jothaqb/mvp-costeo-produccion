@@ -284,8 +284,16 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             self.assertIn("Razón social", missing)
             self.assertIn("Dirección", missing)
             self.assertIn("Representante legal", missing)
-            self.assertIn("Al menos una persona autorizada para pedidos", missing)
-            self.assertIn("Al menos una persona autorizada para recibir mercadería", missing)
+            self.assertIn(
+                "Al menos una persona autorizada para pedidos "
+                "(nombre, cargo y teléfono o correo).",
+                missing,
+            )
+            self.assertIn(
+                "Al menos una persona autorizada para recibir mercadería "
+                "(nombre, cargo y teléfono o correo).",
+                missing,
+            )
             self.assertIn("Los días de crédito contractual deben ser mayores a 0.", missing)
             self.assertIn("El límite de crédito debe ser mayor a 0.", missing)
             self.assertIn("Título del apartado 1", missing)
@@ -421,6 +429,66 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                     user_id=None,
                 )
 
+    def test_authorized_people_require_name_position_and_one_contact_method(self) -> None:
+        orders_message = (
+            "Al menos una persona autorizada para pedidos "
+            "(nombre, cargo y teléfono o correo)."
+        )
+        receiving_message = (
+            "Al menos una persona autorizada para recibir mercadería "
+            "(nombre, cargo y teléfono o correo)."
+        )
+        with self.Session() as db:
+            agreement = self._complete(db)
+            people_by_type = {
+                person.authorization_type: person
+                for person in agreement.authorized_people
+            }
+
+            orders_person = people_by_type["orders"]
+            receiving_person = people_by_type["receiving"]
+            orders_person.identification = None
+            orders_person.email = None
+            receiving_person.identification = None
+            receiving_person.phone = None
+
+            valid_missing = validate_commercial_agreement(agreement)
+            self.assertNotIn(orders_message, valid_missing)
+            self.assertNotIn(receiving_message, valid_missing)
+
+            orders_person.position = ""
+            incomplete_missing = validate_commercial_agreement(agreement)
+            self.assertIn(orders_message, incomplete_missing)
+            self.assertNotIn(receiving_message, incomplete_missing)
+
+    def test_missing_template_values_are_deduplicated_and_use_clear_labels(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            agreement.billing_email = None
+            agreement.administrative_email = None
+            agreement.signature_date = None
+            agreement.signature_place = None
+            agreement.legal_representative_name = None
+            agreement.client_signer_name = None
+            agreement.client_signer_id = None
+            agreement.client_signer_position = None
+
+            missing = validate_commercial_agreement(agreement)
+
+        expected_once = {
+            "Correo de facturación",
+            "Correo administrativo",
+            "Fecha de firma",
+            "Lugar de firma",
+            "Representante legal",
+            "Nombre del firmante del cliente",
+            "Identificación del firmante del cliente",
+            "Cargo del firmante del cliente",
+        }
+        for label in expected_once:
+            self.assertEqual(missing.count(label), 1, label)
+        self.assertFalse(any("{{" in message or "Variable pendiente" in message for message in missing))
+
     def test_template_renderer_handles_values_missing_and_unknown_variables(self) -> None:
         with self.Session() as db:
             agreement = self._create(db)
@@ -448,9 +516,8 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                 ["billing_email"],
             )
             validation_messages = validate_commercial_agreement(agreement)
-            self.assertTrue(
-                any("{{billing_email}}" in message for message in validation_messages)
-            )
+            self.assertEqual(validation_messages.count("Correo de facturación"), 1)
+            self.assertFalse(any("{{" in message for message in validation_messages))
 
     def test_reset_template_replaces_only_sections_without_duplicates(self) -> None:
         with self.Session() as db:
@@ -772,6 +839,7 @@ class B2BCommercialAgreementTests(unittest.TestCase):
     def test_incomplete_draft_lists_all_missing_fields_and_writes_nothing(self) -> None:
         with self.Session() as db:
             agreement = self._create(db)
+            expected_missing_fields = validate_commercial_agreement(agreement)
             with self.assertRaises(B2BCommercialAgreementIncompleteError) as raised:
                 generate_and_store_b2b_commercial_agreement_pdf(
                     db,
@@ -779,6 +847,13 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                     user_id=55,
                 )
             self.assertGreater(len(raised.exception.missing_fields), 5)
+            self.assertEqual(raised.exception.missing_fields, expected_missing_fields)
+            self.assertFalse(
+                any(
+                    "{{" in message or "Variable pendiente" in message
+                    for message in raised.exception.missing_fields
+                )
+            )
             db.expire_all()
             unchanged = get_commercial_agreement(db, agreement.id)
             self.assertEqual(unchanged.status, "draft")
