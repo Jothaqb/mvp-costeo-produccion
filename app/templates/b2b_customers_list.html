@@ -6,6 +6,9 @@
     <section class="actions">
       <a class="button" href="/b2b/customers/new">New customer</a>
       <a class="button" href="/b2b/customers/import">Import B2B Customers CSV</a>
+      {% if can(request, "sales.view") %}
+        <a class="button" href="/b2b/customers/export.xlsx">Exportar clientes B2B</a>
+      {% endif %}
       <a class="button" href="/b2b/orders">B2B orders</a>
     </section>
     <form method="get" action="/b2b/customers">
