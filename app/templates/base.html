@@ -73,9 +73,6 @@
               <a class="nav-link" href="/b2b/orders">B2B Sales Orders</a>
               <a class="nav-link" href="/b2c/orders">B2C Sales Orders</a>
               <a class="nav-link" href="/b2b/customers">B2B Customers</a>
-              {% if can(request, "b2b_commercial_inactivity.download") or can(request, "b2b_commercial_inactivity.validate") %}
-                <a class="nav-link" href="/b2b/commercial-inactivity-review">Revisión de inactividad B2B</a>
-              {% endif %}
               <a class="nav-link" href="/sales/b2c-customers">B2C Customers</a>
             {% elif is_planning %}
               <span class="nav-context">Planning</span>
