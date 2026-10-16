@@ -13,7 +13,11 @@ from sqlalchemy import and_, case, func, not_, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models import B2BCustomer, B2BSalesOrder
-from app.services.accounts_receivable_service import HISTORICAL_CSV_IMPORT_PREFIX
+from app.services.accounts_receivable_service import (
+    HISTORICAL_CSV_IMPORT_PREFIX,
+    STATUS_OVERDUE,
+    build_accounts_receivable_dashboard,
+)
 
 
 B2B_CUSTOMER_EXPORT_HEADERS = (
@@ -37,6 +41,7 @@ NO_REGISTERED_SIGNATURE = "Sin firma registrada"
 _TEXT_COLUMN_INDEXES = (5, 10)
 _SALES_COLUMN_INDEXES = (15, 16)
 _LAST_INVOICE_DATE_COLUMN_INDEX = 17
+_OVERDUE_AMOUNT_COLUMN_INDEX = 19
 _COSTA_RICA_TIMEZONE = timezone(timedelta(hours=-6), name="America/Costa_Rica")
 _COLUMN_WIDTHS = (
     30,
@@ -56,6 +61,9 @@ _COLUMN_WIDTHS = (
     20,
     24,
     24,
+    24,
+    22,
+    20,
 )
 
 
@@ -64,6 +72,13 @@ class B2BCustomerSalesSummary:
     previous_year_sales: Decimal
     current_year_sales: Decimal
     last_invoice_date: date | None
+
+
+@dataclass(frozen=True)
+class B2BCustomerOverdueSummary:
+    overdue_invoice_count: int
+    overdue_amount: Decimal
+    max_days_overdue: int
 
 
 def current_b2b_customer_export_datetime() -> datetime:
@@ -80,6 +95,9 @@ def b2b_customer_export_headers(report_year: int) -> tuple[str, ...]:
         f"Ventas {report_year - 1}",
         f"Ventas acumuladas {report_year}",
         "Fecha última facturación",
+        "Cantidad de facturas vencidas",
+        "Monto total vencido",
+        "Días de mayor atraso",
     )
 
 
@@ -101,6 +119,7 @@ def build_b2b_customers_export_xlsx(
         .all()
     )
     sales_by_customer_id = _sales_summary_by_customer(db, report_date=report_date)
+    overdue_by_customer_id = _overdue_summary_by_customer(db, report_date=report_date)
 
     workbook = Workbook()
     worksheet = workbook.active
@@ -119,6 +138,14 @@ def build_b2b_customers_export_xlsx(
                         last_invoice_date=None,
                     ),
                 ),
+                overdue_by_customer_id.get(
+                    customer.id,
+                    B2BCustomerOverdueSummary(
+                        overdue_invoice_count=0,
+                        overdue_amount=Decimal("0"),
+                        max_days_overdue=0,
+                    ),
+                ),
             )
         )
 
@@ -131,6 +158,7 @@ def build_b2b_customers_export_xlsx(
 def _customer_export_row(
     customer: B2BCustomer,
     sales_summary: B2BCustomerSalesSummary,
+    overdue_summary: B2BCustomerOverdueSummary,
 ) -> tuple[Any, ...]:
     agreements = list(customer.commercial_agreements)
     latest_agreement = max(
@@ -171,6 +199,9 @@ def _customer_export_row(
         sales_summary.previous_year_sales,
         sales_summary.current_year_sales,
         sales_summary.last_invoice_date,
+        overdue_summary.overdue_invoice_count,
+        overdue_summary.overdue_amount,
+        overdue_summary.max_days_overdue,
     )
 
 
@@ -316,6 +347,39 @@ def _sales_summary_by_customer(
     return summaries
 
 
+def _overdue_summary_by_customer(
+    db: Session,
+    *,
+    report_date: date,
+) -> dict[int, B2BCustomerOverdueSummary]:
+    dashboard = build_accounts_receivable_dashboard(db, today=report_date)
+    counts_by_customer_id: dict[int, int] = {}
+    amounts_by_customer_id: dict[int, Decimal] = {}
+    max_days_by_customer_id: dict[int, int] = {}
+
+    for row in dashboard.rows:
+        if row.status_code != STATUS_OVERDUE:
+            continue
+        days_overdue = -(row.days_remaining or 0)
+        counts_by_customer_id[row.customer_id] = counts_by_customer_id.get(row.customer_id, 0) + 1
+        amounts_by_customer_id[row.customer_id] = (
+            amounts_by_customer_id.get(row.customer_id, Decimal("0")) + row.pending_amount
+        )
+        max_days_by_customer_id[row.customer_id] = max(
+            max_days_by_customer_id.get(row.customer_id, 0),
+            days_overdue,
+        )
+
+    return {
+        customer_id: B2BCustomerOverdueSummary(
+            overdue_invoice_count=count,
+            overdue_amount=amounts_by_customer_id[customer_id],
+            max_days_overdue=max_days_by_customer_id[customer_id],
+        )
+        for customer_id, count in counts_by_customer_id.items()
+    }
+
+
 def _text_or_none(value: Any) -> str | None:
     if value is None:
         return None
@@ -365,3 +429,7 @@ def _format_worksheet(worksheet, *, headers: tuple[str, ...]) -> None:
             row=row_index,
             column=_LAST_INVOICE_DATE_COLUMN_INDEX,
         ).number_format = "dd/mm/yyyy"
+        worksheet.cell(
+            row=row_index,
+            column=_OVERDUE_AMOUNT_COLUMN_INDEX,
+        ).number_format = "₡ #,##0.00"

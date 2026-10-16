@@ -22,6 +22,7 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TEMP_DB.name).as_posix()}"
 with mock.patch("zoneinfo.ZoneInfo", return_value=timezone.utc):
     from app import main  # noqa: E402
 from app.models import (  # noqa: E402
+    B2BAROpeningBalance,
     B2BARPayment,
     B2BCommercialAgreement,
     B2BCustomer,
@@ -33,6 +34,9 @@ from app.models import (  # noqa: E402
     User,
     UserRole,
     UserSession,
+)
+from app.services.accounts_receivable_service import (  # noqa: E402
+    build_accounts_receivable_dashboard,
 )
 from app.services.b2b_customer_export_service import (  # noqa: E402
     B2B_CUSTOMER_EXPORT_HEADERS,
@@ -57,6 +61,7 @@ class B2BCustomersExportTests(unittest.TestCase):
     def setUp(self) -> None:
         with main.SessionLocal.begin() as db:
             db.query(B2BARPayment).delete()
+            db.query(B2BAROpeningBalance).delete()
             db.query(B2BSalesOrderLine).delete()
             db.query(B2BSalesOrder).delete()
             db.query(B2CSalesOrder).delete()
@@ -221,6 +226,46 @@ class B2BCustomersExportTests(unittest.TestCase):
             created_at=created_at,
         )
 
+    def _add_ar_order(
+        self,
+        db,
+        order_number: str,
+        *,
+        total: str,
+        invoice_date: date,
+        customer_id: int | None = None,
+        status: str = "invoiced",
+        invoiced_at: datetime | None = datetime(2026, 1, 1, 8, 0),
+        opening_balance: str | None = None,
+        payments: tuple[str, ...] = (),
+    ) -> B2BSalesOrder:
+        order = self._order(
+            customer_id or self.customer_id,
+            order_number,
+            total=total,
+            status=status,
+            invoice_date=invoice_date,
+            invoiced_at=invoiced_at,
+        )
+        db.add(order)
+        db.flush()
+        if opening_balance is not None:
+            db.add(
+                B2BAROpeningBalance(
+                    sales_order_id=order.id,
+                    outstanding_amount=Decimal(opening_balance),
+                )
+            )
+        db.add_all(
+            B2BARPayment(
+                sales_order_id=order.id,
+                payment_date=date(2026, 10, 1),
+                amount=Decimal(payment),
+            )
+            for payment in payments
+        )
+        return order
+
     def _export(
         self,
         permissions: set[str] | None = None,
@@ -297,7 +342,15 @@ class B2BCustomersExportTests(unittest.TestCase):
             b2b_customer_export_headers(2026),
         )
         self.assertEqual(tuple(cell.value for cell in worksheet[1][:14]), B2B_CUSTOMER_EXPORT_HEADERS)
-        self.assertEqual(worksheet.max_column, 17)
+        self.assertEqual(worksheet.max_column, 20)
+        self.assertEqual(
+            tuple(cell.value for cell in worksheet[1][17:20]),
+            (
+                "Cantidad de facturas vencidas",
+                "Monto total vencido",
+                "Días de mayor atraso",
+            ),
+        )
         self.assertEqual(worksheet.max_row, 4)
         removed_headers = {
             "Versión del último acuerdo",
@@ -393,7 +446,7 @@ class B2BCustomersExportTests(unittest.TestCase):
         worksheet = load_workbook(io.BytesIO(response.body))["Clientes B2B"]
 
         self.assertEqual(worksheet.freeze_panes, "A2")
-        self.assertEqual(worksheet.auto_filter.ref, "A1:Q4")
+        self.assertEqual(worksheet.auto_filter.ref, "A1:T4")
         self.assertTrue(worksheet["A1"].font.bold)
         self.assertEqual(
             response.media_type,
@@ -429,7 +482,7 @@ class B2BCustomersExportTests(unittest.TestCase):
             'attachment; filename="Reporte_Clientes_B2B_2026-10-15.xlsx"',
         )
         workbook = load_workbook(io.BytesIO(body))
-        self.assertEqual(workbook["Clientes B2B"].max_column, 17)
+        self.assertEqual(workbook["Clientes B2B"].max_column, 20)
 
         forbidden_status, _forbidden_headers, forbidden_body = self._http_get(
             "/b2b/customers/export.xlsx",
@@ -652,6 +705,205 @@ class B2BCustomersExportTests(unittest.TestCase):
         self.assertEqual(worksheet.cell(customer_row, 15).value, 0)
         self.assertEqual(worksheet.cell(customer_row, 16).value, 0)
         self.assertIsNone(worksheet.cell(customer_row, 17).value)
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 20).value, 0)
+
+    def test_overdue_metrics_use_pending_balances_and_count_each_invoice_once(self) -> None:
+        with main.SessionLocal.begin() as db:
+            self._add_ar_order(
+                db,
+                "OVERDUE-UNPAID",
+                total="100000",
+                invoice_date=date(2026, 8, 1),
+            )
+            self._add_ar_order(
+                db,
+                "OVERDUE-PARTIAL",
+                total="80000",
+                invoice_date=date(2026, 9, 1),
+                payments=("10000", "10000"),
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 2)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 160000)
+        self.assertEqual(worksheet.cell(customer_row, 20).value, 60)
+
+    def test_paid_cancelled_draft_and_due_today_invoices_are_not_overdue(self) -> None:
+        with main.SessionLocal.begin() as db:
+            self._add_ar_order(
+                db,
+                "PAID-IN-FULL",
+                total="50000",
+                invoice_date=date(2026, 9, 1),
+                payments=("50000",),
+            )
+            self._add_ar_order(
+                db,
+                "CANCELLED-INVOICE",
+                total="100000",
+                status="cancelled",
+                invoice_date=date(2026, 8, 1),
+            )
+            self._add_ar_order(
+                db,
+                "DRAFT-ORDER",
+                total="100000",
+                status="draft",
+                invoice_date=date(2026, 8, 1),
+            )
+            self._add_ar_order(
+                db,
+                "DUE-TODAY",
+                total="100000",
+                invoice_date=date(2026, 9, 30),
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 20).value, 0)
+
+    def test_invoice_due_yesterday_has_one_day_overdue(self) -> None:
+        with main.SessionLocal.begin() as db:
+            self._add_ar_order(
+                db,
+                "DUE-YESTERDAY",
+                total="25000",
+                invoice_date=date(2026, 9, 29),
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 1)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 25000)
+        self.assertEqual(worksheet.cell(customer_row, 20).value, 1)
+
+    def test_historical_opening_balance_and_payments_use_current_ar_balance(self) -> None:
+        with main.SessionLocal.begin() as db:
+            self._add_ar_order(
+                db,
+                "HISTORICAL-OPENING-BALANCE",
+                total="100000",
+                invoice_date=date(2026, 9, 1),
+                invoiced_at=None,
+                opening_balance="70000",
+                payments=("20000",),
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 1)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 50000)
+        self.assertEqual(worksheet.cell(customer_row, 20).value, 29)
+
+    def test_overdue_amount_and_days_match_accounts_receivable(self) -> None:
+        with main.SessionLocal.begin() as db:
+            self._add_ar_order(
+                db,
+                "MATCH-AR",
+                total="100.0000",
+                invoice_date=date(2026, 9, 1),
+                payments=("99.9999",),
+            )
+
+        with main.SessionLocal() as db:
+            dashboard = build_accounts_receivable_dashboard(db, today=REPORT_AT.date())
+            ar_row = next(row for row in dashboard.rows if row.order_number == "MATCH-AR")
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 1)
+        self.assertEqual(
+            Decimal(str(worksheet.cell(customer_row, 19).value)),
+            ar_row.pending_amount,
+        )
+        self.assertEqual(worksheet.cell(customer_row, 20).value, -ar_row.days_remaining)
+
+    def test_overdue_metrics_match_ar_dashboard_for_every_customer(self) -> None:
+        with main.SessionLocal.begin() as db:
+            self._add_ar_order(
+                db,
+                "AR-PARITY-PARTIAL",
+                total="100000",
+                invoice_date=date(2026, 9, 1),
+                payments=("25000", "15000"),
+            )
+            self._add_ar_order(
+                db,
+                "AR-PARITY-OLD",
+                total="50000",
+                invoice_date=date(2026, 8, 1),
+            )
+            self._add_ar_order(
+                db,
+                "AR-PARITY-SECOND-CUSTOMER",
+                total="70000",
+                invoice_date=date(2026, 10, 14),
+                customer_id=self.generated_customer_id,
+            )
+
+        with main.SessionLocal() as db:
+            dashboard = build_accounts_receivable_dashboard(db, today=REPORT_AT.date())
+            expected_by_customer_id: dict[int, tuple[int, Decimal, int]] = {}
+            for row in dashboard.rows:
+                if row.status_code != "overdue":
+                    continue
+                count, amount, max_days = expected_by_customer_id.get(
+                    row.customer_id,
+                    (0, Decimal("0"), 0),
+                )
+                expected_by_customer_id[row.customer_id] = (
+                    count + 1,
+                    amount + row.pending_amount,
+                    max(max_days, -(row.days_remaining or 0)),
+                )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_ids_by_name = {
+            "Cliente 001": self.customer_id,
+            "Cliente generado": self.generated_customer_id,
+            "Cliente inactivo": self.inactive_customer_id,
+        }
+        for customer_name, customer_id in customer_ids_by_name.items():
+            row_index = self._row_for_customer(worksheet, customer_name)
+            expected_count, expected_amount, expected_days = expected_by_customer_id.get(
+                customer_id,
+                (0, Decimal("0"), 0),
+            )
+            self.assertEqual(worksheet.cell(row_index, 18).value, expected_count)
+            self.assertEqual(
+                Decimal(str(worksheet.cell(row_index, 19).value)),
+                expected_amount,
+            )
+            self.assertEqual(worksheet.cell(row_index, 20).value, expected_days)
+
+    def test_overdue_reference_date_uses_costa_rica_calendar_date(self) -> None:
+        with main.SessionLocal.begin() as db:
+            self._add_ar_order(
+                db,
+                "COSTA-RICA-DATE",
+                total="1000",
+                invoice_date=date(2026, 12, 15),
+                invoiced_at=datetime(2026, 12, 15, 8, 0),
+            )
+
+        still_december_31_in_costa_rica = datetime(2027, 1, 1, 5, 30, tzinfo=timezone.utc)
+        worksheet = load_workbook(
+            io.BytesIO(self._export(generated_at=still_december_31_in_costa_rica).body)
+        )["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 20).value, 1)
+
+        january_1_in_costa_rica = datetime(2027, 1, 1, 6, 30, tzinfo=timezone.utc)
+        worksheet = load_workbook(
+            io.BytesIO(self._export(generated_at=january_1_in_costa_rica).body)
+        )["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 20).value, 2)
 
     def test_last_invoice_date_uses_full_history_and_excludes_cancelled_orders(self) -> None:
         with main.SessionLocal.begin() as db:
@@ -702,11 +954,39 @@ class B2BCustomersExportTests(unittest.TestCase):
         self.assertEqual(last_invoice_cell.number_format, "dd/mm/yyyy")
         self.assertEqual(self._cell_date(last_invoice_cell.value), date(2026, 3, 4))
 
-    def test_sales_are_loaded_with_one_aggregate_query_not_one_query_per_customer(self) -> None:
+    def test_overdue_cells_have_numeric_types_and_currency_format(self) -> None:
+        with main.SessionLocal.begin() as db:
+            self._add_ar_order(
+                db,
+                "OVERDUE-FORMATTING",
+                total="1234.50",
+                invoice_date=date(2026, 9, 1),
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        count_cell = worksheet.cell(customer_row, 18)
+        amount_cell = worksheet.cell(customer_row, 19)
+        days_cell = worksheet.cell(customer_row, 20)
+        self.assertEqual(count_cell.data_type, "n")
+        self.assertEqual(amount_cell.data_type, "n")
+        self.assertEqual(amount_cell.number_format, "₡ #,##0.00")
+        self.assertEqual(days_cell.data_type, "n")
+
+    def test_sales_and_ar_are_loaded_without_one_query_per_customer(self) -> None:
+        with main.SessionLocal.begin() as db:
+            db.add_all(
+                B2BCustomer(customer_name=f"Cliente rendimiento {index:02d}", active=True)
+                for index in range(12)
+            )
+
+        all_selects: list[str] = []
         sales_selects: list[str] = []
 
         def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
             normalized = " ".join(statement.lower().split())
+            if normalized.startswith("select"):
+                all_selects.append(normalized)
             if " from b2b_sales_orders" in normalized:
                 sales_selects.append(normalized)
 
@@ -716,8 +996,11 @@ class B2BCustomersExportTests(unittest.TestCase):
         finally:
             event.remove(main.engine, "before_cursor_execute", capture_statement)
 
-        self.assertEqual(len(sales_selects), 1)
-        self.assertIn("group by b2b_sales_orders.customer_id", sales_selects[0])
+        self.assertEqual(len(sales_selects), 2)
+        self.assertEqual(len(all_selects), 5)
+        self.assertTrue(
+            any("group by b2b_sales_orders.customer_id" in statement for statement in sales_selects)
+        )
 
     @staticmethod
     def _row_for_customer(worksheet, customer_name: str) -> int:
