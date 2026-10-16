@@ -21,6 +21,7 @@ from app.services.b2b_commercial_inactivity_service import (
     CatalogProductInactivityEvidence,
     CHANNEL_SCOPE_REVISION,
     CustomerInactivityEvidence,
+    ELIGIBILITY_POLICY_REVISION,
     EXECUTION_CONFIRMATION,
     HistoryCoverageEvidence,
     InactivityConfig,
@@ -63,12 +64,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--reactivation-grace-days",
-        type=int,
-        default=30,
-        help="Conservative grace after a catalog/customer update or reactivation (default: 30).",
-    )
-    parser.add_argument(
         "--export-dir",
         type=Path,
         required=True,
@@ -90,8 +85,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    if args.reactivation_grace_days < 0:
-        raise B2BCommercialInactivityError("--reactivation-grace-days cannot be negative.")
     if args.execute:
         if args.confirm != EXECUTION_CONFIRMATION:
             raise B2BCommercialInactivityError(
@@ -126,6 +119,11 @@ def _load_approved_fingerprint(summary_path: Path) -> str:
         raise B2BCommercialInactivityError(
             "Approved dry-run summary uses an obsolete or missing channel scope revision. "
             "Generate and approve a new dry-run."
+        )
+    if payload.get("eligibility_policy_revision") != ELIGIBILITY_POLICY_REVISION:
+        raise B2BCommercialInactivityError(
+            "Approved dry-run summary uses an obsolete or missing eligibility policy. "
+            "Generate and approve a new dry-run based on invoiced sales evidence."
         )
     fingerprint = str(payload.get("plan_fingerprint") or "").strip()
     if not fingerprint:
@@ -261,7 +259,6 @@ def main() -> int:
         config = InactivityConfig(
             as_of_date=args.as_of_date or current_costa_rica_date(),
             history_complete_since=args.history_complete_since,
-            reactivation_grace_days=args.reactivation_grace_days,
         )
         if args.execute:
             approved_fingerprint = _load_approved_fingerprint(args.approved_summary)

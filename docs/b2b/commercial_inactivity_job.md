@@ -56,15 +56,20 @@ bloqueado.
 ## Reactivación manual
 
 Las pantallas existentes permiten volver a activar clientes y productos de
-catálogo. No se agregó esquema nuevo. Como protección conservadora, cualquier
-registro cuyo `updated_at` esté dentro de los últimos 30 días queda en
-`review_pending`. Esto evita que una reactivación manual sea revertida en la
-siguiente corrida.
+catálogo. `created_at` y `updated_at` no participan en la elegibilidad porque
+pueden reflejar la carga masiva o una edición administrativa, no actividad
+comercial ni una reactivación deliberada.
 
-La limitación deliberada es que una edición de precio o datos también obtiene
-la misma gracia. Si más adelante se necesita distinguir exactamente una
-reactivación, se recomienda agregar una excepción persistente o un campo
-`reactivated_at` en una fase separada.
+No se agregó esquema nuevo ni existe Cron. Mientras el proceso siga siendo
+manual, toda ejecución requiere un dry-run nuevo, revisión humana, fingerprint
+idéntico y confirmación explícita. Una reactivación posterior al dry-run cambia
+el estado/fingerprint y bloquea ese plan aprobado.
+
+Limitación pendiente: un dry-run nuevo no puede distinguir una reactivación
+manual de cualquier otro registro activo. Antes de automatizar el proceso se
+recomienda autorizar un mecanismo persistente específico, por ejemplo
+`inactivity_protected_until` o una tabla de excepciones con motivo, usuario y
+vigencia. No debe reutilizarse `updated_at` para ese fin.
 
 ## Dry-run
 
@@ -88,7 +93,7 @@ de evidencia debe ser nuevo o estar vacío.
 - `history_coverage.csv`: conteos mensuales de facturas regulares e importadas
   para revisar vacíos de cobertura antes de aprobar.
 - `review_pending.csv`: registros que requieren decisión humana.
-- `excluded.csv`: activos recientes o registros ya inactivos.
+- `excluded.csv`: registros con venta reciente o ya inactivos.
 - `execution_results.csv`: solo se crea en una ejecución real.
 
 ## Execute controlado
@@ -120,17 +125,23 @@ error provoca rollback.
 Los dry-runs generados antes de la revisión de alcance
 `b2b-commercial-inactivity-authorized-channels-v1` son obsoletos: el job exige
 esa revisión en el `summary.json` aprobado y obliga a generar evidencia nueva.
+También exige la política de elegibilidad
+`b2b-commercial-inactivity-sales-evidence-v2`, por lo que los dry-runs que
+usaban antigüedad de registros o `updated_at` tampoco pueden ejecutarse.
 
 ## Reglas conservadoras
 
 Un registro pasa a `review_pending` si aplica alguna condición como:
 
 - cobertura histórica no confirmada;
-- cliente o asignación de catálogo con menos de 12 meses;
-- edición/reactivación dentro del período de gracia;
 - SKU sin coincidencia exacta en `Product`;
 - pedido abierto del cliente o del SKU;
 - factura con fecha futura.
+
+La ausencia de ventas es elegible únicamente cuando la cobertura está
+confirmada y no aplica ninguna de esas condiciones. La fecha de creación o
+última edición del cliente, producto global o asignación de catálogo se conserva
+como evidencia informativa, pero nunca sustituye la evidencia de ventas.
 
 Los saldos CxC y estados de acuerdos solo se reportan y se conservan. Un saldo
 pendiente no se modifica ni se elimina por inactivar al cliente.

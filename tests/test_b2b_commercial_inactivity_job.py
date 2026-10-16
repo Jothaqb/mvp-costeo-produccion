@@ -31,6 +31,7 @@ from app.services.b2b_commercial_inactivity_service import (
     CLASSIFICATION_EXCLUDED,
     CLASSIFICATION_REVIEW_PENDING,
     EXECUTION_CONFIRMATION,
+    ELIGIBILITY_POLICY_REVISION,
     InactivityConfig,
     build_b2b_commercial_inactivity_plan,
     execute_b2b_commercial_inactivity_plan,
@@ -62,7 +63,6 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
         self.config = InactivityConfig(
             as_of_date=AS_OF_DATE,
             history_complete_since=date(2025, 10, 1),
-            reactivation_grace_days=30,
         )
         self.admin = self._admin_user()
         self.admin_username = self.admin.username
@@ -405,7 +405,7 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
             },
         )
 
-    def test_pre_channel_scope_summary_is_rejected_as_obsolete(self):
+    def test_pre_scope_or_sales_evidence_summary_is_rejected_as_obsolete(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             summary_path = Path(temp_dir) / "summary.json"
             summary_path.write_text(
@@ -419,6 +419,19 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
                 json.dumps(
                     {
                         "channel_scope_revision": CHANNEL_SCOPE_REVISION,
+                        "plan_fingerprint": "current-fingerprint",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(B2BCommercialInactivityError, "eligibility policy"):
+                _load_approved_fingerprint(summary_path)
+
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "channel_scope_revision": CHANNEL_SCOPE_REVISION,
+                        "eligibility_policy_revision": ELIGIBILITY_POLICY_REVISION,
                         "plan_fingerprint": "current-fingerprint",
                     }
                 ),
@@ -519,7 +532,7 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
         self.assertEqual(customer_row.classification, CLASSIFICATION_EXCLUDED)
         self.assertEqual(customer_row.rolling_invoice_count, 1)
 
-    def test_missing_coverage_new_records_and_unknown_sku_require_review(self):
+    def test_missing_coverage_and_unknown_sku_require_review_despite_recent_timestamps(self):
         new_timestamp = datetime(2026, 9, 1, 12, 0, 0)
         customer = self._customer(created_at=new_timestamp, updated_at=new_timestamp)
         catalog_product = self._catalog_product(
@@ -540,21 +553,39 @@ class B2BCommercialInactivityJobTests(unittest.TestCase):
         self.assertTrue(any("Product actual" in reason for reason in product_row.reasons))
         self.assertEqual(customer_row.classification, CLASSIFICATION_REVIEW_PENDING)
 
-    def test_recent_manual_reactivation_receives_grace_without_schema_change(self):
-        customer = self._customer(updated_at=datetime(2026, 10, 10, 12, 0, 0))
+    def test_recent_erp_timestamps_do_not_replace_commercial_sales_evidence(self):
+        recent_timestamp = datetime(2026, 10, 10, 12, 0, 0)
+        customer = self._customer(
+            created_at=recent_timestamp,
+            updated_at=recent_timestamp,
+        )
         catalog_product = self._catalog_product(
             customer,
             "100",
-            updated_at=datetime(2026, 10, 10, 12, 0, 0),
+            created_at=recent_timestamp,
+            updated_at=recent_timestamp,
         )
 
         plan = self._plan()
         product_row = next(row for row in plan.catalog_products if row.catalog_product_id == catalog_product.id)
         customer_row = next(row for row in plan.customers if row.customer_id == customer.id)
 
-        self.assertEqual(product_row.classification, CLASSIFICATION_REVIEW_PENDING)
-        self.assertTrue(any("período de gracia" in reason for reason in product_row.reasons))
-        self.assertEqual(customer_row.classification, CLASSIFICATION_REVIEW_PENDING)
+        self.assertEqual(product_row.classification, CLASSIFICATION_ELIGIBLE)
+        self.assertEqual(customer_row.classification, CLASSIFICATION_ELIGIBLE)
+        self.assertEqual(
+            product_row.reasons,
+            ("Sin compras facturadas del SKU durante los últimos 12 meses.",),
+        )
+        self.assertTrue(
+            any("Sin facturas B2B" in reason for reason in customer_row.reasons)
+        )
+        self.assertFalse(
+            any(
+                token in reason.lower()
+                for reason in (*product_row.reasons, *customer_row.reasons)
+                for token in ("creado", "incorporado", "gracia", "reactivado")
+            )
+        )
 
     def test_pending_receivables_and_agreements_are_reported_but_preserved(self):
         customer = self._customer()

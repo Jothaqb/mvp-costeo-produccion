@@ -34,6 +34,7 @@ CLASSIFICATION_EXCLUDED = "excluded"
 EXECUTION_CONFIRMATION = "DEACTIVATE_CONFIRMED_B2B_INACTIVITY_CANDIDATES"
 COSTA_RICA_TIMEZONE = timezone(timedelta(hours=-6), name="America/Costa_Rica")
 CHANNEL_SCOPE_REVISION = "b2b-commercial-inactivity-authorized-channels-v1"
+ELIGIBILITY_POLICY_REVISION = "b2b-commercial-inactivity-sales-evidence-v2"
 AUTHORIZED_B2B_CHANNEL_NAMES = (
     "Tiendas Naturales (Minisuper)",
     "Tiendas Naturas (Macobioticas)",
@@ -50,7 +51,6 @@ class B2BCommercialInactivityError(RuntimeError):
 class InactivityConfig:
     as_of_date: date
     history_complete_since: date | None = None
-    reactivation_grace_days: int = 30
 
     @property
     def cutoff_date(self) -> date:
@@ -135,6 +135,7 @@ class ChannelBreakdownEvidence:
 class B2BCommercialInactivityPlan:
     config: InactivityConfig
     channel_scope_revision: str
+    eligibility_policy_revision: str
     channel_scope_resolutions: tuple[ChannelScopeResolutionEvidence, ...]
     available_b2b_channel_names: tuple[str, ...]
     channel_breakdown: tuple[ChannelBreakdownEvidence, ...]
@@ -220,8 +221,6 @@ def build_b2b_commercial_inactivity_plan(
     *,
     config: InactivityConfig,
 ) -> B2BCommercialInactivityPlan:
-    if config.reactivation_grace_days < 0:
-        raise B2BCommercialInactivityError("Reactivation grace days cannot be negative.")
     if config.history_complete_since is not None and config.history_complete_since > config.as_of_date:
         raise B2BCommercialInactivityError("History coverage cannot start after the report date.")
 
@@ -358,6 +357,7 @@ def build_b2b_commercial_inactivity_plan(
     return B2BCommercialInactivityPlan(
         config=config,
         channel_scope_revision=CHANNEL_SCOPE_REVISION,
+        eligibility_policy_revision=ELIGIBILITY_POLICY_REVISION,
         channel_scope_resolutions=channel_scope_resolutions,
         available_b2b_channel_names=tuple(
             channel.name for channel in channels if channel.applies_to_b2b
@@ -580,12 +580,6 @@ def _classify_catalog_product(
     else:
         if not config.history_is_sufficient:
             reasons.append("No existe una confirmación de cobertura histórica completa desde el inicio de la ventana.")
-        if _date_of(customer.created_at) > config.cutoff_date:
-            reasons.append("El cliente fue creado hace menos de 12 meses.")
-        if _date_of(catalog_product.created_at) > config.cutoff_date:
-            reasons.append("El SKU fue incorporado al catálogo hace menos de 12 meses.")
-        if _is_within_grace(catalog_product.updated_at, config):
-            reasons.append("El catálogo fue editado o reactivado dentro del período de gracia.")
         if not product_exists:
             reasons.append("El SKU del catálogo no coincide exactamente con un Product actual.")
         if has_open_order:
@@ -640,26 +634,10 @@ def _classify_customer(
     else:
         if not config.history_is_sufficient:
             reasons.append("No existe una confirmación de cobertura histórica completa desde el inicio de la ventana.")
-        if _date_of(customer.created_at) > config.cutoff_date:
-            reasons.append("El cliente fue creado hace menos de 12 meses.")
-        if _is_within_grace(customer.updated_at, config):
-            reasons.append("El cliente fue editado o reactivado dentro del período de gracia.")
         if has_open_orders:
             reasons.append("El cliente tiene pedidos B2B abiertos.")
         if has_future_invoice:
             reasons.append("El cliente tiene una factura con fecha futura.")
-
-        recent_catalog_changes = [
-            product
-            for product in customer.products
-            if product.active
-            and (
-                _date_of(product.created_at) > config.cutoff_date
-                or _is_within_grace(product.updated_at, config)
-            )
-        ]
-        if recent_catalog_changes:
-            reasons.append("El cliente tiene productos activos incorporados, editados o reactivados recientemente.")
 
         classification = (
             CLASSIFICATION_REVIEW_PENDING if reasons else CLASSIFICATION_ELIGIBLE
@@ -701,17 +679,6 @@ def _classify_customer(
     )
 
 
-def _date_of(value: datetime) -> date:
-    return value.date()
-
-
-def _is_within_grace(value: datetime, config: InactivityConfig) -> bool:
-    if config.reactivation_grace_days == 0:
-        return False
-    grace_start = config.as_of_date - timedelta(days=config.reactivation_grace_days)
-    return _date_of(value) > grace_start
-
-
 def _plan_fingerprint(
     config: InactivityConfig,
     channel_scope_resolutions: tuple[ChannelScopeResolutionEvidence, ...],
@@ -725,6 +692,7 @@ def _plan_fingerprint(
 ) -> str:
     payload = {
         "channel_scope_revision": CHANNEL_SCOPE_REVISION,
+        "eligibility_policy_revision": ELIGIBILITY_POLICY_REVISION,
         "channel_scope_resolutions": [
             evidence_dict(row) for row in channel_scope_resolutions
         ],
@@ -737,7 +705,6 @@ def _plan_fingerprint(
             if config.history_complete_since is not None
             else None
         ),
-        "reactivation_grace_days": config.reactivation_grace_days,
         "eligible_catalog_product_ids": sorted(
             row.catalog_product_id
             for row in catalog_rows
@@ -996,6 +963,7 @@ def plan_summary(plan: B2BCommercialInactivityPlan) -> dict[str, object]:
     return {
         "mode": "dry-run",
         "channel_scope_revision": plan.channel_scope_revision,
+        "eligibility_policy_revision": plan.eligibility_policy_revision,
         "channel_scope_is_valid": plan.channel_scope_is_valid,
         "authorized_channel_names": list(AUTHORIZED_B2B_CHANNEL_NAMES),
         "channel_scope_resolutions": [
@@ -1013,7 +981,6 @@ def plan_summary(plan: B2BCommercialInactivityPlan) -> dict[str, object]:
             else None
         ),
         "history_is_sufficient": plan.config.history_is_sufficient,
-        "reactivation_grace_days": plan.config.reactivation_grace_days,
         "earliest_invoice_date": (
             plan.earliest_invoice_date.isoformat()
             if plan.earliest_invoice_date is not None
