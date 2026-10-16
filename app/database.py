@@ -313,6 +313,15 @@ def ensure_b2b_customer_channel_column() -> None:
         )
 
 
+def ensure_b2b_customer_default_payment_terms_column() -> None:
+    with engine.begin() as connection:
+        _ensure_columns(
+            connection,
+            "b2b_customers",
+            {"default_payment_terms": "VARCHAR(255)"},
+        )
+
+
 def ensure_auth_tables() -> None:
     if engine.dialect.name != "sqlite":
         return

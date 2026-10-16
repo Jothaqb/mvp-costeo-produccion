@@ -19,6 +19,10 @@ from app.models import (
     User,
 )
 from app.services.audit_service import serialize_audit_payload, snapshot_b2b_sales_order_for_audit
+from app.services.b2b_commercial_agreement_service import (
+    PAYMENT_TERM_OPTIONS,
+    normalize_payment_terms,
+)
 from app.services.inventory_ledger_service import (
     InventoryLedgerValidationError,
     get_or_create_inventory_balance,
@@ -93,6 +97,7 @@ def create_customer(
     credit_days: str | int | None,
     active: bool,
     channel_id: str = "",
+    default_payment_terms: str = "",
 ) -> B2BCustomer:
     customer = B2BCustomer()
     channel = _optional_active_b2b_channel(db, channel_id)
@@ -110,6 +115,7 @@ def create_customer(
         credit_days,
         active,
         channel.id if channel is not None else None,
+        default_payment_terms,
     )
     db.add(customer)
     db.commit()
@@ -132,6 +138,7 @@ def update_customer(
     credit_days: str | int | None,
     active: bool,
     channel_id: str = "",
+    default_payment_terms: str = "",
 ) -> B2BCustomer:
     customer = db.query(B2BCustomer).filter(B2BCustomer.id == customer_id).one()
     channel = _optional_active_b2b_channel(db, channel_id)
@@ -149,6 +156,7 @@ def update_customer(
         credit_days,
         active,
         channel.id if channel is not None else None,
+        default_payment_terms,
     )
     db.commit()
     db.refresh(customer)
@@ -169,11 +177,15 @@ def _assign_customer_fields(
     credit_days: str | int | None,
     active: bool,
     channel_id: int | None,
+    default_payment_terms: str,
 ) -> None:
     name = customer_name.strip()
     if not name:
         raise B2BValidationError("Customer name is required.")
     parsed_credit_days = _parse_credit_days(credit_days)
+    normalized_payment_terms = normalize_payment_terms(default_payment_terms)
+    if normalized_payment_terms and normalized_payment_terms not in PAYMENT_TERM_OPTIONS:
+        raise B2BValidationError("Forma de pago debe ser una de las opciones permitidas.")
     customer.customer_name = name
     customer.address = address.strip() or None
     customer.province = province.strip() or None
@@ -184,6 +196,7 @@ def _assign_customer_fields(
     customer.phone = phone.strip() or None
     customer.loyverse_customer_id = loyverse_customer_id.strip() or None
     customer.credit_days = parsed_credit_days
+    customer.default_payment_terms = normalized_payment_terms or None
     customer.channel_id = channel_id
     customer.active = active
 

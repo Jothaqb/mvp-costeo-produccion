@@ -36,7 +36,9 @@ La acción **Actualizar textos desde plantilla base** está disponible únicamen
 
 ## Opciones comerciales y personas autorizadas
 
-El editor limita **Forma de pago** a pago anticipado antes del despacho, crédito comercial aprobado o contado contra entrega. La selección mantiene automáticamente `advance_payment_enabled` y `credit_approved`; solo el crédito comercial exige plazo y límite positivos. **Entrega habitual** se limita a ruta de entrega GREEN CORNER, encomienda o retiro.
+El editor limita **Forma de pago** a pago anticipado antes del despacho, contado contra entrega, crédito comercial aprobado o consignación y pago contra entrega. La selección mantiene automáticamente `advance_payment_enabled` y `credit_approved`; solo el crédito comercial exige plazo y límite positivos. La consignación es únicamente una condición comercial en esta fase y no activa crédito ni cambia procesos operativos. **Entrega habitual** se limita a ruta de entrega GREEN CORNER, encomienda o retiro.
+
+Cada cliente B2B puede guardar una forma de pago predeterminada nullable en `b2b_customers.default_payment_terms`. Los clientes históricos permanecen sin valor hasta que un usuario los edite. Un acuerdo nuevo copia explícitamente ese valor y sus indicadores al momento de crear el borrador. Después funciona como snapshot: editar la ficha del cliente no modifica acuerdos existentes. Si la ficha y un borrador difieren, el editor ofrece una acción explícita para copiar únicamente la forma de pago y sus indicadores; los acuerdos `generated`, `signed` y `archived` nunca se actualizan por esta vía.
 
 Las personas autorizadas se editan con nombre, cargo y un único campo **Teléfono / correo**. Internamente se conservan las columnas existentes `identification`, `phone` y `email`: la identificación previa viaja oculta para evitar pérdida de históricos y el contacto combinado se separa nuevamente al guardar. No se agregó ninguna columna ni migración.
 
@@ -48,7 +50,9 @@ Solo puede existir un borrador por cliente, validado por el servicio. En esta fa
 - `b2b_commercial_agreement_people`: personas autorizadas para pedidos o recepción.
 - `b2b_commercial_agreement_sections`: los 19 apartados editables.
 
-Las tablas se crean mediante `Base.metadata.create_all()`. Los campos de persistencia del PDF ya forman parte de `b2b_commercial_agreements`; no hay migración manual ni modificación de tablas operativas existentes.
+Las tablas del acuerdo se crean mediante `Base.metadata.create_all()`. Los campos de persistencia del PDF ya forman parte de `b2b_commercial_agreements`; no se requiere migración manual.
+
+La columna nullable `b2b_customers.default_payment_terms VARCHAR(255)` se agrega mediante `ensure_b2b_customer_default_payment_terms_column()`, usando el patrón incremental e idempotente de esquema del ERP tanto en PostgreSQL como en SQLite. La migración no define default, no rellena históricos y no cambia acuerdos existentes.
 
 ## PDF generado
 

@@ -44,6 +44,7 @@ from app.services.b2b_commercial_agreement_service import (
     parse_person_contact_info,
     render_agreement_template_text,
     reset_commercial_agreement_sections_to_template,
+    sync_commercial_agreement_payment_terms_from_customer,
     update_commercial_agreement_draft,
     validate_commercial_agreement,
 )
@@ -83,6 +84,7 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                 canton="San José",
                 district="Carmen",
                 credit_days=15,
+                default_payment_terms="Contado contra entrega",
                 channel_id=channel.id,
                 active=True,
             )
@@ -206,6 +208,83 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             self.assertIsNone(agreement.generated_pdf_bytes)
             self.assertIsNone(agreement.generated_pdf_filename)
             self.assertIsNone(agreement.generated_pdf_sha256)
+
+    def test_new_agreement_uses_customer_default_payment_terms(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            self.assertEqual(agreement.payment_terms, "Contado contra entrega")
+            self.assertFalse(agreement.advance_payment_enabled)
+            self.assertFalse(agreement.credit_approved)
+            self.assertIsNone(agreement.contract_credit_days)
+
+    def test_new_credit_agreement_uses_customer_credit_days(self) -> None:
+        with self.Session() as db:
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.default_payment_terms = "Crédito comercial aprobado"
+            db.commit()
+
+            agreement = self._create(db)
+            self.assertEqual(agreement.payment_terms, "Crédito comercial aprobado")
+            self.assertFalse(agreement.advance_payment_enabled)
+            self.assertTrue(agreement.credit_approved)
+            self.assertEqual(agreement.contract_credit_days, 15)
+
+    def test_historical_customer_without_default_payment_terms_still_works(self) -> None:
+        with self.Session() as db:
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.default_payment_terms = None
+            db.commit()
+
+            agreement = self._create(db)
+            self.assertIsNone(agreement.payment_terms)
+            self.assertFalse(agreement.advance_payment_enabled)
+            self.assertFalse(agreement.credit_approved)
+
+    def test_draft_payment_terms_change_only_after_explicit_customer_sync(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            agreement.payment_terms = "Pago anticipado antes del despacho"
+            agreement.advance_payment_enabled = True
+            agreement.credit_approved = False
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.default_payment_terms = "Consignación y pago contra entrega"
+            db.commit()
+
+            unchanged = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(unchanged.payment_terms, "Pago anticipado antes del despacho")
+
+            synced = sync_commercial_agreement_payment_terms_from_customer(
+                db,
+                agreement_id=agreement.id,
+                user_id=None,
+            )
+            self.assertEqual(synced.payment_terms, "Consignación y pago contra entrega")
+            self.assertFalse(synced.advance_payment_enabled)
+            self.assertFalse(synced.credit_approved)
+
+    def test_non_draft_agreements_cannot_sync_customer_payment_terms(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            original_payment_terms = agreement.payment_terms
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.default_payment_terms = "Consignación y pago contra entrega"
+            for status in ("generated", "signed", "archived"):
+                with self.subTest(status=status):
+                    agreement.status = status
+                    db.commit()
+                    with self.assertRaisesRegex(
+                        B2BCommercialAgreementValidationError,
+                        "Solo los acuerdos",
+                    ):
+                        sync_commercial_agreement_payment_terms_from_customer(
+                            db,
+                            agreement_id=agreement.id,
+                            user_id=None,
+                        )
+                    db.rollback()
+                    unchanged = get_commercial_agreement(db, agreement.id)
+                    self.assertEqual(unchanged.status, status)
+                    self.assertEqual(unchanged.payment_terms, original_payment_terms)
 
     def test_customer_changes_do_not_alter_agreement_snapshots(self) -> None:
         with self.Session() as db:
@@ -386,9 +465,37 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                 validate_commercial_agreement(cash),
             )
 
+    def test_consignment_does_not_activate_or_require_commercial_credit(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            fields = self._complete_fields()
+            fields["payment_terms"] = "Consignación y pago contra entrega"
+            fields["contract_credit_days"] = ""
+            fields["credit_limit"] = ""
+            updated = update_commercial_agreement_draft(
+                db,
+                agreement_id=agreement.id,
+                fields=fields,
+                people=self._people(),
+                section_updates=self._section_updates(agreement),
+                user_id=None,
+            )
+            missing = validate_commercial_agreement(updated)
+            self.assertEqual(updated.payment_terms, "Consignación y pago contra entrega")
+            self.assertFalse(updated.credit_approved)
+            self.assertFalse(updated.advance_payment_enabled)
+            self.assertNotIn("Los días de crédito contractual deben ser mayores a 0.", missing)
+            self.assertNotIn("El límite de crédito debe ser mayor a 0.", missing)
+            self.assertEqual(missing, [])
+            self.assertTrue(build_b2b_commercial_agreement_pdf(updated).startswith(b"%PDF"))
+
     def test_legacy_payment_aliases_and_person_contact_round_trip(self) -> None:
         self.assertEqual(normalize_payment_terms("Contado"), "Contado contra entrega")
         self.assertEqual(normalize_payment_terms("Crédito"), "Crédito comercial aprobado")
+        self.assertEqual(
+            normalize_payment_terms("Pago anticipado"),
+            "Pago anticipado antes del despacho",
+        )
         combined = format_person_contact_info("8888-0000", "persona@example.com")
         self.assertEqual(combined, "8888-0000 / persona@example.com")
         self.assertEqual(
@@ -781,6 +888,12 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         self.assertNotIn("Product", service_source)
         self.assertIn("Actualizar textos desde plantilla base", editor_template)
         self.assertIn("sections/reset-template", editor_template)
+        self.assertIn("Actualizar forma de pago desde cliente", editor_template)
+        self.assertIn("payment-terms/sync-customer", editor_template)
+        self.assertIn(
+            '@app.post("/b2b/commercial-agreements/{agreement_id}/payment-terms/sync-customer")',
+            main_source,
+        )
         self.assertIn('<select name="payment_terms" required>', editor_template)
         self.assertIn('<select name="usual_delivery_type" required>', editor_template)
         self.assertIn("{% for option in payment_term_options %}", editor_template)
@@ -806,6 +919,11 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         )
         self.assertIn("Descargar PDF", detail_template)
         self.assertIn("download-pdf", detail_template)
+        self.assertIn("{{ agreement.payment_terms or \"\" }}", detail_template)
+        pdf_service_source = Path(
+            "app/services/b2b_commercial_agreement_pdf_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('(\"Forma de pago autorizada\", agreement.payment_terms)', pdf_service_source)
         self.assertIn("Descargar PDF", history_template)
         self.assertIn("download-pdf", history_template)
 

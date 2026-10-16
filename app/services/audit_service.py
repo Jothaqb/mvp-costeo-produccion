@@ -148,6 +148,7 @@ def snapshot_b2b_customer_for_audit(customer: B2BCustomer) -> dict[str, Any]:
         "phone": customer.phone,
         "loyverse_customer_id": customer.loyverse_customer_id,
         "credit_days": customer.credit_days,
+        "default_payment_terms": customer.default_payment_terms,
         "channel_id": customer.channel_id,
         "active": customer.active,
     }

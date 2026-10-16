@@ -23,6 +23,7 @@ from app.database import (
     ensure_accounting_tables,
     ensure_b2b_accounts_receivable_tables,
     ensure_b2b_customer_channel_column,
+    ensure_b2b_customer_default_payment_terms_column,
     ensure_b2b_invoice_cancellation_columns,
     ensure_b2b_invoice_snapshot_columns,
     ensure_b2b_sales_followup_columns,
@@ -133,6 +134,7 @@ from app.services.b2b_commercial_agreement_service import (
     parse_person_contact_info,
     render_agreement_template_text,
     reset_commercial_agreement_sections_to_template,
+    sync_commercial_agreement_payment_terms_from_customer,
     update_commercial_agreement_draft,
     validate_commercial_agreement,
 )
@@ -510,6 +512,7 @@ ensure_b2b_loyverse_mapping_tables()
 ensure_b2c_customer_tables()
 ensure_channel_master_tables()
 ensure_b2b_customer_channel_column()
+ensure_b2b_customer_default_payment_terms_column()
 ensure_inventory_adjustment_tables()
 ensure_packaging_batch_tables()
 ensure_auth_tables()
@@ -7551,6 +7554,49 @@ async def update_b2b_commercial_agreement(
         return _render_b2b_commercial_agreement_editor(request, agreement, error=str(exc))
 
 
+@app.post("/b2b/commercial-agreements/{agreement_id}/payment-terms/sync-customer")
+def sync_b2b_commercial_agreement_payment_terms(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "b2b_commercial_agreement.edit")
+    agreement = get_commercial_agreement(db, agreement_id)
+    if agreement.status != "draft":
+        raise HTTPException(status_code=409, detail="Solo los acuerdos en borrador se pueden editar.")
+    old_snapshot = snapshot_b2b_commercial_agreement_for_audit(agreement)
+    try:
+        updated = sync_commercial_agreement_payment_terms_from_customer(
+            db,
+            agreement_id=agreement_id,
+            user_id=current_user.id,
+        )
+        changed_old, changed_new = diff_audit_snapshots(
+            old_snapshot,
+            snapshot_b2b_commercial_agreement_for_audit(updated),
+        )
+        if changed_old is not None and changed_new is not None:
+            safe_log_audit_event(
+                module="commercial",
+                action="commercial_agreement_payment_terms_synced",
+                entity_type="b2b_commercial_agreement",
+                entity_id=updated.id,
+                entity_label=f"{updated.customer_name_snapshot} v{updated.version_number}",
+                old_values=changed_old,
+                new_values=changed_new,
+                request=request,
+                user=current_user,
+            )
+        return _redirect(
+            f"/b2b/commercial-agreements/{agreement_id}/edit?message="
+            f"{quote('Forma de pago actualizada desde la ficha del cliente.')}"
+        )
+    except B2BCommercialAgreementValidationError as exc:
+        db.rollback()
+        agreement = get_commercial_agreement(db, agreement_id)
+        return _render_b2b_commercial_agreement_editor(request, agreement, error=str(exc))
+
+
 @app.post("/b2b/commercial-agreements/{agreement_id}/sections/reset-template")
 def reset_b2b_commercial_agreement_sections(
     agreement_id: int,
@@ -7731,6 +7777,10 @@ def _render_b2b_commercial_agreement_editor(
     message: str | None = None,
     missing_fields: list[str] | None = None,
 ) -> HTMLResponse:
+    selected_payment_terms = normalize_payment_terms(agreement.payment_terms)
+    customer_default_payment_terms = normalize_payment_terms(
+        agreement.customer.default_payment_terms
+    )
     return templates.TemplateResponse(
         request=request,
         name="b2b_commercial_agreement_edit.html",
@@ -7746,7 +7796,13 @@ def _render_b2b_commercial_agreement_editor(
                 if person.authorization_type == "receiving"
             ],
             "payment_term_options": PAYMENT_TERM_OPTIONS,
-            "selected_payment_terms": normalize_payment_terms(agreement.payment_terms),
+            "selected_payment_terms": selected_payment_terms,
+            "customer_default_payment_terms": customer_default_payment_terms,
+            "can_sync_customer_payment_terms": (
+                agreement.status == "draft"
+                and customer_default_payment_terms in PAYMENT_TERM_OPTIONS
+                and customer_default_payment_terms != selected_payment_terms
+            ),
             "usual_delivery_type_options": USUAL_DELIVERY_TYPE_OPTIONS,
             "format_person_contact_info": format_person_contact_info,
             "error": error,
@@ -7848,6 +7904,7 @@ def new_b2b_customer(request: Request, db: Session = Depends(get_db)) -> HTMLRes
             "customer": None,
             "form_data": None,
             "channels": list_channel_options(db, applies_to="b2b"),
+            "payment_term_options": PAYMENT_TERM_OPTIONS,
             "error": None,
         },
     )
@@ -7867,6 +7924,7 @@ def create_b2b_customer(
     loyverse_customer_id: str = Form(""),
     credit_days: str = Form("0"),
     channel_id: str = Form(""),
+    default_payment_terms: str = Form(""),
     active: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -7885,6 +7943,7 @@ def create_b2b_customer(
             credit_days,
             active,
             channel_id,
+            default_payment_terms,
         )
         safe_log_audit_event(
             module="sales",
@@ -7905,6 +7964,7 @@ def create_b2b_customer(
                 "title": "New B2B Customer",
                 "customer": None,
                 "channels": list_channel_options(db, applies_to="b2b"),
+                "payment_term_options": PAYMENT_TERM_OPTIONS,
                 "error": str(exc),
                 "form_data": {
                     "customer_name": customer_name,
@@ -7918,6 +7978,7 @@ def create_b2b_customer(
                     "loyverse_customer_id": loyverse_customer_id,
                     "credit_days": credit_days,
                     "channel_id": channel_id,
+                    "default_payment_terms": default_payment_terms,
                     "active": active,
                 },
             },
@@ -7935,6 +7996,7 @@ def edit_b2b_customer(customer_id: int, request: Request, db: Session = Depends(
             "customer": customer,
             "form_data": None,
             "channels": list_channel_options(db, customer.channel_id, applies_to="b2b"),
+            "payment_term_options": PAYMENT_TERM_OPTIONS,
             "error": None,
         },
     )
@@ -7955,6 +8017,7 @@ def update_b2b_customer(
     loyverse_customer_id: str = Form(""),
     credit_days: str = Form("0"),
     channel_id: str = Form(""),
+    default_payment_terms: str = Form(""),
     active: bool = Form(False),
     db: Session = Depends(get_db),
 ) -> Response:
@@ -7976,6 +8039,7 @@ def update_b2b_customer(
             credit_days,
             active,
             channel_id,
+            default_payment_terms,
         )
         changed_old, changed_new = diff_audit_snapshots(
             old_snapshot,
@@ -8002,6 +8066,7 @@ def update_b2b_customer(
                 "title": "Edit B2B Customer",
                 "customer": customer,
                 "channels": list_channel_options(db, customer.channel_id, applies_to="b2b"),
+                "payment_term_options": PAYMENT_TERM_OPTIONS,
                 "error": str(exc),
                 "form_data": {
                     "customer_name": customer_name,
@@ -8015,6 +8080,7 @@ def update_b2b_customer(
                     "loyverse_customer_id": loyverse_customer_id,
                     "credit_days": credit_days,
                     "channel_id": channel_id,
+                    "default_payment_terms": default_payment_terms,
                     "active": active,
                 },
             },

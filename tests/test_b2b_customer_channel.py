@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app import database as database_module
 from app.models import Base, B2BCustomer, B2BCustomerProduct, B2BSalesOrder, Channel, Product
 from app.services.b2b_customer_import_service import import_b2b_customers_csv
+from app.services.b2b_commercial_agreement_service import PAYMENT_TERM_OPTIONS
 from app.services.b2b_sales_service import (
     B2BValidationError,
     create_customer,
@@ -89,6 +90,40 @@ class B2BCustomerChannelTests(unittest.TestCase):
         with self.Session() as db:
             customer = create_customer(db, *self._customer_args(), channel_id="")
             self.assertIsNone(customer.channel_id)
+            self.assertIsNone(customer.default_payment_terms)
+
+    def test_create_and_edit_customer_default_payment_terms(self) -> None:
+        with self.Session() as db:
+            customer = create_customer(
+                db,
+                *self._customer_args(),
+                channel_id=str(self.natural_id),
+                default_payment_terms="Contado contra entrega",
+            )
+            self.assertEqual(customer.default_payment_terms, "Contado contra entrega")
+
+            updated = update_customer(
+                db,
+                customer.id,
+                *self._customer_args(),
+                channel_id=str(self.natural_id),
+                default_payment_terms="Consignación y pago contra entrega",
+            )
+            db.expire_all()
+            persisted = db.get(B2BCustomer, updated.id)
+            self.assertEqual(
+                persisted.default_payment_terms,
+                "Consignación y pago contra entrega",
+            )
+
+    def test_invalid_customer_default_payment_terms_is_rejected(self) -> None:
+        with self.Session() as db:
+            with self.assertRaisesRegex(B2BValidationError, "Forma de pago"):
+                create_customer(
+                    db,
+                    *self._customer_args(),
+                    default_payment_terms="Opción inventada",
+                )
 
     def test_invalid_inactive_or_non_b2b_channel_is_rejected(self) -> None:
         with self.Session() as db:
@@ -171,6 +206,18 @@ class B2BCustomerChannelTests(unittest.TestCase):
         order_edit = Path("app/templates/b2b_order_edit.html").read_text(encoding="utf-8")
         self.assertIn('name="channel_id"', customer_form)
         self.assertIn("B2B Channel", customer_form)
+        self.assertIn('name="default_payment_terms"', customer_form)
+        self.assertIn("Forma de pago", customer_form)
+        self.assertIn("{% for option in payment_term_options %}", customer_form)
+        self.assertEqual(
+            PAYMENT_TERM_OPTIONS,
+            (
+                "Pago anticipado antes del despacho",
+                "Contado contra entrega",
+                "Crédito comercial aprobado",
+                "Consignación y pago contra entrega",
+            ),
+        )
         self.assertNotIn('name="b2b_channel_id"', order_form)
         self.assertNotIn('name="b2b_channel_id"', order_edit)
         self.assertIn("Debe asignar un canal B2B al cliente antes de crear órdenes.", order_form)
@@ -194,6 +241,7 @@ class B2BCustomerChannelTests(unittest.TestCase):
                 """
             )
             connection.exec_driver_sql("CREATE TABLE b2b_customers (id INTEGER PRIMARY KEY)")
+            connection.exec_driver_sql("INSERT INTO b2b_customers (id) VALUES (1)")
             connection.exec_driver_sql("CREATE TABLE b2b_sales_orders (id INTEGER PRIMARY KEY)")
             connection.exec_driver_sql("CREATE TABLE b2c_sales_orders (id INTEGER PRIMARY KEY)")
 
@@ -201,9 +249,15 @@ class B2BCustomerChannelTests(unittest.TestCase):
             database_module.ensure_channel_master_tables()
             database_module.ensure_b2b_customer_channel_column()
             database_module.ensure_b2b_customer_channel_column()
+            database_module.ensure_b2b_customer_default_payment_terms_column()
+            database_module.ensure_b2b_customer_default_payment_terms_column()
 
         inspector = inspect(migration_engine)
         self.assertIn("channel_id", {column["name"] for column in inspector.get_columns("b2b_customers")})
+        self.assertIn(
+            "default_payment_terms",
+            {column["name"] for column in inspector.get_columns("b2b_customers")},
+        )
         self.assertTrue(
             any(
                 foreign_key["referred_table"] == "channels"
@@ -211,6 +265,12 @@ class B2BCustomerChannelTests(unittest.TestCase):
                 for foreign_key in inspector.get_foreign_keys("b2b_customers")
             )
         )
+        with migration_engine.connect() as connection:
+            historical_customer = connection.exec_driver_sql(
+                "SELECT id, default_payment_terms FROM b2b_customers WHERE id = 1"
+            ).one()
+        self.assertEqual(historical_customer.id, 1)
+        self.assertIsNone(historical_customer.default_payment_terms)
         migration_engine.dispose()
 
 

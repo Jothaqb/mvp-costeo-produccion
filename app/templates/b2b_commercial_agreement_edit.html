@@ -86,6 +86,19 @@
       </form>
     </section>
 
+    {% if can_sync_customer_payment_terms %}
+      <section class="warning">
+        <p>
+          La ficha del cliente tiene <strong>{{ customer_default_payment_terms }}</strong>,
+          diferente de la forma de pago de este borrador. El acuerdo conserva su valor hasta que
+          usted decida actualizarlo.
+        </p>
+        <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/payment-terms/sync-customer">
+          <button type="submit">Actualizar forma de pago desde cliente</button>
+        </form>
+      </section>
+    {% endif %}
+
     <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/edit">
       <fieldset>
         <legend>1. Información del cliente</legend>

@@ -19,8 +19,9 @@ AGREEMENT_STATUSES = {"draft", "generated", "signed", "archived"}
 AUTHORIZATION_TYPES = {"orders", "receiving"}
 PAYMENT_TERM_OPTIONS = (
     "Pago anticipado antes del despacho",
-    "Crédito comercial aprobado",
     "Contado contra entrega",
+    "Crédito comercial aprobado",
+    "Consignación y pago contra entrega",
 )
 USUAL_DELIVERY_TYPE_OPTIONS = (
     "Ruta de entrega GREEN CORNER",
@@ -32,6 +33,7 @@ _PAYMENT_TERM_ALIASES = {
     "crédito": "Crédito comercial aprobado",
     "credito": "Crédito comercial aprobado",
     "pago anticipado": "Pago anticipado antes del despacho",
+    "consignacion y pago contra entrega": "Consignación y pago contra entrega",
 }
 DEFAULT_CATALOG_REFERENCE = (
     "Catálogo o lista de precios aplicable: Ver catálogo comercial vigente adjunto."
@@ -306,6 +308,15 @@ def normalize_payment_terms(value: Any) -> str:
     return _PAYMENT_TERM_ALIASES.get(normalized.casefold(), normalized)
 
 
+def _set_agreement_payment_terms(
+    agreement: B2BCommercialAgreement,
+    payment_terms: str,
+) -> None:
+    agreement.payment_terms = payment_terms
+    agreement.advance_payment_enabled = payment_terms == "Pago anticipado antes del despacho"
+    agreement.credit_approved = payment_terms == "Crédito comercial aprobado"
+
+
 def format_person_contact_info(phone: Any, email: Any) -> str:
     phone_value = str(phone or "").strip()
     email_value = str(email or "").strip()
@@ -408,6 +419,12 @@ def create_commercial_agreement_draft(
         raise B2BCommercialAgreementValidationError(
             "La creación de nuevas versiones se implementará en la fase 2."
         )
+    payment_terms = normalize_payment_terms(customer.default_payment_terms)
+    if payment_terms and payment_terms not in PAYMENT_TERM_OPTIONS:
+        raise B2BCommercialAgreementValidationError(
+            "La forma de pago predeterminada del cliente no es válida."
+        )
+    credit_approved = payment_terms == "Crédito comercial aprobado"
     agreement = B2BCommercialAgreement(
         customer_id=customer.id,
         version_number=0,
@@ -427,8 +444,12 @@ def create_commercial_agreement_draft(
         customer_active_snapshot=customer.active,
         billing_address=customer.address,
         whatsapp=customer.phone,
-        credit_approved=customer.credit_days > 0,
-        contract_credit_days=customer.credit_days if customer.credit_days > 0 else None,
+        payment_terms=payment_terms or None,
+        advance_payment_enabled=payment_terms == "Pago anticipado antes del despacho",
+        credit_approved=credit_approved,
+        contract_credit_days=(
+            customer.credit_days if credit_approved and customer.credit_days > 0 else None
+        ),
         catalog_reference=DEFAULT_CATALOG_REFERENCE,
         template_revision=DEFAULT_TEMPLATE_REVISION,
         created_by_user_id=user_id,
@@ -445,6 +466,25 @@ def create_commercial_agreement_draft(
         for section_number, (section_key, title) in enumerate(DEFAULT_AGREEMENT_SECTIONS, start=1)
     ]
     db.add(agreement)
+    db.commit()
+    return get_commercial_agreement(db, agreement.id)
+
+
+def sync_commercial_agreement_payment_terms_from_customer(
+    db: Session,
+    *,
+    agreement_id: int,
+    user_id: int | None,
+) -> B2BCommercialAgreement:
+    agreement = get_commercial_agreement(db, agreement_id)
+    _require_draft(agreement)
+    payment_terms = normalize_payment_terms(agreement.customer.default_payment_terms)
+    if payment_terms not in PAYMENT_TERM_OPTIONS:
+        raise B2BCommercialAgreementValidationError(
+            "El cliente no tiene una forma de pago predeterminada válida."
+        )
+    _set_agreement_payment_terms(agreement, payment_terms)
+    agreement.updated_by_user_id = user_id
     db.commit()
     return get_commercial_agreement(db, agreement.id)
 
@@ -489,10 +529,8 @@ def update_commercial_agreement_draft(
         raise B2BCommercialAgreementValidationError(
             "Entrega habitual debe ser una de las opciones permitidas."
         )
-    agreement.payment_terms = payment_terms
+    _set_agreement_payment_terms(agreement, payment_terms)
     agreement.usual_delivery_type = usual_delivery_type
-    agreement.advance_payment_enabled = payment_terms == "Pago anticipado antes del despacho"
-    agreement.credit_approved = payment_terms == "Crédito comercial aprobado"
 
     agreement.b2b_discount_percent = _optional_decimal(
         fields.get("b2b_discount_percent"),

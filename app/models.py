@@ -602,6 +602,7 @@ class B2BCustomer(Base):
     phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
     loyverse_customer_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     credit_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    default_payment_terms: Mapped[str | None] = mapped_column(String(255), nullable=True)
     channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True, index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
