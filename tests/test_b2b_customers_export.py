@@ -5,11 +5,13 @@ import os
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
 from fastapi import HTTPException
 from openpyxl import load_workbook
+from sqlalchemy import event
 
 
 _PREVIOUS_DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -20,8 +22,12 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TEMP_DB.name).as_posix()}"
 with mock.patch("zoneinfo.ZoneInfo", return_value=timezone.utc):
     from app import main  # noqa: E402
 from app.models import (  # noqa: E402
+    B2BARPayment,
     B2BCommercialAgreement,
     B2BCustomer,
+    B2BSalesOrder,
+    B2BSalesOrderLine,
+    B2CSalesOrder,
     Channel,
     Role,
     User,
@@ -31,7 +37,11 @@ from app.models import (  # noqa: E402
 from app.services.b2b_customer_export_service import (  # noqa: E402
     B2B_CUSTOMER_EXPORT_HEADERS,
     NO_REGISTERED_SIGNATURE,
+    b2b_customer_export_headers,
 )
+
+
+REPORT_AT = datetime(2026, 10, 15, 12, 0, tzinfo=timezone(timedelta(hours=-6)))
 
 
 class B2BCustomersExportTests(unittest.TestCase):
@@ -46,6 +56,10 @@ class B2BCustomersExportTests(unittest.TestCase):
 
     def setUp(self) -> None:
         with main.SessionLocal.begin() as db:
+            db.query(B2BARPayment).delete()
+            db.query(B2BSalesOrderLine).delete()
+            db.query(B2BSalesOrder).delete()
+            db.query(B2CSalesOrder).delete()
             db.query(B2BCommercialAgreement).delete()
             db.query(B2BCustomer).delete()
             db.query(Channel).delete()
@@ -111,6 +125,9 @@ class B2BCustomersExportTests(unittest.TestCase):
             )
             db.add_all((signed_then_draft, inactive_customer, generated_only))
             db.flush()
+            self.customer_id = signed_then_draft.id
+            self.inactive_customer_id = inactive_customer.id
+            self.generated_customer_id = generated_only.id
 
             db.add_all(
                 (
@@ -178,16 +195,52 @@ class B2BCustomersExportTests(unittest.TestCase):
         request.state.current_permissions = permission_codes
         return request
 
-    def _export(self, permissions: set[str] | None = None):
-        with main.SessionLocal() as db:
-            response = main.export_b2b_customers_xlsx(
-                request=self._request(permissions or {"sales.view"}),
-                db=db,
-            )
-            self.assertFalse(db.dirty)
-            self.assertFalse(db.new)
-            self.assertFalse(db.deleted)
-            return response
+    @staticmethod
+    def _order(
+        customer_id: int,
+        order_number: str,
+        *,
+        total: str,
+        status: str = "invoiced",
+        invoice_date: date | None = None,
+        invoiced_at: datetime | None = None,
+        delivery_date: date = date(2026, 1, 1),
+        observations: str | None = None,
+        created_at: datetime = datetime(2026, 1, 1, 8, 0),
+    ) -> B2BSalesOrder:
+        return B2BSalesOrder(
+            order_number=order_number,
+            customer_id=customer_id,
+            customer_name_snapshot="Snapshot",
+            delivery_date=delivery_date,
+            status=status,
+            total_amount=Decimal(total),
+            invoice_date=invoice_date,
+            invoiced_at=invoiced_at,
+            observations=observations,
+            created_at=created_at,
+        )
+
+    def _export(
+        self,
+        permissions: set[str] | None = None,
+        *,
+        generated_at: datetime = REPORT_AT,
+    ):
+        with mock.patch.object(
+            main,
+            "current_b2b_customer_export_datetime",
+            return_value=generated_at,
+        ):
+            with main.SessionLocal() as db:
+                response = main.export_b2b_customers_xlsx(
+                    request=self._request(permissions or {"sales.view"}),
+                    db=db,
+                )
+                self.assertFalse(db.dirty)
+                self.assertFalse(db.new)
+                self.assertFalse(db.deleted)
+                return response
 
     @staticmethod
     def _http_get(path: str, token: str) -> tuple[int, dict[str, str], bytes]:
@@ -241,9 +294,10 @@ class B2BCustomersExportTests(unittest.TestCase):
 
         self.assertEqual(
             tuple(cell.value for cell in worksheet[1]),
-            B2B_CUSTOMER_EXPORT_HEADERS,
+            b2b_customer_export_headers(2026),
         )
-        self.assertEqual(worksheet.max_column, 17)
+        self.assertEqual(tuple(cell.value for cell in worksheet[1][:17]), B2B_CUSTOMER_EXPORT_HEADERS)
+        self.assertEqual(worksheet.max_column, 20)
         self.assertEqual(worksheet.max_row, 4)
         rows_by_name = {
             worksheet.cell(row=row_index, column=1).value: row_index
@@ -316,7 +370,7 @@ class B2BCustomersExportTests(unittest.TestCase):
         worksheet = load_workbook(io.BytesIO(response.body))["Clientes B2B"]
 
         self.assertEqual(worksheet.freeze_panes, "A2")
-        self.assertEqual(worksheet.auto_filter.ref, "A1:Q4")
+        self.assertEqual(worksheet.auto_filter.ref, "A1:T4")
         self.assertTrue(worksheet["A1"].font.bold)
         self.assertEqual(
             response.media_type,
@@ -324,7 +378,7 @@ class B2BCustomersExportTests(unittest.TestCase):
         )
         self.assertEqual(
             response.headers["content-disposition"],
-            'attachment; filename="Clientes_B2B.xlsx"',
+            'attachment; filename="Reporte_Clientes_B2B_2026-10-15.xlsx"',
         )
 
     def test_export_requires_sales_view(self) -> None:
@@ -333,17 +387,26 @@ class B2BCustomersExportTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 403)
 
     def test_real_http_route_returns_valid_excel_and_rejects_missing_permission(self) -> None:
-        status_code, headers, body = self._http_get(
-            "/b2b/customers/export.xlsx",
-            self.admin_token,
-        )
+        with mock.patch.object(
+            main,
+            "current_b2b_customer_export_datetime",
+            return_value=REPORT_AT,
+        ):
+            status_code, headers, body = self._http_get(
+                "/b2b/customers/export.xlsx",
+                self.admin_token,
+            )
         self.assertEqual(status_code, 200)
         self.assertEqual(
             headers["content-type"],
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+        self.assertEqual(
+            headers["content-disposition"],
+            'attachment; filename="Reporte_Clientes_B2B_2026-10-15.xlsx"',
+        )
         workbook = load_workbook(io.BytesIO(body))
-        self.assertEqual(workbook["Clientes B2B"].max_column, 17)
+        self.assertEqual(workbook["Clientes B2B"].max_column, 20)
 
         forbidden_status, _forbidden_headers, forbidden_body = self._http_get(
             "/b2b/customers/export.xlsx",
@@ -351,6 +414,301 @@ class B2BCustomersExportTests(unittest.TestCase):
         )
         self.assertEqual(forbidden_status, 403)
         self.assertIn(b"You do not have access to this action", forbidden_body)
+
+    def test_dynamic_year_headers_and_filename_use_costa_rica_time(self) -> None:
+        still_2026_in_costa_rica = datetime(2027, 1, 1, 4, 30, tzinfo=timezone.utc)
+        response_2026 = self._export(generated_at=still_2026_in_costa_rica)
+        worksheet_2026 = load_workbook(io.BytesIO(response_2026.body))["Clientes B2B"]
+        self.assertEqual(worksheet_2026.cell(1, 18).value, "Ventas 2025")
+        self.assertEqual(worksheet_2026.cell(1, 19).value, "Ventas acumuladas 2026")
+        self.assertEqual(
+            response_2026.headers["content-disposition"],
+            'attachment; filename="Reporte_Clientes_B2B_2026-12-31.xlsx"',
+        )
+
+        already_2027_in_costa_rica = datetime(2027, 1, 1, 6, 30, tzinfo=timezone.utc)
+        response_2027 = self._export(generated_at=already_2027_in_costa_rica)
+        worksheet_2027 = load_workbook(io.BytesIO(response_2027.body))["Clientes B2B"]
+        self.assertEqual(worksheet_2027.cell(1, 18).value, "Ventas 2026")
+        self.assertEqual(worksheet_2027.cell(1, 19).value, "Ventas acumuladas 2027")
+
+    def test_sales_use_canonical_invoice_date_precedence(self) -> None:
+        with main.SessionLocal.begin() as db:
+            db.add_all(
+                (
+                    self._order(
+                        self.customer_id,
+                        "DATE-INV-DATE",
+                        total="100",
+                        invoice_date=date(2025, 5, 1),
+                        invoiced_at=datetime(2026, 5, 1, 8, 0),
+                        delivery_date=date(2026, 5, 1),
+                        created_at=datetime(2026, 5, 1, 8, 0),
+                    ),
+                    self._order(
+                        self.customer_id,
+                        "DATE-INVOICED-AT",
+                        total="200",
+                        invoiced_at=datetime(2025, 6, 1, 8, 0),
+                        delivery_date=date(2026, 6, 1),
+                        observations="Historical CSV import 123",
+                        created_at=datetime(2026, 6, 1, 8, 0),
+                    ),
+                    self._order(
+                        self.customer_id,
+                        "DATE-HISTORICAL",
+                        total="300",
+                        delivery_date=date(2026, 7, 1),
+                        observations="Historical CSV import 456",
+                        created_at=datetime(2025, 7, 1, 8, 0),
+                    ),
+                    self._order(
+                        self.customer_id,
+                        "DATE-CREATED",
+                        total="400",
+                        delivery_date=date(2026, 8, 1),
+                        observations="Normal order",
+                        created_at=datetime(2025, 8, 1, 8, 0),
+                    ),
+                )
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 700)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 300)
+        self.assertEqual(
+            self._cell_date(worksheet.cell(customer_row, 20).value),
+            date(2026, 7, 1),
+        )
+
+    def test_only_invoiced_orders_and_no_future_current_year_sales_are_counted(self) -> None:
+        with main.SessionLocal.begin() as db:
+            db.add_all(
+                (
+                    self._order(
+                        self.generated_customer_id,
+                        "STATUS-INVOICED",
+                        total="50",
+                        invoice_date=date(2026, 10, 15),
+                    ),
+                    self._order(
+                        self.generated_customer_id,
+                        "STATUS-DRAFT",
+                        total="100",
+                        status="draft",
+                        invoice_date=date(2026, 10, 15),
+                    ),
+                    self._order(
+                        self.generated_customer_id,
+                        "STATUS-IN-PROCESS",
+                        total="200",
+                        status="in_process",
+                        invoice_date=date(2026, 10, 15),
+                    ),
+                    self._order(
+                        self.generated_customer_id,
+                        "STATUS-CANCELLED",
+                        total="300",
+                        status="cancelled",
+                        invoice_date=date(2026, 10, 15),
+                    ),
+                    self._order(
+                        self.generated_customer_id,
+                        "STATUS-FUTURE",
+                        total="400",
+                        invoice_date=date(2026, 10, 16),
+                    ),
+                )
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente generado")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 50)
+
+    def test_previous_year_uses_complete_calendar_year_and_current_year_is_accumulated(self) -> None:
+        with main.SessionLocal.begin() as db:
+            db.add_all(
+                (
+                    self._order(
+                        self.customer_id,
+                        "BOUNDARY-BEFORE",
+                        total="10",
+                        invoice_date=date(2024, 12, 31),
+                    ),
+                    self._order(
+                        self.customer_id,
+                        "BOUNDARY-PREVIOUS-START",
+                        total="20",
+                        invoice_date=date(2025, 1, 1),
+                    ),
+                    self._order(
+                        self.customer_id,
+                        "BOUNDARY-PREVIOUS-END",
+                        total="30",
+                        invoice_date=date(2025, 12, 31),
+                    ),
+                    self._order(
+                        self.customer_id,
+                        "BOUNDARY-CURRENT-START",
+                        total="40",
+                        invoice_date=date(2026, 1, 1),
+                    ),
+                    self._order(
+                        self.customer_id,
+                        "BOUNDARY-CURRENT-TODAY",
+                        total="50",
+                        invoice_date=date(2026, 10, 15),
+                    ),
+                )
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 50)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 90)
+
+    def test_order_total_is_counted_once_without_b2c_lines_or_payments(self) -> None:
+        with main.SessionLocal.begin() as db:
+            order = self._order(
+                self.customer_id,
+                "NO-DUPLICATION",
+                total="150",
+                invoice_date=date(2026, 4, 1),
+            )
+            db.add(order)
+            db.flush()
+            db.add_all(
+                (
+                    B2BSalesOrderLine(
+                        sales_order_id=order.id,
+                        line_number=1,
+                        sku_snapshot="SKU-1",
+                        description_snapshot="Línea 1",
+                        unit_price_snapshot=Decimal("50"),
+                        quantity=Decimal("1"),
+                        line_total=Decimal("50"),
+                    ),
+                    B2BSalesOrderLine(
+                        sales_order_id=order.id,
+                        line_number=2,
+                        sku_snapshot="SKU-2",
+                        description_snapshot="Línea 2",
+                        unit_price_snapshot=Decimal("100"),
+                        quantity=Decimal("1"),
+                        line_total=Decimal("100"),
+                    ),
+                    B2BARPayment(
+                        sales_order_id=order.id,
+                        payment_date=date(2026, 4, 15),
+                        amount=Decimal("50"),
+                    ),
+                    B2BARPayment(
+                        sales_order_id=order.id,
+                        payment_date=date(2026, 5, 15),
+                        amount=Decimal("100"),
+                    ),
+                    B2CSalesOrder(
+                        order_number="B2C-NOT-INCLUDED",
+                        order_date=date(2026, 4, 1),
+                        channel="Retail",
+                        status="invoiced",
+                        total_amount=Decimal("9999"),
+                    ),
+                )
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 150)
+
+    def test_customer_without_invoiced_sales_has_zero_totals_and_blank_last_date(self) -> None:
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente inactivo")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 0)
+        self.assertIsNone(worksheet.cell(customer_row, 20).value)
+
+    def test_last_invoice_date_uses_full_history_and_excludes_cancelled_orders(self) -> None:
+        with main.SessionLocal.begin() as db:
+            db.add_all(
+                (
+                    self._order(
+                        self.generated_customer_id,
+                        "LAST-HISTORICAL-INVOICED",
+                        total="25",
+                        invoice_date=date(2020, 2, 3),
+                    ),
+                    self._order(
+                        self.generated_customer_id,
+                        "LAST-NEWER-CANCELLED",
+                        total="999",
+                        status="cancelled",
+                        invoice_date=date(2026, 9, 30),
+                    ),
+                )
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente generado")
+        self.assertEqual(worksheet.cell(customer_row, 18).value, 0)
+        self.assertEqual(worksheet.cell(customer_row, 19).value, 0)
+        self.assertEqual(
+            self._cell_date(worksheet.cell(customer_row, 20).value),
+            date(2020, 2, 3),
+        )
+
+    def test_sales_and_last_invoice_cells_have_numeric_and_date_formats(self) -> None:
+        with main.SessionLocal.begin() as db:
+            db.add(
+                self._order(
+                    self.customer_id,
+                    "FORMATTING",
+                    total="1234.50",
+                    invoice_date=date(2026, 3, 4),
+                )
+            )
+
+        worksheet = load_workbook(io.BytesIO(self._export().body))["Clientes B2B"]
+        customer_row = self._row_for_customer(worksheet, "Cliente 001")
+        sales_cell = worksheet.cell(customer_row, 19)
+        last_invoice_cell = worksheet.cell(customer_row, 20)
+        self.assertEqual(sales_cell.data_type, "n")
+        self.assertEqual(sales_cell.number_format, "₡ #,##0.00")
+        self.assertEqual(last_invoice_cell.number_format, "dd/mm/yyyy")
+        self.assertEqual(self._cell_date(last_invoice_cell.value), date(2026, 3, 4))
+
+    def test_sales_are_loaded_with_one_aggregate_query_not_one_query_per_customer(self) -> None:
+        sales_selects: list[str] = []
+
+        def capture_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+            normalized = " ".join(statement.lower().split())
+            if " from b2b_sales_orders" in normalized:
+                sales_selects.append(normalized)
+
+        event.listen(main.engine, "before_cursor_execute", capture_statement)
+        try:
+            self._export()
+        finally:
+            event.remove(main.engine, "before_cursor_execute", capture_statement)
+
+        self.assertEqual(len(sales_selects), 1)
+        self.assertIn("group by b2b_sales_orders.customer_id", sales_selects[0])
+
+    @staticmethod
+    def _row_for_customer(worksheet, customer_name: str) -> int:
+        return next(
+            row_index
+            for row_index in range(2, worksheet.max_row + 1)
+            if worksheet.cell(row=row_index, column=1).value == customer_name
+        )
+
+    @staticmethod
+    def _cell_date(value) -> date | None:
+        if isinstance(value, datetime):
+            return value.date()
+        return value
 
     def test_customer_list_shows_export_button(self) -> None:
         template = Path("app/templates/b2b_customers_list.html").read_text(encoding="utf-8")

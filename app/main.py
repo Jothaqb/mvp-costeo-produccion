@@ -198,7 +198,11 @@ from app.services.b2b_customer_import_service import (
     B2BCustomerImportValidationError,
     import_b2b_customers_csv,
 )
-from app.services.b2b_customer_export_service import build_b2b_customers_export_xlsx
+from app.services.b2b_customer_export_service import (
+    b2b_customer_export_report_date,
+    build_b2b_customers_export_xlsx,
+    current_b2b_customer_export_datetime,
+)
 from app.services.b2b_sales_historical_import_service import (
     B2BHistoricalSalesImportResult,
     B2BHistoricalSalesImportValidationError,
@@ -7413,12 +7417,15 @@ def export_b2b_customers_xlsx(
     db: Session = Depends(get_db),
 ) -> Response:
     require_permission(request, "sales.view")
-    workbook_bytes = build_b2b_customers_export_xlsx(db)
+    generated_at = current_b2b_customer_export_datetime()
+    workbook_bytes = build_b2b_customers_export_xlsx(db, generated_at=generated_at)
+    report_date = b2b_customer_export_report_date(generated_at)
+    filename = f"Reporte_Clientes_B2B_{report_date.isoformat()}.xlsx"
     return Response(
         content=workbook_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": 'attachment; filename="Clientes_B2B.xlsx"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
 
