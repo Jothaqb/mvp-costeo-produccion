@@ -203,6 +203,10 @@ from app.services.b2b_customer_export_service import (
     build_b2b_customers_export_xlsx,
     current_b2b_customer_export_datetime,
 )
+from app.services.b2b_updated_catalog_export_service import (
+    B2BUpdatedCatalogExportError,
+    build_updated_b2b_catalog_xlsx,
+)
 from app.services.b2b_commercial_inactivity_review_service import (
     B2BCommercialInactivityReviewExecutionError,
     B2BCommercialInactivityReviewImportError,
@@ -7613,6 +7617,29 @@ def export_b2b_customers_xlsx(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
+@app.get("/b2b/customers/catalog-updated.xlsx")
+def export_updated_b2b_catalog_xlsx(
+    request: Request,
+    discount_percent: str = Query(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "sales.view")
+    try:
+        workbook_bytes = build_updated_b2b_catalog_xlsx(
+            db,
+            discount_percent=discount_percent,
+        )
+    except B2BUpdatedCatalogExportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=workbook_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="Catalogo_B2B_actualizado.xlsx"',
         },
     )
 

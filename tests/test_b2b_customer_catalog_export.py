@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from fastapi import HTTPException
+from openpyxl import load_workbook
 
 
 _PREVIOUS_DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -18,10 +19,27 @@ os.environ["DATABASE_URL"] = f"sqlite:///{Path(_TEMP_DB.name).as_posix()}"
 
 with mock.patch("zoneinfo.ZoneInfo", return_value=timezone.utc):
     from app import main  # noqa: E402
-from app.models import AppSettings, B2BCustomer, B2BCustomerProduct, Channel, Permission, Role, RolePermission  # noqa: E402
+from app.models import (  # noqa: E402
+    AppSettings,
+    B2BCustomer,
+    B2BCustomerProduct,
+    Channel,
+    Permission,
+    Product,
+    ProductCategory,
+    Role,
+    RolePermission,
+)
 from app.services.b2b_catalog_export_service import (  # noqa: E402
     format_crc_catalog_price,
     safe_b2b_catalog_pdf_filename,
+)
+from app.services.b2b_commercial_inactivity_service import (  # noqa: E402
+    AUTHORIZED_B2B_CHANNEL_NAMES,
+)
+from app.services.b2b_updated_catalog_export_service import (  # noqa: E402
+    MISSING_B2C_PRICE_LABEL,
+    UPDATED_B2B_CATALOG_HEADERS,
 )
 
 
@@ -40,6 +58,8 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             db.query(B2BCustomerProduct).delete()
             db.query(B2BCustomer).delete()
             db.query(Channel).delete()
+            db.query(Product).delete()
+            db.query(ProductCategory).delete()
             db.query(AppSettings).delete()
             channel = Channel(name="Tiendas Naturales (Minisuper)", active=True, applies_to_b2b=True)
             db.add(channel)
@@ -87,6 +107,7 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
                     ),
                 )
             )
+            db.add(Product(sku="A-001", name="Té limón", b2c_price=Decimal("3200.0000")))
 
     def _export_customer(self, customer_id: int):
         with main.SessionLocal() as db, mock.patch.object(main, "require_permission") as permission:
@@ -96,6 +117,23 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
                 db=db,
             )
             permission.assert_called_once_with(mock.ANY, "sales.view")
+            self.assertFalse(db.dirty)
+            self.assertFalse(db.new)
+            self.assertFalse(db.deleted)
+            return response
+
+    def _export_updated_catalog(
+        self,
+        discount_percent: str = "26.8",
+        permission_codes: set[str] | None = None,
+    ):
+        request = self._request_with_permissions(permission_codes or {"sales.view"})
+        with main.SessionLocal() as db:
+            response = main.export_updated_b2b_catalog_xlsx(
+                request=request,
+                discount_percent=discount_percent,
+                db=db,
+            )
             self.assertFalse(db.dirty)
             self.assertFalse(db.new)
             self.assertFalse(db.deleted)
@@ -196,6 +234,219 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         self.assertIn("products/export.csv", catalog)
         self.assertIn("products/export.pdf", catalog)
         self.assertEqual(catalog.count("products/export.pdf"), 1)
+
+    def test_updated_catalog_button_uses_existing_page_and_discount_form(self) -> None:
+        customer_list = Path("app/templates/b2b_customers_list.html").read_text(encoding="utf-8")
+        self.assertIn("Catálogo B2B actualizado", customer_list)
+        self.assertIn('action="/b2b/customers/catalog-updated.xlsx"', customer_list)
+        self.assertIn('name="discount_percent"', customer_list)
+        self.assertIn('min="0"', customer_list)
+        self.assertIn('max="100"', customer_list)
+        self.assertIn("Descargar Excel", customer_list)
+
+    def test_updated_catalog_export_is_unique_scoped_calculated_and_read_only(self) -> None:
+        with main.SessionLocal.begin() as db:
+            category = ProductCategory(name="Infusiones", active=True)
+            second_authorized_channel = Channel(
+                name=AUTHORIZED_B2B_CHANNEL_NAMES[1],
+                active=True,
+                applies_to_b2b=True,
+            )
+            other_channel = Channel(
+                name="Canal fuera del alcance",
+                active=True,
+                applies_to_b2b=True,
+            )
+            db.add_all((category, second_authorized_channel, other_channel))
+            db.flush()
+
+            canonical_product = db.query(Product).filter(Product.sku == "A-001").one()
+            canonical_product.category_id = category.id
+            duplicate_customer = B2BCustomer(
+                customer_name="Cliente autorizado duplicado",
+                channel_id=second_authorized_channel.id,
+                active=True,
+            )
+            inactive_customer = B2BCustomer(
+                customer_name="Cliente autorizado inactivo",
+                channel_id=second_authorized_channel.id,
+                active=False,
+            )
+            other_channel_customer = B2BCustomer(
+                customer_name="Cliente de otro canal",
+                channel_id=other_channel.id,
+                active=True,
+            )
+            db.add_all((duplicate_customer, inactive_customer, other_channel_customer))
+            db.flush()
+
+            db.add_all(
+                (
+                    Product(sku="A-002", name="Producto inactivo", b2c_price=Decimal("900")),
+                    Product(sku="NO-PRICE", name="Producto sin precio", b2c_price=None),
+                    Product(
+                        sku="GLOBAL-INACTIVE",
+                        name="Producto globalmente inactivo",
+                        b2c_price=Decimal("950"),
+                        active=False,
+                    ),
+                    Product(sku="OTHER", name="Producto de otro canal", b2c_price=Decimal("1000")),
+                    Product(
+                        sku="INACTIVE-CUSTOMER",
+                        name="Producto de cliente inactivo",
+                        b2c_price=Decimal("1100"),
+                    ),
+                    B2BCustomerProduct(
+                        customer_id=duplicate_customer.id,
+                        sku="A-001",
+                        description="Té limón duplicado en otro cliente",
+                        distributor_price=Decimal("2000"),
+                        active=True,
+                    ),
+                    B2BCustomerProduct(
+                        customer_id=duplicate_customer.id,
+                        sku="NO-PRICE",
+                        description="Producto sin precio",
+                        distributor_price=Decimal("800"),
+                        active=True,
+                    ),
+                    B2BCustomerProduct(
+                        customer_id=duplicate_customer.id,
+                        sku="GLOBAL-INACTIVE",
+                        description="Producto globalmente inactivo",
+                        distributor_price=Decimal("750"),
+                        active=True,
+                    ),
+                    B2BCustomerProduct(
+                        customer_id=other_channel_customer.id,
+                        sku="OTHER",
+                        description="Producto de otro canal",
+                        distributor_price=Decimal("700"),
+                        active=True,
+                    ),
+                    B2BCustomerProduct(
+                        customer_id=inactive_customer.id,
+                        sku="INACTIVE-CUSTOMER",
+                        description="Producto de cliente inactivo",
+                        distributor_price=Decimal("600"),
+                        active=True,
+                    ),
+                )
+            )
+
+        with main.SessionLocal() as db:
+            product_prices_before = dict(db.query(Product.sku, Product.b2c_price).all())
+            product_states_before = dict(db.query(Product.sku, Product.active).all())
+            catalog_states_before = dict(
+                db.query(B2BCustomerProduct.id, B2BCustomerProduct.active).all()
+            )
+
+        response = self._export_updated_catalog()
+        self.assertEqual(
+            response.media_type,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertEqual(
+            response.headers["content-disposition"],
+            'attachment; filename="Catalogo_B2B_actualizado.xlsx"',
+        )
+        workbook = load_workbook(io.BytesIO(response.body), data_only=False)
+        worksheet = workbook["Catálogo B2B"]
+        self.assertEqual(
+            tuple(cell.value for cell in worksheet[1]),
+            UPDATED_B2B_CATALOG_HEADERS,
+        )
+        self.assertEqual(worksheet.freeze_panes, "A2")
+        self.assertEqual(worksheet.auto_filter.ref, f"A1:F{worksheet.max_row}")
+
+        report_rows = list(worksheet.iter_rows(min_row=2, values_only=True))
+        self.assertEqual([row[0] for row in report_rows].count("A-001"), 1)
+        self.assertEqual([row[0] for row in report_rows], ["A-001", "NO-PRICE"])
+        rows_by_sku = {row[0]: row for row in report_rows}
+        self.assertEqual(set(rows_by_sku), {"A-001", "NO-PRICE"})
+        self.assertEqual(rows_by_sku["A-001"][1], "Té limón")
+        self.assertEqual(rows_by_sku["A-001"][2], "Infusiones")
+        self.assertEqual(rows_by_sku["A-001"][3], 3200)
+        self.assertAlmostEqual(rows_by_sku["A-001"][4], 0.268)
+        self.assertAlmostEqual(rows_by_sku["A-001"][5], 2342.4)
+        self.assertEqual(rows_by_sku["NO-PRICE"][3], MISSING_B2C_PRICE_LABEL)
+        self.assertIsNone(rows_by_sku["NO-PRICE"][5])
+
+        with main.SessionLocal() as db:
+            self.assertEqual(
+                dict(db.query(Product.sku, Product.b2c_price).all()),
+                product_prices_before,
+            )
+            self.assertEqual(
+                dict(db.query(Product.sku, Product.active).all()),
+                product_states_before,
+            )
+            self.assertEqual(
+                dict(db.query(B2BCustomerProduct.id, B2BCustomerProduct.active).all()),
+                catalog_states_before,
+            )
+
+    def test_updated_catalog_rejects_missing_or_ambiguous_canonical_skus(self) -> None:
+        with main.SessionLocal.begin() as db:
+            db.add(
+                B2BCustomerProduct(
+                    customer_id=self.customer_a_id,
+                    sku="MISSING-PRODUCT",
+                    description="Sin producto canónico",
+                    distributor_price=Decimal("1000"),
+                    active=True,
+                )
+            )
+        with self.assertRaises(HTTPException) as missing_error:
+            self._export_updated_catalog()
+        self.assertEqual(missing_error.exception.status_code, 400)
+        self.assertIn("MISSING-PRODUCT", str(missing_error.exception.detail))
+
+        with main.SessionLocal.begin() as db:
+            db.query(B2BCustomerProduct).filter(
+                B2BCustomerProduct.sku == "MISSING-PRODUCT"
+            ).delete()
+            db.add_all(
+                (
+                    Product(sku="Case-SKU", name="Producto A", b2c_price=Decimal("100")),
+                    Product(sku="case-sku", name="Producto B", b2c_price=Decimal("100")),
+                    B2BCustomerProduct(
+                        customer_id=self.customer_a_id,
+                        sku="Case-SKU",
+                        description="Producto A",
+                        distributor_price=Decimal("90"),
+                        active=True,
+                    ),
+                    B2BCustomerProduct(
+                        customer_id=self.customer_a_id,
+                        sku="case-sku",
+                        description="Producto B",
+                        distributor_price=Decimal("90"),
+                        active=True,
+                    ),
+                )
+            )
+        with self.assertRaises(HTTPException) as ambiguous_error:
+            self._export_updated_catalog()
+        self.assertEqual(ambiguous_error.exception.status_code, 400)
+        self.assertIn("ambiguos", str(ambiguous_error.exception.detail))
+
+    def test_updated_catalog_validates_discount_and_requires_sales_view(self) -> None:
+        with self.assertRaises(HTTPException) as invalid_discount:
+            self._export_updated_catalog("100.01")
+        self.assertEqual(invalid_discount.exception.status_code, 400)
+
+        with self.assertRaises(HTTPException) as unauthorized:
+            self._export_updated_catalog("10", {"product.view"})
+        self.assertEqual(unauthorized.exception.status_code, 403)
+
+        self.assertEqual(
+            sum(
+                getattr(route, "path", "") == "/b2b/customers/catalog-updated.xlsx"
+                for route in main.app.routes
+            ),
+            1,
+        )
 
     def test_pdf_endpoint_exists_and_admin_and_sales_manager_can_download(self) -> None:
         self.assertEqual(

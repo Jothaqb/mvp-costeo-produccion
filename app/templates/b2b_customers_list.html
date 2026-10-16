@@ -12,8 +12,51 @@
       {% if can(request, "b2b_commercial_inactivity.download") or can(request, "b2b_commercial_inactivity.validate") %}
         <a class="button" href="/b2b/commercial-inactivity-review">Depurar catálogos</a>
       {% endif %}
+      {% if can(request, "sales.view") %}
+        <button
+          class="button"
+          id="open-updated-b2b-catalog"
+          type="button"
+          aria-controls="updated-b2b-catalog-dialog"
+        >Catálogo B2B actualizado</button>
+      {% endif %}
       <a class="button" href="/b2b/orders">B2B orders</a>
     </section>
+    {% if can(request, "sales.view") %}
+      <dialog id="updated-b2b-catalog-dialog" aria-labelledby="updated-b2b-catalog-title">
+        <form method="get" action="/b2b/customers/catalog-updated.xlsx">
+          <h2 id="updated-b2b-catalog-title">Catálogo B2B actualizado</h2>
+          <p>Aplicá un mismo descuento sobre el precio B2C vigente de todos los productos.</p>
+          <label for="updated-catalog-discount">Descuento sobre precio B2C (%)</label>
+          <input
+            id="updated-catalog-discount"
+            name="discount_percent"
+            type="number"
+            min="0"
+            max="100"
+            step="0.01"
+            inputmode="decimal"
+            required
+          >
+          <section class="actions">
+            <button type="submit">Descargar Excel</button>
+            <button id="close-updated-b2b-catalog" type="button">Cancelar</button>
+          </section>
+        </form>
+      </dialog>
+      <script>
+        (() => {
+          const dialog = document.getElementById("updated-b2b-catalog-dialog");
+          const openButton = document.getElementById("open-updated-b2b-catalog");
+          const closeButton = document.getElementById("close-updated-b2b-catalog");
+          if (!dialog || !openButton || !closeButton) {
+            return;
+          }
+          openButton.addEventListener("click", () => dialog.showModal());
+          closeButton.addEventListener("click", () => dialog.close());
+        })();
+      </script>
+    {% endif %}
     <form method="get" action="/b2b/customers">
       <label for="q">Search customer name, legal name, ID or phone</label>
       <input id="q" name="q" value="{{ filters.q }}" placeholder="Search customer name, legal name, ID or phone">
