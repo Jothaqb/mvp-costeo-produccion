@@ -39,6 +39,7 @@ from app.services.b2b_commercial_inactivity_service import (  # noqa: E402
     AUTHORIZED_B2B_CHANNEL_NAMES,
 )
 from app.services.b2b_updated_catalog_export_service import (  # noqa: E402
+    EXCLUDED_SERVICE_SKUS,
     MISSING_B2C_PRICE_LABEL,
     PRODUCT_SCOPE_ALL,
     PRODUCT_SCOPE_BULK,
@@ -422,7 +423,7 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
                 catalog_states_before,
             )
 
-    def test_updated_catalog_filters_packaged_bulk_and_reports_unclassified(self) -> None:
+    def test_updated_catalog_filters_packaged_bulk_and_excludes_shipping_services(self) -> None:
         with main.SessionLocal.begin() as db:
             packaging_route = Route(
                 code="R-PACKAGING-TEST",
@@ -461,15 +462,25 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
                     is_purchased_product=True,
                 ),
                 Product(
-                    sku="UNCLASSIFIED",
-                    name="Producto sin clasificación",
+                    sku="MANUFACTURED-NO-ROUTE",
+                    name="Producto fabricado sin ruta",
                     b2c_price=Decimal("1600"),
+                    is_manufactured=True,
                 ),
-                Product(
-                    sku="SHIPPING",
-                    name="Envío",
-                    b2c_price=Decimal("1800"),
-                    is_purchased_product=True,
+                *(
+                    Product(
+                        sku=sku,
+                        name=f"Servicio de envío {index}",
+                        b2c_price=Decimal("1800"),
+                        default_route_id=(
+                            packaging_route.id
+                            if index == 1
+                            else bulk_route.id if index == 2 else None
+                        ),
+                        is_manufactured=index == 4,
+                        is_purchased_product=index == 3,
+                    )
+                    for index, sku in enumerate(sorted(EXCLUDED_SERVICE_SKUS), start=1)
                 ),
             )
             db.add_all(products)
@@ -503,7 +514,10 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             row[0]
             for row in bulk_workbook["Catálogo B2B"].iter_rows(min_row=2, values_only=True)
         }
-        self.assertEqual(bulk_skus, set())
+        self.assertEqual(
+            bulk_skus,
+            {"BULK-ROUTE", "BULK-PURCHASED", "MANUFACTURED-NO-ROUTE"},
+        )
 
         all_workbook = load_workbook(
             io.BytesIO(self._export_updated_catalog(product_scope=PRODUCT_SCOPE_ALL).body),
@@ -515,22 +529,27 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         }
         self.assertEqual(
             all_skus,
-            {"A-001", "PACKAGED"},
+            {
+                "A-001",
+                "PACKAGED",
+                "BULK-ROUTE",
+                "BULK-PURCHASED",
+                "MANUFACTURED-NO-ROUTE",
+            },
         )
         review_worksheet = all_workbook["Revisión"]
         self.assertEqual(tuple(cell.value for cell in review_worksheet[1]), REVIEW_HEADERS)
         review_skus = {
             row[0] for row in review_worksheet.iter_rows(min_row=2, values_only=True)
         }
-        self.assertEqual(
-            review_skus,
-            {"BULK-ROUTE", "BULK-PURCHASED", "UNCLASSIFIED", "SHIPPING"},
-        )
-        self.assertNotIn("BULK-ROUTE", all_skus)
-        self.assertNotIn("BULK-PURCHASED", all_skus)
-        self.assertNotIn("SHIPPING", all_skus)
+        self.assertEqual(review_skus, set())
+        for excluded_sku in EXCLUDED_SERVICE_SKUS:
+            self.assertNotIn(excluded_sku, packaged_skus)
+            self.assertNotIn(excluded_sku, bulk_skus)
+            self.assertNotIn(excluded_sku, all_skus)
+            self.assertNotIn(excluded_sku, review_skus)
 
-    def test_non_packaging_route_is_not_assumed_to_be_bulk(self) -> None:
+    def test_non_packaging_route_is_classified_as_bulk(self) -> None:
         with main.SessionLocal.begin() as db:
             sterilized_jars_route = Route(
                 code="R ESTERILIZADO FRASCOS",
@@ -560,7 +579,7 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
             )
 
         workbook = load_workbook(
-            io.BytesIO(self._export_updated_catalog(product_scope=PRODUCT_SCOPE_ALL).body),
+            io.BytesIO(self._export_updated_catalog(product_scope=PRODUCT_SCOPE_BULK).body),
             data_only=False,
         )
         catalog_skus = {
@@ -570,8 +589,8 @@ class B2BCustomerCatalogExportTests(unittest.TestCase):
         review_skus = {
             row[0] for row in workbook["Revisión"].iter_rows(min_row=2, values_only=True)
         }
-        self.assertNotIn("STERILIZED-JARS", catalog_skus)
-        self.assertIn("STERILIZED-JARS", review_skus)
+        self.assertIn("STERILIZED-JARS", catalog_skus)
+        self.assertNotIn("STERILIZED-JARS", review_skus)
 
     def test_updated_catalog_rejects_missing_or_ambiguous_canonical_skus(self) -> None:
         with main.SessionLocal.begin() as db:
