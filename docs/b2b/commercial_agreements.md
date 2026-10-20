@@ -68,6 +68,16 @@ La generación usa ReportLab en tamaño carta vertical. El documento contiene en
 
 Solo un acuerdo `draft` completo puede generar PDF. Una vez en estado `generated`, no puede editarse ni regenerarse; los estados `signed` y `archived` también conservan la descarga del PDF original. Un cambio futuro deberá crear una nueva versión.
 
+### Reapertura administrativa para corregir datos
+
+Un acuerdo `generated` que nunca fue firmado ni archivado puede reabrirse para corregir errores del documento original sin crear una nueva versión comercial. La acción requiere `b2b_commercial_agreement.sign_archive`, motivo obligatorio, confirmación expresa de ausencia de firma, CSRF, validación same-origin, fingerprint y bloqueo transaccional.
+
+Antes de volver el acuerdo a `draft`, el sistema verifica el encabezado `%PDF` y el SHA-256 del documento activo y copia sus bytes y metadatos a `b2b_commercial_agreement_invalidated_pdfs`. Ese respaldo es inmutable desde la aplicación, se identifica como documento invalidado y solo puede descargarse con el permiso sensible anterior. El estado, archivo histórico, auditoría y limpieza de referencias del PDF activo se confirman en una sola transacción; cualquier error provoca rollback completo.
+
+El acuerdo conserva su `version_number` y todas sus condiciones contractuales. Después de reabrirlo se utiliza la sincronización individual existente para copiar los snapshots vigentes del cliente, y luego el flujo normal de generación crea el PDF corregido. Los acuerdos `signed`, `archived` o con cualquier metadato de firma o archivo nunca son elegibles.
+
+La tabla histórica es un modelo normal de SQLAlchemy registrado antes de `Base.metadata.create_all()`. Su creación usa el mecanismo idempotente existente tanto en PostgreSQL como en SQLite y no requiere SQL manual en Render.
+
 El PDF no consulta productos, no incorpora SKUs, precios de productos, catálogo ni Anexo 1. Únicamente conserva la referencia textual al catálogo comercial vigente adjunto.
 
 ## Auditoría

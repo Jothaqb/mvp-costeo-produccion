@@ -15,6 +15,37 @@
       {% endif %}
     </section>
 
+    {% if correction_reopen_preview and can(request, "b2b_commercial_agreement.sign_archive") %}
+      <details style="margin:1rem 0">
+        <summary class="button">Reabrir para corregir datos</summary>
+        <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/reopen-for-correction" style="margin-top:1rem">
+          <input type="hidden" name="csrf_token" value="{{ correction_reopen_csrf_token }}">
+          <input type="hidden" name="fingerprint" value="{{ correction_reopen_preview.fingerprint }}">
+          <input type="hidden" name="confirmation_token" value="{{ correction_reopen_confirmation_token }}">
+          <p><strong>Advertencia:</strong> esta acción invalida administrativamente el PDF actual, conserva una copia histórica y devuelve el mismo acuerdo a borrador. No crea una nueva versión comercial.</p>
+          <label for="correction_reason">Motivo de corrección</label>
+          <textarea id="correction_reason" name="correction_reason" maxlength="2000" required></textarea>
+          <label class="checkbox-label">
+            <input type="checkbox" name="confirm_never_signed" value="yes" required>
+            Confirmo que este documento nunca fue firmado, ni física ni electrónicamente.
+          </label>
+          <button type="submit">Confirmar reapertura para corrección</button>
+        </form>
+      </details>
+    {% endif %}
+
+    {% if agreement.invalidated_pdf_documents and can(request, "b2b_commercial_agreement.sign_archive") %}
+      <h2>Documentos invalidados</h2>
+      <ul>
+        {% for document in agreement.invalidated_pdf_documents %}
+          <li>
+            <strong>Documento invalidado</strong> — {{ document.invalidated_at }} — {{ document.invalidation_reason }}
+            <a href="/b2b/commercial-agreements/{{ agreement.id }}/invalidated-pdfs/{{ document.id }}/download">Descargar respaldo</a>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
     <h2>Información del cliente</h2>
     <dl>
       <dt>Nombre comercial</dt><dd>{{ agreement.customer_name_snapshot or "" }}</dd>

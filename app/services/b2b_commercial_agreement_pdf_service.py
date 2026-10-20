@@ -222,6 +222,19 @@ def generate_and_store_b2b_commercial_agreement_pdf(
         raise B2BCommercialAgreementValidationError(
             "Solo los acuerdos comerciales en estado draft pueden generar el PDF."
         )
+    if any(
+        value is not None
+        for value in (
+            agreement.generated_pdf_bytes,
+            agreement.generated_pdf_filename,
+            agreement.generated_pdf_sha256,
+            agreement.generated_at,
+            agreement.generated_by_user_id,
+        )
+    ):
+        raise B2BCommercialAgreementValidationError(
+            "El borrador conserva referencias de un PDF activo y no puede sobrescribirse."
+        )
 
     missing_fields = validate_commercial_agreement(agreement)
     if missing_fields:

@@ -1,6 +1,6 @@
 import hashlib
 import unittest
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 from sqlalchemy import create_engine, event
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.schema import CreateTable
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -19,6 +20,7 @@ from app.models import (
     B2BAROpeningBalance,
     B2BARPayment,
     B2BCommercialAgreement,
+    B2BCommercialAgreementInvalidatedPDF,
     B2BCommercialAgreementPerson,
     B2BCommercialAgreementSection,
     B2BCustomer,
@@ -30,9 +32,12 @@ from app.models import (
     Permission,
     Role,
     RolePermission,
+    User,
 )
 from app.services.auth_service import ensure_auth_seed_state, require_permission
 from app.services.b2b_commercial_agreement_service import (
+    B2BCommercialAgreementCorrectionSecurityError,
+    B2BCommercialAgreementCorrectionStaleError,
     B2BCommercialAgreementCustomerSyncSecurityError,
     B2BCommercialAgreementCustomerSyncStaleError,
     B2BCommercialAgreementValidationError,
@@ -40,6 +45,8 @@ from app.services.b2b_commercial_agreement_service import (
     DEFAULT_AGREEMENT_SECTION_TEXTS,
     PAYMENT_TERM_OPTIONS,
     USUAL_DELIVERY_TYPE_OPTIONS,
+    build_commercial_agreement_correction_reopen_confirmation_token,
+    build_commercial_agreement_correction_reopen_csrf_token,
     build_commercial_agreement_customer_sync_confirmation_token,
     build_commercial_agreement_customer_sync_csrf_token,
     create_commercial_agreement_draft,
@@ -48,14 +55,19 @@ from app.services.b2b_commercial_agreement_service import (
     find_missing_template_variables,
     format_person_contact_info,
     get_commercial_agreement,
+    get_invalidated_commercial_agreement_pdf,
     normalize_payment_terms,
     parse_person_contact_info,
     preview_all_draft_commercial_agreement_customer_sync,
+    preview_commercial_agreement_correction_reopen,
     preview_commercial_agreement_customer_sync,
     render_agreement_template_text,
     reset_commercial_agreement_sections_to_template,
+    reopen_commercial_agreement_for_correction,
     sync_commercial_agreement_payment_terms_from_customer,
     update_commercial_agreement_draft,
+    validate_commercial_agreement_correction_reopen_confirmation_token,
+    validate_commercial_agreement_correction_reopen_csrf_token,
     validate_commercial_agreement_customer_sync_confirmation_token,
     validate_commercial_agreement_customer_sync_csrf_token,
     validate_commercial_agreement,
@@ -104,6 +116,16 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             db.add(customer)
             db.flush()
             self.customer_id = customer.id
+            user = User(
+                username="agreement-admin",
+                full_name="Agreement Admin",
+                email="agreement-admin@example.com",
+                password_hash="test-only",
+                is_active=True,
+            )
+            db.add(user)
+            db.flush()
+            self.user_id = user.id
 
     def tearDown(self) -> None:
         Base.metadata.drop_all(self.engine)
@@ -591,7 +613,7 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertEqual(
             service_source.count(".with_for_update(of=B2BCommercialAgreement)"),
-            2,
+            3,
         )
 
     def test_bulk_customer_sync_rolls_back_changes_when_audit_write_fails(self) -> None:
@@ -1435,6 +1457,409 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             self.assertIsNone(unchanged.generated_at)
             self.assertIsNone(unchanged.generated_by_user_id)
 
+    def test_generated_agreement_can_be_reopened_with_immutable_pdf_backup(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            original_terms = agreement.payment_terms
+            original_discount = agreement.b2b_discount_percent
+            original_people = tuple(
+                (person.authorization_type, person.name)
+                for person in agreement.authorized_people
+            )
+            original_pdf = b"%PDF-original-generated-document"
+            generated = generate_and_store_b2b_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                user_id=self.user_id,
+                pdf_builder=mock.Mock(return_value=original_pdf),
+            )
+            original_hash = generated.generated_pdf_sha256
+            original_filename = generated.generated_pdf_filename
+            original_generated_at = generated.generated_at
+
+            other_customer = B2BCustomer(
+                customer_name="Cliente no relacionado",
+                credit_days=0,
+                channel_id=generated.customer.channel_id,
+                active=True,
+            )
+            db.add(other_customer)
+            db.flush()
+            other_pdf = b"%PDF-other-agreement"
+            other_agreement = B2BCommercialAgreement(
+                customer_id=other_customer.id,
+                version_number=0,
+                status="generated",
+                customer_name_snapshot=other_customer.customer_name,
+                credit_days_snapshot=0,
+                customer_active_snapshot=True,
+                template_revision="test",
+                generated_pdf_bytes=other_pdf,
+                generated_pdf_filename="other.pdf",
+                generated_pdf_sha256=hashlib.sha256(other_pdf).hexdigest(),
+                generated_at=datetime(2026, 10, 20, 10, 0),
+                generated_by_user_id=self.user_id,
+            )
+            db.add(other_agreement)
+            db.commit()
+
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.legal_name = "Razón Social Corregida S.A."
+            customer.legal_id = "3-101-999999"
+            db.commit()
+
+            preview = preview_commercial_agreement_correction_reopen(
+                db,
+                agreement.id,
+            )
+            result = reopen_commercial_agreement_for_correction(
+                db,
+                agreement_id=agreement.id,
+                expected_fingerprint=preview.fingerprint,
+                reason="Razón social y cédula incorrectas en el documento original.",
+                confirmed_never_signed=True,
+                user_id=self.user_id,
+                username="agreement-admin",
+                request_path=f"/b2b/commercial-agreements/{agreement.id}/reopen-for-correction",
+            )
+
+            reopened = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(reopened.status, "draft")
+            self.assertEqual(reopened.version_number, 0)
+            self.assertIsNone(reopened.generated_pdf_bytes)
+            self.assertIsNone(reopened.generated_pdf_filename)
+            self.assertIsNone(reopened.generated_pdf_sha256)
+            self.assertIsNone(reopened.generated_at)
+            self.assertIsNone(reopened.generated_by_user_id)
+            self.assertEqual(reopened.payment_terms, original_terms)
+            self.assertEqual(reopened.b2b_discount_percent, original_discount)
+            self.assertEqual(
+                tuple(
+                    (person.authorization_type, person.name)
+                    for person in reopened.authorized_people
+                ),
+                original_people,
+            )
+
+            document = db.get(
+                B2BCommercialAgreementInvalidatedPDF,
+                result.invalidated_pdf_id,
+            )
+            self.assertEqual(document.agreement_id, agreement.id)
+            self.assertEqual(document.pdf_bytes, original_pdf)
+            self.assertEqual(document.sha256, original_hash)
+            self.assertEqual(document.filename, original_filename)
+            self.assertEqual(document.generated_at, original_generated_at)
+            self.assertEqual(document.generated_by_user_id, self.user_id)
+            self.assertEqual(document.invalidated_by_user_id, self.user_id)
+            unchanged_other = db.get(B2BCommercialAgreement, other_agreement.id)
+            self.assertEqual(unchanged_other.status, "generated")
+            self.assertEqual(unchanged_other.generated_pdf_bytes, other_pdf)
+            archived_bytes, archived_filename = get_invalidated_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                document_id=document.id,
+            )
+            self.assertEqual(archived_bytes, original_pdf)
+            self.assertIn("Documento_invalidado", archived_filename)
+
+            sync_preview = preview_commercial_agreement_customer_sync(db, agreement.id)
+            execute_commercial_agreement_customer_sync(
+                db,
+                agreement_id=agreement.id,
+                expected_fingerprint=sync_preview.fingerprint,
+                user_id=self.user_id,
+                username="agreement-admin",
+            )
+            synced = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(synced.legal_name_snapshot, "Razón Social Corregida S.A.")
+            self.assertEqual(synced.legal_id_snapshot, "3-101-999999")
+            self.assertEqual(synced.payment_terms, original_terms)
+            self.assertEqual(synced.b2b_discount_percent, original_discount)
+
+            corrected_pdf = b"%PDF-corrected-document"
+
+            def build_corrected_pdf(pdf_agreement, *, logo_bytes=None):
+                self.assertEqual(
+                    pdf_agreement.legal_name_snapshot,
+                    "Razón Social Corregida S.A.",
+                )
+                self.assertEqual(pdf_agreement.legal_id_snapshot, "3-101-999999")
+                return corrected_pdf
+
+            corrected = generate_and_store_b2b_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                user_id=self.user_id,
+                pdf_builder=build_corrected_pdf,
+            )
+            self.assertEqual(corrected.status, "generated")
+            self.assertEqual(corrected.version_number, 0)
+            self.assertEqual(corrected.generated_pdf_bytes, corrected_pdf)
+            preserved_document = db.get(
+                B2BCommercialAgreementInvalidatedPDF,
+                document.id,
+            )
+            self.assertEqual(preserved_document.pdf_bytes, original_pdf)
+            self.assertEqual(preserved_document.sha256, original_hash)
+            audit = (
+                db.query(AuditLog)
+                .filter(
+                    AuditLog.action
+                    == "commercial_agreement_generated_document_invalidated"
+                )
+                .one()
+            )
+            self.assertIn(str(document.id), audit.new_values)
+            self.assertIn("confirmed_never_signed", audit.notes)
+
+    def test_correction_reopen_requires_reason_confirmation_and_valid_state(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            generated = generate_and_store_b2b_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                user_id=self.user_id,
+                pdf_builder=mock.Mock(return_value=b"%PDF-original"),
+            )
+            preview = preview_commercial_agreement_correction_reopen(db, generated.id)
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "motivo",
+            ):
+                reopen_commercial_agreement_for_correction(
+                    db,
+                    agreement_id=generated.id,
+                    expected_fingerprint=preview.fingerprint,
+                    reason="",
+                    confirmed_never_signed=True,
+                    user_id=self.user_id,
+                    username="agreement-admin",
+                )
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "nunca fue firmado",
+            ):
+                reopen_commercial_agreement_for_correction(
+                    db,
+                    agreement_id=generated.id,
+                    expected_fingerprint=preview.fingerprint,
+                    reason="Corrección documental",
+                    confirmed_never_signed=False,
+                    user_id=self.user_id,
+                    username="agreement-admin",
+                )
+
+            for status in ("signed", "archived"):
+                generated.status = status
+                db.commit()
+                with self.subTest(status=status), self.assertRaises(
+                    B2BCommercialAgreementValidationError
+                ):
+                    preview_commercial_agreement_correction_reopen(db, generated.id)
+            generated.status = "generated"
+            generated.signed_at = datetime(2026, 10, 20, 12, 0)
+            db.commit()
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "firma o archivo",
+            ):
+                preview_commercial_agreement_correction_reopen(db, generated.id)
+            generated.signed_at = None
+            generated.archived_by_user_id = self.user_id
+            db.commit()
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "firma o archivo",
+            ):
+                preview_commercial_agreement_correction_reopen(db, generated.id)
+
+    def test_correction_reopen_rejects_stale_and_repeated_confirmation(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            generated = generate_and_store_b2b_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                user_id=self.user_id,
+                pdf_builder=mock.Mock(return_value=b"%PDF-original"),
+            )
+            stale_preview = preview_commercial_agreement_correction_reopen(db, generated.id)
+            generated.generated_pdf_filename = "changed-after-preview.pdf"
+            db.commit()
+            with self.assertRaises(B2BCommercialAgreementCorrectionStaleError):
+                reopen_commercial_agreement_for_correction(
+                    db,
+                    agreement_id=generated.id,
+                    expected_fingerprint=stale_preview.fingerprint,
+                    reason="Corrección documental",
+                    confirmed_never_signed=True,
+                    user_id=self.user_id,
+                    username="agreement-admin",
+                )
+            self.assertEqual(
+                db.query(B2BCommercialAgreementInvalidatedPDF).count(),
+                0,
+            )
+
+            fresh_preview = preview_commercial_agreement_correction_reopen(db, generated.id)
+            reopen_commercial_agreement_for_correction(
+                db,
+                agreement_id=generated.id,
+                expected_fingerprint=fresh_preview.fingerprint,
+                reason="Corrección documental",
+                confirmed_never_signed=True,
+                user_id=self.user_id,
+                username="agreement-admin",
+            )
+            with self.assertRaises(B2BCommercialAgreementValidationError):
+                reopen_commercial_agreement_for_correction(
+                    db,
+                    agreement_id=generated.id,
+                    expected_fingerprint=fresh_preview.fingerprint,
+                    reason="Intento repetido",
+                    confirmed_never_signed=True,
+                    user_id=self.user_id,
+                    username="agreement-admin",
+                )
+            self.assertEqual(
+                db.query(B2BCommercialAgreementInvalidatedPDF).count(),
+                1,
+            )
+
+    def test_correction_reopen_rejects_pdf_with_invalid_hash(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            generated = generate_and_store_b2b_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                user_id=self.user_id,
+                pdf_builder=mock.Mock(return_value=b"%PDF-original"),
+            )
+            generated.generated_pdf_sha256 = "0" * 64
+            db.commit()
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "no puede archivarse",
+            ):
+                preview_commercial_agreement_correction_reopen(db, generated.id)
+            self.assertEqual(
+                db.query(B2BCommercialAgreementInvalidatedPDF).count(),
+                0,
+            )
+
+    def test_correction_reopen_rolls_back_document_status_and_audit(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            original_pdf = b"%PDF-original"
+            generated = generate_and_store_b2b_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                user_id=self.user_id,
+                pdf_builder=mock.Mock(return_value=original_pdf),
+            )
+            preview = preview_commercial_agreement_correction_reopen(db, generated.id)
+
+            def fail_audit_flush(session, _flush_context, _instances) -> None:
+                if any(
+                    isinstance(item, AuditLog)
+                    and item.action
+                    == "commercial_agreement_generated_document_invalidated"
+                    for item in session.new
+                ):
+                    raise RuntimeError("audit failed")
+
+            event.listen(db, "before_flush", fail_audit_flush)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "audit failed"):
+                    reopen_commercial_agreement_for_correction(
+                        db,
+                        agreement_id=generated.id,
+                        expected_fingerprint=preview.fingerprint,
+                        reason="Corrección documental",
+                        confirmed_never_signed=True,
+                        user_id=self.user_id,
+                        username="agreement-admin",
+                    )
+            finally:
+                event.remove(db, "before_flush", fail_audit_flush)
+
+            db.expire_all()
+            unchanged = get_commercial_agreement(db, generated.id)
+            self.assertEqual(unchanged.status, "generated")
+            self.assertEqual(unchanged.generated_pdf_bytes, original_pdf)
+            self.assertEqual(
+                db.query(B2BCommercialAgreementInvalidatedPDF).count(),
+                0,
+            )
+            self.assertEqual(db.query(AuditLog).count(), 0)
+
+    def test_correction_tokens_are_session_bound(self) -> None:
+        fingerprint = "a" * 64
+        csrf_token = build_commercial_agreement_correction_reopen_csrf_token(
+            "session-a"
+        )
+        validate_commercial_agreement_correction_reopen_csrf_token(
+            "session-a",
+            csrf_token,
+        )
+        with self.assertRaises(B2BCommercialAgreementCorrectionSecurityError):
+            validate_commercial_agreement_correction_reopen_csrf_token(
+                "session-b",
+                csrf_token,
+            )
+        confirmation_token = (
+            build_commercial_agreement_correction_reopen_confirmation_token(
+                "session-a",
+                agreement_id=17,
+                fingerprint=fingerprint,
+            )
+        )
+        validate_commercial_agreement_correction_reopen_confirmation_token(
+            "session-a",
+            confirmation_token,
+            agreement_id=17,
+            fingerprint=fingerprint,
+        )
+        with self.assertRaises(B2BCommercialAgreementCorrectionSecurityError):
+            validate_commercial_agreement_correction_reopen_confirmation_token(
+                "session-a",
+                confirmation_token,
+                agreement_id=18,
+                fingerprint=fingerprint,
+            )
+
+    def test_invalidated_pdf_table_is_idempotent_and_postgresql_compatible(self) -> None:
+        table = Base.metadata.tables[
+            "b2b_commercial_agreement_invalidated_pdfs"
+        ]
+        ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
+        self.assertIn("CREATE TABLE b2b_commercial_agreement_invalidated_pdfs", ddl)
+        self.assertIn("pdf_bytes BYTEA NOT NULL", ddl)
+        self.assertIn("REFERENCES b2b_commercial_agreements", ddl)
+        self.assertIn("REFERENCES users", ddl)
+        table.create(bind=self.engine, checkfirst=True)
+        table.create(bind=self.engine, checkfirst=True)
+
+    def test_draft_with_active_pdf_references_cannot_overwrite_document(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            agreement.generated_pdf_bytes = b"%PDF-orphan"
+            agreement.generated_pdf_filename = "orphan.pdf"
+            agreement.generated_pdf_sha256 = hashlib.sha256(
+                agreement.generated_pdf_bytes
+            ).hexdigest()
+            db.commit()
+            with self.assertRaisesRegex(
+                B2BCommercialAgreementValidationError,
+                "no puede sobrescribirse",
+            ):
+                generate_and_store_b2b_commercial_agreement_pdf(
+                    db,
+                    agreement_id=agreement.id,
+                    user_id=self.user_id,
+                    pdf_builder=mock.Mock(return_value=b"%PDF-new"),
+                )
+
     def test_pdf_generation_does_not_query_products_catalog_or_restricted_tables(self) -> None:
         statements: list[str] = []
 
@@ -1538,8 +1963,64 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             main_source,
         )
 
+    def test_correction_reopen_routes_and_form_require_backend_security(self) -> None:
+        main_source = Path("app/main.py").read_text(encoding="utf-8")
+        detail_template = Path(
+            "app/templates/b2b_commercial_agreement_detail.html"
+        ).read_text(encoding="utf-8")
+        route_body = main_source.split(
+            "async def reopen_b2b_commercial_agreement_for_correction", 1
+        )[1].split("\n\n@app.", 1)[0]
+        self.assertIn(
+            '"b2b_commercial_agreement.sign_archive"',
+            route_body,
+        )
+        self.assertIn(
+            "_validate_b2b_commercial_agreement_correction_request",
+            route_body,
+        )
+        self.assertIn(
+            "validate_commercial_agreement_correction_reopen_confirmation_token",
+            route_body,
+        )
+        security_helper = main_source.split(
+            "def _validate_b2b_commercial_agreement_correction_request", 1
+        )[1].split("\n\ndef ", 1)[0]
+        self.assertIn(
+            "validate_commercial_agreement_correction_reopen_csrf_token",
+            security_helper,
+        )
+        self.assertIn("validate_role_permissions_request_origin", security_helper)
+        download_body = main_source.split(
+            "def download_invalidated_b2b_commercial_agreement_pdf", 1
+        )[1].split("\n\n@app.", 1)[0]
+        self.assertIn(
+            'require_permission(request, "b2b_commercial_agreement.sign_archive")',
+            download_body,
+        )
+        self.assertIn("Reabrir para corregir datos", detail_template)
+        self.assertIn('name="csrf_token"', detail_template)
+        self.assertIn('name="fingerprint"', detail_template)
+        self.assertIn('name="confirmation_token"', detail_template)
+        self.assertIn('name="correction_reason"', detail_template)
+        self.assertIn('name="confirm_never_signed"', detail_template)
+        self.assertIn("Documento invalidado", detail_template)
+        request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+        request.state.current_user = SimpleNamespace(id=123)
+        request.state.current_permissions = set()
+        with self.assertRaises(HTTPException) as raised:
+            require_permission(
+                request,
+                "b2b_commercial_agreement.sign_archive",
+            )
+        self.assertEqual(raised.exception.status_code, 403)
+
     def test_schema_constraints_and_relationships_exist(self) -> None:
         self.assertIn("b2b_commercial_agreements", Base.metadata.tables)
+        self.assertIn(
+            "b2b_commercial_agreement_invalidated_pdfs",
+            Base.metadata.tables,
+        )
         self.assertIn("b2b_commercial_agreement_people", Base.metadata.tables)
         self.assertIn("b2b_commercial_agreement_sections", Base.metadata.tables)
         with self.Session() as db:

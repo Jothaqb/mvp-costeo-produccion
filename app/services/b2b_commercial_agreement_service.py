@@ -5,7 +5,7 @@ import hmac
 import json
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 from app.models import (
     AuditLog,
     B2BCommercialAgreement,
+    B2BCommercialAgreementInvalidatedPDF,
     B2BCommercialAgreementPerson,
     B2BCommercialAgreementSection,
     B2BCustomer,
@@ -44,6 +45,8 @@ CUSTOMER_SYNC_PRESERVED_FIELDS = (
 )
 _CUSTOMER_SYNC_CSRF_PURPOSE = b"b2b-commercial-agreement-customer-sync-csrf-v1"
 _CUSTOMER_SYNC_CONFIRM_PURPOSE = b"b2b-commercial-agreement-customer-sync-confirm-v1"
+_CORRECTION_REOPEN_CSRF_PURPOSE = b"b2b-commercial-agreement-correction-reopen-csrf-v1"
+_CORRECTION_REOPEN_CONFIRM_PURPOSE = b"b2b-commercial-agreement-correction-reopen-confirm-v1"
 _CUSTOMER_SNAPSHOT_FIELDS = (
     ("customer_name_snapshot", "Nombre comercial", "customer_name"),
     ("legal_name_snapshot", "Razón social", "legal_name"),
@@ -291,6 +294,16 @@ class B2BCommercialAgreementCustomerSyncStaleError(
     pass
 
 
+class B2BCommercialAgreementCorrectionSecurityError(Exception):
+    pass
+
+
+class B2BCommercialAgreementCorrectionStaleError(
+    B2BCommercialAgreementValidationError
+):
+    pass
+
+
 @dataclass(frozen=True)
 class AgreementCustomerSyncChange:
     field_name: str
@@ -329,6 +342,21 @@ class AgreementCustomerSyncResult:
     reviewed_count: int
     updated_count: int
     updated_agreement_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class AgreementCorrectionReopenPreview:
+    agreement_id: int
+    customer_id: int
+    customer_name: str
+    version_number: int
+    fingerprint: str
+
+
+@dataclass(frozen=True)
+class AgreementCorrectionReopenResult:
+    agreement_id: int
+    invalidated_pdf_id: int
 
 
 def _base_section_text(section_key: str) -> str:
@@ -467,6 +495,7 @@ def get_commercial_agreement(db: Session, agreement_id: int) -> B2BCommercialAgr
             ),
             selectinload(B2BCommercialAgreement.authorized_people),
             selectinload(B2BCommercialAgreement.sections),
+            selectinload(B2BCommercialAgreement.invalidated_pdf_documents),
         )
         .populate_existing()
         .filter(B2BCommercialAgreement.id == agreement_id)
@@ -551,6 +580,300 @@ def validate_commercial_agreement_customer_sync_confirmation_token(
         raise B2BCommercialAgreementCustomerSyncSecurityError(
             "La confirmación no corresponde a esta sesión o vista previa."
         )
+
+
+def build_commercial_agreement_correction_reopen_csrf_token(
+    session_token: str | None,
+) -> str:
+    normalized_session_token = (session_token or "").strip()
+    if not normalized_session_token:
+        raise B2BCommercialAgreementCorrectionSecurityError(
+            "No hay una sesión válida para generar la protección CSRF."
+        )
+    return hmac.new(
+        normalized_session_token.encode("utf-8"),
+        _CORRECTION_REOPEN_CSRF_PURPOSE,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def validate_commercial_agreement_correction_reopen_csrf_token(
+    session_token: str | None,
+    submitted_token: str | None,
+) -> None:
+    normalized_submitted_token = (submitted_token or "").strip()
+    if not normalized_submitted_token:
+        raise B2BCommercialAgreementCorrectionSecurityError(
+            "Falta el token CSRF del formulario."
+        )
+    expected_token = build_commercial_agreement_correction_reopen_csrf_token(
+        session_token
+    )
+    if not hmac.compare_digest(normalized_submitted_token, expected_token):
+        raise B2BCommercialAgreementCorrectionSecurityError(
+            "El token CSRF no es válido para esta sesión."
+        )
+
+
+def build_commercial_agreement_correction_reopen_confirmation_token(
+    session_token: str | None,
+    *,
+    agreement_id: int,
+    fingerprint: str,
+) -> str:
+    normalized_session_token = (session_token or "").strip()
+    if not normalized_session_token:
+        raise B2BCommercialAgreementCorrectionSecurityError(
+            "No hay una sesión válida para confirmar la reapertura."
+        )
+    payload = (
+        _CORRECTION_REOPEN_CONFIRM_PURPOSE
+        + b"|"
+        + str(agreement_id).encode("ascii")
+        + b"|"
+        + fingerprint.encode("ascii")
+    )
+    return hmac.new(
+        normalized_session_token.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def validate_commercial_agreement_correction_reopen_confirmation_token(
+    session_token: str | None,
+    submitted_token: str | None,
+    *,
+    agreement_id: int,
+    fingerprint: str,
+) -> None:
+    normalized_submitted_token = (submitted_token or "").strip()
+    if not normalized_submitted_token:
+        raise B2BCommercialAgreementCorrectionSecurityError(
+            "Falta la confirmación firmada de la reapertura."
+        )
+    expected_token = build_commercial_agreement_correction_reopen_confirmation_token(
+        session_token,
+        agreement_id=agreement_id,
+        fingerprint=fingerprint,
+    )
+    if not hmac.compare_digest(normalized_submitted_token, expected_token):
+        raise B2BCommercialAgreementCorrectionSecurityError(
+            "La confirmación no corresponde a esta sesión o estado del acuerdo."
+        )
+
+
+def preview_commercial_agreement_correction_reopen(
+    db: Session,
+    agreement_id: int,
+) -> AgreementCorrectionReopenPreview:
+    agreement = get_commercial_agreement(db, agreement_id)
+    _validate_commercial_agreement_correction_reopen_eligibility(agreement)
+    return _build_commercial_agreement_correction_reopen_preview(agreement)
+
+
+def reopen_commercial_agreement_for_correction(
+    db: Session,
+    *,
+    agreement_id: int,
+    expected_fingerprint: str,
+    reason: str,
+    confirmed_never_signed: bool,
+    user_id: int,
+    username: str,
+    request_path: str | None = None,
+) -> AgreementCorrectionReopenResult:
+    normalized_reason = str(reason or "").strip()
+    if not normalized_reason:
+        raise B2BCommercialAgreementValidationError(
+            "El motivo de corrección es obligatorio."
+        )
+    if len(normalized_reason) > 2000:
+        raise B2BCommercialAgreementValidationError(
+            "El motivo de corrección no puede superar 2000 caracteres."
+        )
+    if not confirmed_never_signed:
+        raise B2BCommercialAgreementValidationError(
+            "Debe confirmar que el documento nunca fue firmado."
+        )
+
+    try:
+        agreement = (
+            db.query(B2BCommercialAgreement)
+            .filter(B2BCommercialAgreement.id == agreement_id)
+            .with_for_update(of=B2BCommercialAgreement)
+            .one()
+        )
+        _validate_commercial_agreement_correction_reopen_eligibility(agreement)
+        preview = _build_commercial_agreement_correction_reopen_preview(agreement)
+        if not hmac.compare_digest(preview.fingerprint, expected_fingerprint or ""):
+            raise B2BCommercialAgreementCorrectionStaleError(
+                "El acuerdo cambió después de mostrar la confirmación. Revise nuevamente."
+            )
+
+        invalidated_at = datetime.utcnow()
+        document = B2BCommercialAgreementInvalidatedPDF(
+            agreement_id=agreement.id,
+            pdf_bytes=bytes(agreement.generated_pdf_bytes or b""),
+            filename=str(agreement.generated_pdf_filename or ""),
+            sha256=str(agreement.generated_pdf_sha256 or ""),
+            generated_at=agreement.generated_at,
+            generated_by_user_id=agreement.generated_by_user_id,
+            invalidated_at=invalidated_at,
+            invalidated_by_user_id=user_id,
+            invalidation_reason=normalized_reason,
+        )
+        db.add(document)
+        db.flush()
+
+        previous_pdf_metadata = {
+            "status": agreement.status,
+            "version_number": agreement.version_number,
+            "generated_pdf_filename": agreement.generated_pdf_filename,
+            "generated_pdf_sha256": agreement.generated_pdf_sha256,
+            "generated_at": agreement.generated_at,
+            "generated_by_user_id": agreement.generated_by_user_id,
+        }
+        agreement.status = "draft"
+        agreement.generated_pdf_bytes = None
+        agreement.generated_pdf_filename = None
+        agreement.generated_pdf_sha256 = None
+        agreement.generated_at = None
+        agreement.generated_by_user_id = None
+        agreement.updated_at = invalidated_at
+        agreement.updated_by_user_id = user_id
+        db.add(
+            AuditLog(
+                user_id=user_id,
+                username=(username or "system")[:100],
+                module="commercial",
+                action="commercial_agreement_generated_document_invalidated",
+                entity_type="b2b_commercial_agreement",
+                entity_id=str(agreement.id),
+                entity_label=(
+                    f"{agreement.customer_name_snapshot} v{agreement.version_number}"
+                ),
+                old_values=serialize_audit_payload(previous_pdf_metadata),
+                new_values=serialize_audit_payload(
+                    {
+                        "status": "draft",
+                        "invalidated_pdf_id": document.id,
+                        "version_number": agreement.version_number,
+                    }
+                ),
+                request_path=request_path,
+                method="POST",
+                notes=serialize_audit_payload(
+                    {
+                        "reason": normalized_reason,
+                        "confirmed_never_signed": True,
+                        "preview_fingerprint": preview.fingerprint,
+                    }
+                ),
+            )
+        )
+        db.commit()
+        return AgreementCorrectionReopenResult(
+            agreement_id=agreement.id,
+            invalidated_pdf_id=document.id,
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+
+def get_invalidated_commercial_agreement_pdf(
+    db: Session,
+    *,
+    agreement_id: int,
+    document_id: int,
+) -> tuple[bytes, str]:
+    document = (
+        db.query(B2BCommercialAgreementInvalidatedPDF)
+        .filter(
+            B2BCommercialAgreementInvalidatedPDF.id == document_id,
+            B2BCommercialAgreementInvalidatedPDF.agreement_id == agreement_id,
+        )
+        .one_or_none()
+    )
+    if document is None:
+        raise B2BCommercialAgreementValidationError(
+            "El documento invalidado no existe para este acuerdo."
+        )
+    pdf_bytes = bytes(document.pdf_bytes)
+    calculated_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+    if not pdf_bytes.startswith(b"%PDF") or not hmac.compare_digest(
+        calculated_sha256,
+        document.sha256,
+    ):
+        raise B2BCommercialAgreementValidationError(
+            "El documento invalidado no superó la verificación de integridad."
+        )
+    safe_filename = re.sub(r'[^A-Za-z0-9._-]+', '_', document.filename).strip('._')
+    return pdf_bytes, f"Documento_invalidado_{document.id}_{safe_filename or 'acuerdo.pdf'}"
+
+
+def _validate_commercial_agreement_correction_reopen_eligibility(
+    agreement: B2BCommercialAgreement,
+) -> None:
+    if agreement.status != "generated":
+        raise B2BCommercialAgreementValidationError(
+            "Solo se puede reabrir un acuerdo en estado generated."
+        )
+    if any(
+        value is not None
+        for value in (
+            agreement.signed_at,
+            agreement.signed_by_user_id,
+            agreement.archived_at,
+            agreement.archived_by_user_id,
+        )
+    ):
+        raise B2BCommercialAgreementValidationError(
+            "No se puede reabrir un acuerdo con registros de firma o archivo."
+        )
+    pdf_bytes = bytes(agreement.generated_pdf_bytes or b"")
+    stored_sha256 = str(agreement.generated_pdf_sha256 or "")
+    calculated_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+    if (
+        not pdf_bytes.startswith(b"%PDF")
+        or not stored_sha256
+        or not hmac.compare_digest(stored_sha256, calculated_sha256)
+        or not str(agreement.generated_pdf_filename or "").strip()
+        or agreement.generated_at is None
+    ):
+        raise B2BCommercialAgreementValidationError(
+            "El PDF generado no tiene metadatos íntegros y no puede archivarse de forma segura."
+        )
+
+
+def _build_commercial_agreement_correction_reopen_preview(
+    agreement: B2BCommercialAgreement,
+) -> AgreementCorrectionReopenPreview:
+    payload = {
+        "agreement_id": agreement.id,
+        "customer_id": agreement.customer_id,
+        "version_number": agreement.version_number,
+        "status": agreement.status,
+        "updated_at": agreement.updated_at,
+        "generated_pdf_filename": agreement.generated_pdf_filename,
+        "generated_pdf_sha256": agreement.generated_pdf_sha256,
+        "generated_at": agreement.generated_at,
+        "generated_by_user_id": agreement.generated_by_user_id,
+        "signed_at": agreement.signed_at,
+        "signed_by_user_id": agreement.signed_by_user_id,
+        "archived_at": agreement.archived_at,
+        "archived_by_user_id": agreement.archived_by_user_id,
+    }
+    return AgreementCorrectionReopenPreview(
+        agreement_id=agreement.id,
+        customer_id=agreement.customer_id,
+        customer_name=agreement.customer_name_snapshot or "",
+        version_number=agreement.version_number,
+        fingerprint=_customer_sync_fingerprint(
+            {"scope": f"correction_reopen:{agreement.id}", "agreement": payload}
+        ),
+    )
 
 
 def preview_commercial_agreement_customer_sync(

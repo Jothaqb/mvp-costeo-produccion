@@ -124,11 +124,15 @@ from app.services.b2b_catalog_export_service import (
 )
 from app.services.b2b_commercial_agreement_service import (
     CUSTOMER_SYNC_PRESERVED_FIELDS,
+    B2BCommercialAgreementCorrectionSecurityError,
+    B2BCommercialAgreementCorrectionStaleError,
     B2BCommercialAgreementCustomerSyncSecurityError,
     B2BCommercialAgreementCustomerSyncStaleError,
     B2BCommercialAgreementValidationError,
     PAYMENT_TERM_OPTIONS,
     USUAL_DELIVERY_TYPE_OPTIONS,
+    build_commercial_agreement_correction_reopen_confirmation_token,
+    build_commercial_agreement_correction_reopen_csrf_token,
     build_commercial_agreement_customer_sync_confirmation_token,
     build_commercial_agreement_customer_sync_csrf_token,
     create_commercial_agreement_draft,
@@ -136,15 +140,20 @@ from app.services.b2b_commercial_agreement_service import (
     execute_commercial_agreement_customer_sync,
     format_person_contact_info,
     get_commercial_agreement,
+    get_invalidated_commercial_agreement_pdf,
     list_customer_commercial_agreements,
     normalize_payment_terms,
     parse_person_contact_info,
     preview_all_draft_commercial_agreement_customer_sync,
+    preview_commercial_agreement_correction_reopen,
     preview_commercial_agreement_customer_sync,
     render_agreement_template_text,
     reset_commercial_agreement_sections_to_template,
+    reopen_commercial_agreement_for_correction,
     sync_commercial_agreement_payment_terms_from_customer,
     update_commercial_agreement_draft,
+    validate_commercial_agreement_correction_reopen_confirmation_token,
+    validate_commercial_agreement_correction_reopen_csrf_token,
     validate_commercial_agreement_customer_sync_confirmation_token,
     validate_commercial_agreement_customer_sync_csrf_token,
     validate_commercial_agreement,
@@ -8175,6 +8184,73 @@ def download_b2b_commercial_agreement_pdf(
     )
 
 
+@app.get(
+    "/b2b/commercial-agreements/{agreement_id}/invalidated-pdfs/{document_id}/download"
+)
+def download_invalidated_b2b_commercial_agreement_pdf(
+    agreement_id: int,
+    document_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "b2b_commercial_agreement.sign_archive")
+    try:
+        pdf_bytes, filename = get_invalidated_commercial_agreement_pdf(
+            db,
+            agreement_id=agreement_id,
+            document_id=document_id,
+        )
+    except B2BCommercialAgreementValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/b2b/commercial-agreements/{agreement_id}/reopen-for-correction")
+async def reopen_b2b_commercial_agreement_for_correction(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(
+        request,
+        "b2b_commercial_agreement.sign_archive",
+    )
+    form = await request.form()
+    _validate_b2b_commercial_agreement_correction_request(
+        request,
+        csrf_token=form.get("csrf_token"),
+    )
+    fingerprint = str(form.get("fingerprint", "")).strip()
+    try:
+        validate_commercial_agreement_correction_reopen_confirmation_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            form.get("confirmation_token"),
+            agreement_id=agreement_id,
+            fingerprint=fingerprint,
+        )
+        reopen_commercial_agreement_for_correction(
+            db,
+            agreement_id=agreement_id,
+            expected_fingerprint=fingerprint,
+            reason=str(form.get("correction_reason", "")),
+            confirmed_never_signed=(form.get("confirm_never_signed") == "yes"),
+            user_id=current_user.id,
+            username=current_user.username,
+            request_path=request.url.path,
+        )
+    except B2BCommercialAgreementCorrectionSecurityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except B2BCommercialAgreementCorrectionStaleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except B2BCommercialAgreementValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _redirect(f"/b2b/commercial-agreements/{agreement_id}/edit")
+
+
 @app.get("/b2b/commercial-agreements/{agreement_id}", response_class=HTMLResponse)
 def b2b_commercial_agreement_detail(
     agreement_id: int,
@@ -8183,6 +8259,29 @@ def b2b_commercial_agreement_detail(
 ) -> HTMLResponse:
     require_permission(request, "b2b_commercial_agreement.view")
     agreement = get_commercial_agreement(db, agreement_id)
+    correction_reopen_preview = None
+    correction_reopen_csrf_token = None
+    correction_reopen_confirmation_token = None
+    if can(request, "b2b_commercial_agreement.sign_archive"):
+        try:
+            correction_reopen_preview = preview_commercial_agreement_correction_reopen(
+                db,
+                agreement_id,
+            )
+        except B2BCommercialAgreementValidationError:
+            pass
+        if correction_reopen_preview is not None:
+            session_token = request.cookies.get(SESSION_COOKIE_NAME)
+            correction_reopen_csrf_token = (
+                build_commercial_agreement_correction_reopen_csrf_token(session_token)
+            )
+            correction_reopen_confirmation_token = (
+                build_commercial_agreement_correction_reopen_confirmation_token(
+                    session_token,
+                    agreement_id=agreement_id,
+                    fingerprint=correction_reopen_preview.fingerprint,
+                )
+            )
     return templates.TemplateResponse(
         request=request,
         name="b2b_commercial_agreement_detail.html",
@@ -8204,6 +8303,11 @@ def b2b_commercial_agreement_detail(
                 for person in agreement.authorized_people
                 if person.authorization_type == "receiving"
             ],
+            "correction_reopen_preview": correction_reopen_preview,
+            "correction_reopen_csrf_token": correction_reopen_csrf_token,
+            "correction_reopen_confirmation_token": (
+                correction_reopen_confirmation_token
+            ),
         },
     )
 
@@ -8316,6 +8420,27 @@ def _validate_b2b_commercial_agreement_sync_request(
         )
     except (
         B2BCommercialAgreementCustomerSyncSecurityError,
+        RolePermissionCSRFError,
+    ) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _validate_b2b_commercial_agreement_correction_request(
+    request: Request,
+    *,
+    csrf_token,
+) -> None:
+    try:
+        validate_commercial_agreement_correction_reopen_csrf_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            csrf_token,
+        )
+        validate_role_permissions_request_origin(
+            origin_header=request.headers.get("origin"),
+            referer_header=request.headers.get("referer"),
+        )
+    except (
+        B2BCommercialAgreementCorrectionSecurityError,
         RolePermissionCSRFError,
     ) as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc

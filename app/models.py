@@ -733,6 +733,45 @@ class B2BCommercialAgreement(Base):
         cascade="all, delete-orphan",
         order_by="B2BCommercialAgreementSection.display_order",
     )
+    invalidated_pdf_documents: Mapped[list["B2BCommercialAgreementInvalidatedPDF"]] = relationship(
+        "B2BCommercialAgreementInvalidatedPDF",
+        back_populates="agreement",
+        order_by="B2BCommercialAgreementInvalidatedPDF.id.desc()",
+    )
+
+
+class B2BCommercialAgreementInvalidatedPDF(Base):
+    __tablename__ = "b2b_commercial_agreement_invalidated_pdfs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    agreement_id: Mapped[int] = mapped_column(
+        ForeignKey("b2b_commercial_agreements.id"),
+        nullable=False,
+        index=True,
+    )
+    pdf_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    generated_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    invalidated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+    invalidated_by_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    invalidation_reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+    agreement: Mapped["B2BCommercialAgreement"] = relationship(
+        "B2BCommercialAgreement",
+        back_populates="invalidated_pdf_documents",
+    )
 
 
 class B2BCommercialAgreementPerson(Base):
