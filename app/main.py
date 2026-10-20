@@ -7759,9 +7759,18 @@ async def confirm_all_b2b_commercial_agreement_customer_data_sync(
             ),
             status_code=409,
         )
+    if result.reviewed_count == 0:
+        result_message = "No hay acuerdos en borrador disponibles para actualizar."
+    elif result.updated_count == 0:
+        result_message = "Los borradores revisados ya estaban actualizados."
+    else:
+        result_message = (
+            f"Se actualizaron {result.updated_count} de "
+            f"{result.reviewed_count} borradores revisados."
+        )
     return _redirect(
         f"/b2b/customers/{customer_id}/commercial-agreements?message="
-        f"{quote(f'Se actualizaron {result.updated_count} de {result.reviewed_count} borradores revisados.')}"
+        f"{quote(result_message)}"
     )
 
 

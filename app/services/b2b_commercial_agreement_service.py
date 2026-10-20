@@ -582,7 +582,7 @@ def execute_commercial_agreement_customer_sync(
         agreement = (
             _query_agreements_for_customer_sync(db)
             .filter(B2BCommercialAgreement.id == agreement_id)
-            .with_for_update()
+            .with_for_update(of=B2BCommercialAgreement)
             .one()
         )
         _require_draft(agreement)
@@ -625,7 +625,7 @@ def execute_all_draft_commercial_agreement_customer_sync(
     try:
         agreements = (
             _query_draft_agreements_for_customer_sync(db)
-            .with_for_update()
+            .with_for_update(of=B2BCommercialAgreement)
             .all()
         )
         preview = _build_bulk_customer_sync_preview(agreements)

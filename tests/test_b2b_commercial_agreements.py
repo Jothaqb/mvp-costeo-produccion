@@ -9,6 +9,7 @@ from unittest import mock
 from fastapi import HTTPException
 from starlette.requests import Request
 from sqlalchemy import create_engine, event
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -58,6 +59,7 @@ from app.services.b2b_commercial_agreement_service import (
     validate_commercial_agreement_customer_sync_confirmation_token,
     validate_commercial_agreement_customer_sync_csrf_token,
     validate_commercial_agreement,
+    _query_draft_agreements_for_customer_sync,
 )
 from app.services.b2b_commercial_agreement_pdf_service import (
     B2BCommercialAgreementIncompleteError,
@@ -459,6 +461,31 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                 customer_id=second_customer.id,
                 user_id=None,
             )
+            generated_customer = B2BCustomer(
+                customer_name="Cliente Generado",
+                legal_name="Generado S.A.",
+                legal_id="3-101-333333",
+                phone="8333-3333",
+                address="Cartago",
+                province="Cartago",
+                canton="Cartago",
+                district="Oriental",
+                credit_days=0,
+                default_payment_terms="Contado contra entrega",
+                channel_id=channel_id,
+                active=True,
+            )
+            db.add(generated_customer)
+            db.commit()
+            generated_agreement = create_commercial_agreement_draft(
+                db,
+                customer_id=generated_customer.id,
+                user_id=None,
+            )
+            generated_agreement.status = "generated"
+            generated_agreement.generated_pdf_bytes = b"%PDF-historical"
+            generated_agreement.generated_pdf_filename = "historical.pdf"
+            generated_customer.customer_name = "No debe sincronizarse"
             first_customer = db.get(B2BCustomer, self.customer_id)
             first_customer.customer_name = "Cliente Cambiado"
             db.commit()
@@ -483,6 +510,15 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                 get_commercial_agreement(db, second_agreement.id).customer_name_snapshot,
                 "Cliente Sin Cambios",
             )
+            preserved_generated = get_commercial_agreement(db, generated_agreement.id)
+            self.assertEqual(
+                preserved_generated.customer_name_snapshot,
+                "Cliente Generado",
+            )
+            self.assertEqual(
+                preserved_generated.generated_pdf_bytes,
+                b"%PDF-historical",
+            )
             self.assertEqual(db.query(AuditLog).count(), 1)
 
     def test_customer_sync_rejects_stale_preview_and_rolls_back_atomically(self) -> None:
@@ -506,6 +542,57 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             unchanged = get_commercial_agreement(db, agreement.id)
             self.assertEqual(unchanged.customer_name_snapshot, "Cliente Acuerdo")
             self.assertEqual(db.query(AuditLog).count(), 0)
+
+    def test_repeated_bulk_confirmation_is_rejected_as_stale(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.customer_name = "Actualización única"
+            db.commit()
+            preview = preview_all_draft_commercial_agreement_customer_sync(db)
+            first_result = execute_all_draft_commercial_agreement_customer_sync(
+                db,
+                expected_fingerprint=preview.fingerprint,
+                user_id=None,
+                username="admin",
+            )
+            self.assertEqual(first_result.updated_count, 1)
+            with self.assertRaises(B2BCommercialAgreementCustomerSyncStaleError):
+                execute_all_draft_commercial_agreement_customer_sync(
+                    db,
+                    expected_fingerprint=preview.fingerprint,
+                    user_id=None,
+                    username="admin",
+                )
+            self.assertEqual(
+                get_commercial_agreement(db, agreement.id).customer_name_snapshot,
+                "Actualización única",
+            )
+            self.assertEqual(db.query(AuditLog).count(), 1)
+
+    def test_postgresql_row_lock_targets_only_agreement_table(self) -> None:
+        with self.Session() as db:
+            statement = (
+                _query_draft_agreements_for_customer_sync(db)
+                .with_for_update(of=B2BCommercialAgreement)
+                .statement
+            )
+            sql = str(
+                statement.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+        self.assertIn("LEFT OUTER JOIN b2b_customers", sql)
+        self.assertIn("LEFT OUTER JOIN channels", sql)
+        self.assertIn("FOR UPDATE OF b2b_commercial_agreements", sql)
+        service_source = Path(
+            "app/services/b2b_commercial_agreement_service.py"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            service_source.count(".with_for_update(of=B2BCommercialAgreement)"),
+            2,
+        )
 
     def test_bulk_customer_sync_rolls_back_changes_when_audit_write_fails(self) -> None:
         with self.Session() as db:
@@ -568,6 +655,8 @@ class B2BCommercialAgreementTests(unittest.TestCase):
     def test_non_draft_agreements_are_not_modified_by_bulk_customer_sync(self) -> None:
         with self.Session() as db:
             agreement = self._create(db)
+            agreement.generated_pdf_bytes = b"%PDF-preserved"
+            agreement.generated_pdf_filename = "preserved.pdf"
             customer = db.get(B2BCustomer, self.customer_id)
             customer.customer_name = "Nombre posterior"
             for status in ("generated", "signed", "archived"):
@@ -586,6 +675,8 @@ class B2BCommercialAgreementTests(unittest.TestCase):
                     self.assertEqual(result.updated_count, 0)
                     unchanged = get_commercial_agreement(db, agreement.id)
                     self.assertEqual(unchanged.customer_name_snapshot, "Cliente Acuerdo")
+                    self.assertEqual(unchanged.generated_pdf_bytes, b"%PDF-preserved")
+                    self.assertEqual(unchanged.generated_pdf_filename, "preserved.pdf")
                     agreement = unchanged
 
     def test_pdf_generated_after_sync_uses_updated_customer_snapshot(self) -> None:
@@ -1442,6 +1533,10 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             self.assertIn('name="confirm_customer_data_sync"', template)
         self.assertIn("Actualizar datos del cliente", editor_template)
         self.assertIn("Actualizar todos los borradores", history_template)
+        self.assertIn(
+            "No hay acuerdos en borrador disponibles para actualizar.",
+            main_source,
+        )
 
     def test_schema_constraints_and_relationships_exist(self) -> None:
         self.assertIn("b2b_commercial_agreements", Base.metadata.tables)
