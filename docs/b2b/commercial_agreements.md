@@ -38,7 +38,15 @@ La acción **Actualizar textos desde plantilla base** está disponible únicamen
 
 El editor limita **Forma de pago** a pago anticipado antes del despacho, contado contra entrega, crédito comercial aprobado o consignación y pago contra entrega. La selección mantiene automáticamente `advance_payment_enabled` y `credit_approved`; solo el crédito comercial exige plazo y límite positivos. La consignación es únicamente una condición comercial en esta fase y no activa crédito ni cambia procesos operativos. **Entrega habitual** se limita a ruta de entrega GREEN CORNER, encomienda o retiro.
 
-Cada cliente B2B puede guardar una forma de pago predeterminada nullable en `b2b_customers.default_payment_terms`. Los clientes históricos permanecen sin valor hasta que un usuario los edite. Un acuerdo nuevo copia explícitamente ese valor y sus indicadores al momento de crear el borrador. Después funciona como snapshot: editar la ficha del cliente no modifica acuerdos existentes. Si la ficha y un borrador difieren, el editor ofrece una acción explícita para copiar únicamente la forma de pago y sus indicadores; los acuerdos `generated`, `signed` y `archived` nunca se actualizan por esta vía.
+Cada cliente B2B puede guardar una forma de pago predeterminada nullable en `b2b_customers.default_payment_terms`. Los clientes históricos permanecen sin valor hasta que un usuario los edite. Un acuerdo nuevo copia explícitamente ese valor y sus indicadores al momento de crear el borrador. Después funciona como snapshot: editar la ficha del cliente no modifica acuerdos existentes. Si la ficha y un borrador difieren, el editor ofrece una acción explícita y separada para copiar la forma de pago y sus indicadores; los acuerdos `generated`, `signed` y `archived` nunca se actualizan por esta vía.
+
+## Sincronización explícita de borradores
+
+El editor permite revisar y confirmar la actualización de un borrador individual desde la ficha actual del cliente. El historial existente también permite revisar todos los borradores del sistema y aplicar sus cambios en una sola transacción. Ambos flujos presentan primero una vista previa, requieren `b2b_commercial_agreement.edit`, CSRF, validación same-origin y confirmación firmada para la sesión. El fingerprint incluye los borradores, su estado, los snapshots y los datos actuales del cliente; un cambio entre vista previa y confirmación obliga a revisar de nuevo.
+
+Se sincronizan nombre comercial, razón social, cédula jurídica, teléfono, dirección, provincia, cantón, distrito, días de crédito del cliente, canal B2B y estado activo. `billing_address` y `whatsapp` solo acompañan el cambio cuando todavía coinciden con el snapshot original; si fueron personalizados, se conservan y la vista previa informa la excepción.
+
+La sincronización no sobrescribe forma de pago, indicadores de pago/crédito, plazo contractual, límite de crédito, descuentos, representación legal, correos, personas autorizadas, textos ni datos de firma. Una diferencia de forma de pago se informa y se resuelve únicamente mediante su acción comercial separada. Solo se actualizan acuerdos `draft`; los PDF y las versiones `generated`, `signed` o `archived` permanecen inmutables. La actualización masiva y sus entradas de auditoría se confirman en la misma transacción, con rollback completo si falla cualquier registro.
 
 Las personas autorizadas se editan con nombre, cargo y un único campo **Teléfono / correo**. Internamente se conservan las columnas existentes `identification`, `phone` y `email`: la identificación previa viaja oculta para evitar pérdida de históricos y el contacto combinado se separa nuevamente al guardar. No se agregó ninguna columna ni migración.
 
@@ -71,6 +79,7 @@ Se registran los eventos:
 - `commercial_agreement_validated`
 - `commercial_agreement_sections_reset`
 - `commercial_agreement_generated`
+- `commercial_agreement_customer_data_synced`
 
 ## Límites vigentes
 

@@ -123,19 +123,30 @@ from app.services.b2b_catalog_export_service import (
     safe_b2b_catalog_pdf_filename,
 )
 from app.services.b2b_commercial_agreement_service import (
+    CUSTOMER_SYNC_PRESERVED_FIELDS,
+    B2BCommercialAgreementCustomerSyncSecurityError,
+    B2BCommercialAgreementCustomerSyncStaleError,
     B2BCommercialAgreementValidationError,
     PAYMENT_TERM_OPTIONS,
     USUAL_DELIVERY_TYPE_OPTIONS,
+    build_commercial_agreement_customer_sync_confirmation_token,
+    build_commercial_agreement_customer_sync_csrf_token,
     create_commercial_agreement_draft,
+    execute_all_draft_commercial_agreement_customer_sync,
+    execute_commercial_agreement_customer_sync,
     format_person_contact_info,
     get_commercial_agreement,
     list_customer_commercial_agreements,
     normalize_payment_terms,
     parse_person_contact_info,
+    preview_all_draft_commercial_agreement_customer_sync,
+    preview_commercial_agreement_customer_sync,
     render_agreement_template_text,
     reset_commercial_agreement_sections_to_template,
     sync_commercial_agreement_payment_terms_from_customer,
     update_commercial_agreement_draft,
+    validate_commercial_agreement_customer_sync_confirmation_token,
+    validate_commercial_agreement_customer_sync_csrf_token,
     validate_commercial_agreement,
 )
 from app.services.b2b_commercial_agreement_pdf_service import (
@@ -7655,19 +7666,102 @@ def b2b_commercial_agreements(
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     require_permission(request, "b2b_commercial_agreement.view")
-    customer, agreements = list_customer_commercial_agreements(db, customer_id)
-    return templates.TemplateResponse(
-        request=request,
-        name="b2b_commercial_agreements.html",
-        context={
-            "title": f"Acuerdos comerciales - {customer.customer_name}",
-            "customer": customer,
-            "agreements": agreements,
-            "has_draft": any(agreement.status == "draft" for agreement in agreements),
-            "can_create_first_version": not agreements,
-            "message": message or None,
-            "error": error or None,
-        },
+    return _render_b2b_commercial_agreements_page(
+        request,
+        db,
+        customer_id=customer_id,
+        message=message or None,
+        error=error or None,
+    )
+
+
+@app.post(
+    "/b2b/customers/{customer_id}/commercial-agreements/customer-data-sync/preview",
+    response_class=HTMLResponse,
+)
+async def preview_all_b2b_commercial_agreement_customer_data_sync(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "b2b_commercial_agreement.edit")
+    form = await request.form()
+    _validate_b2b_commercial_agreement_sync_request(
+        request,
+        csrf_token=form.get("csrf_token"),
+    )
+    preview = preview_all_draft_commercial_agreement_customer_sync(db)
+    confirmation_token = build_commercial_agreement_customer_sync_confirmation_token(
+        request.cookies.get(SESSION_COOKIE_NAME),
+        scope="all-drafts",
+        fingerprint=preview.fingerprint,
+    )
+    return _render_b2b_commercial_agreements_page(
+        request,
+        db,
+        customer_id=customer_id,
+        bulk_customer_sync_preview=preview,
+        bulk_customer_sync_confirmation_token=confirmation_token,
+    )
+
+
+@app.post(
+    "/b2b/customers/{customer_id}/commercial-agreements/customer-data-sync/confirm"
+)
+async def confirm_all_b2b_commercial_agreement_customer_data_sync(
+    customer_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "b2b_commercial_agreement.edit")
+    form = await request.form()
+    _validate_b2b_commercial_agreement_sync_request(
+        request,
+        csrf_token=form.get("csrf_token"),
+    )
+    if form.get("confirm_customer_data_sync") != "yes":
+        raise HTTPException(
+            status_code=400,
+            detail="Debe confirmar expresamente la actualización de los borradores.",
+        )
+    fingerprint = str(form.get("fingerprint") or "").strip()
+    try:
+        validate_commercial_agreement_customer_sync_confirmation_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            form.get("confirmation_token"),
+            scope="all-drafts",
+            fingerprint=fingerprint,
+        )
+        result = execute_all_draft_commercial_agreement_customer_sync(
+            db,
+            expected_fingerprint=fingerprint,
+            user_id=current_user.id,
+            username=current_user.username,
+            request_path=str(request.url.path),
+        )
+    except B2BCommercialAgreementCustomerSyncSecurityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except B2BCommercialAgreementCustomerSyncStaleError as exc:
+        db.rollback()
+        fresh_preview = preview_all_draft_commercial_agreement_customer_sync(db)
+        return _render_b2b_commercial_agreements_page(
+            request,
+            db,
+            customer_id=customer_id,
+            error=str(exc),
+            bulk_customer_sync_preview=fresh_preview,
+            bulk_customer_sync_confirmation_token=(
+                build_commercial_agreement_customer_sync_confirmation_token(
+                    request.cookies.get(SESSION_COOKIE_NAME),
+                    scope="all-drafts",
+                    fingerprint=fresh_preview.fingerprint,
+                )
+            ),
+            status_code=409,
+        )
+    return _redirect(
+        f"/b2b/customers/{customer_id}/commercial-agreements?message="
+        f"{quote(f'Se actualizaron {result.updated_count} de {result.reviewed_count} borradores revisados.')}"
     )
 
 
@@ -7717,6 +7811,102 @@ def edit_b2b_commercial_agreement(
         request,
         agreement,
         message=message or None,
+    )
+
+
+@app.post(
+    "/b2b/commercial-agreements/{agreement_id}/customer-data-sync/preview",
+    response_class=HTMLResponse,
+)
+async def preview_b2b_commercial_agreement_customer_data_sync(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "b2b_commercial_agreement.edit")
+    form = await request.form()
+    _validate_b2b_commercial_agreement_sync_request(
+        request,
+        csrf_token=form.get("csrf_token"),
+    )
+    try:
+        preview = preview_commercial_agreement_customer_sync(db, agreement_id)
+    except B2BCommercialAgreementValidationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    confirmation_token = build_commercial_agreement_customer_sync_confirmation_token(
+        request.cookies.get(SESSION_COOKIE_NAME),
+        scope=f"agreement:{agreement_id}",
+        fingerprint=preview.fingerprint,
+    )
+    return _render_b2b_commercial_agreement_editor(
+        request,
+        get_commercial_agreement(db, agreement_id),
+        customer_sync_preview=preview,
+        customer_sync_confirmation_token=confirmation_token,
+    )
+
+
+@app.post("/b2b/commercial-agreements/{agreement_id}/customer-data-sync/confirm")
+async def confirm_b2b_commercial_agreement_customer_data_sync(
+    agreement_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "b2b_commercial_agreement.edit")
+    form = await request.form()
+    _validate_b2b_commercial_agreement_sync_request(
+        request,
+        csrf_token=form.get("csrf_token"),
+    )
+    if form.get("confirm_customer_data_sync") != "yes":
+        raise HTTPException(
+            status_code=400,
+            detail="Debe confirmar expresamente la actualización del borrador.",
+        )
+    fingerprint = str(form.get("fingerprint") or "").strip()
+    try:
+        validate_commercial_agreement_customer_sync_confirmation_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            form.get("confirmation_token"),
+            scope=f"agreement:{agreement_id}",
+            fingerprint=fingerprint,
+        )
+        result = execute_commercial_agreement_customer_sync(
+            db,
+            agreement_id=agreement_id,
+            expected_fingerprint=fingerprint,
+            user_id=current_user.id,
+            username=current_user.username,
+            request_path=str(request.url.path),
+        )
+    except B2BCommercialAgreementCustomerSyncSecurityError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except B2BCommercialAgreementCustomerSyncStaleError as exc:
+        db.rollback()
+        agreement = get_commercial_agreement(db, agreement_id)
+        if agreement.status != "draft":
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        fresh_preview = preview_commercial_agreement_customer_sync(db, agreement_id)
+        return _render_b2b_commercial_agreement_editor(
+            request,
+            agreement,
+            error=str(exc),
+            customer_sync_preview=fresh_preview,
+            customer_sync_confirmation_token=(
+                build_commercial_agreement_customer_sync_confirmation_token(
+                    request.cookies.get(SESSION_COOKIE_NAME),
+                    scope=f"agreement:{agreement_id}",
+                    fingerprint=fresh_preview.fingerprint,
+                )
+            ),
+            status_code=409,
+        )
+    except B2BCommercialAgreementValidationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _redirect(
+        f"/b2b/commercial-agreements/{agreement_id}/edit?message="
+        f"{quote('Datos del cliente actualizados.' if result.updated_count else 'El borrador ya estaba actualizado.')}"
     )
 
 
@@ -8009,6 +8199,43 @@ def b2b_commercial_agreement_detail(
     )
 
 
+def _render_b2b_commercial_agreements_page(
+    request: Request,
+    db: Session,
+    *,
+    customer_id: int,
+    message: str | None = None,
+    error: str | None = None,
+    bulk_customer_sync_preview=None,
+    bulk_customer_sync_confirmation_token: str | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    customer, agreements = list_customer_commercial_agreements(db, customer_id)
+    csrf_token = build_commercial_agreement_customer_sync_csrf_token(
+        request.cookies.get(SESSION_COOKIE_NAME)
+    )
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_commercial_agreements.html",
+        context={
+            "title": f"Acuerdos comerciales - {customer.customer_name}",
+            "customer": customer,
+            "agreements": agreements,
+            "has_draft": any(agreement.status == "draft" for agreement in agreements),
+            "can_create_first_version": not agreements,
+            "message": message,
+            "error": error,
+            "customer_sync_csrf_token": csrf_token,
+            "customer_sync_preserved_fields": CUSTOMER_SYNC_PRESERVED_FIELDS,
+            "bulk_customer_sync_preview": bulk_customer_sync_preview,
+            "bulk_customer_sync_confirmation_token": (
+                bulk_customer_sync_confirmation_token
+            ),
+        },
+        status_code=status_code,
+    )
+
+
 def _render_b2b_commercial_agreement_editor(
     request: Request,
     agreement: B2BCommercialAgreement,
@@ -8016,6 +8243,9 @@ def _render_b2b_commercial_agreement_editor(
     error: str | None = None,
     message: str | None = None,
     missing_fields: list[str] | None = None,
+    customer_sync_preview=None,
+    customer_sync_confirmation_token: str | None = None,
+    status_code: int = 200,
 ) -> HTMLResponse:
     selected_payment_terms = normalize_payment_terms(agreement.payment_terms)
     customer_default_payment_terms = normalize_payment_terms(
@@ -8045,11 +8275,41 @@ def _render_b2b_commercial_agreement_editor(
             ),
             "usual_delivery_type_options": USUAL_DELIVERY_TYPE_OPTIONS,
             "format_person_contact_info": format_person_contact_info,
+            "customer_sync_csrf_token": (
+                build_commercial_agreement_customer_sync_csrf_token(
+                    request.cookies.get(SESSION_COOKIE_NAME)
+                )
+            ),
+            "customer_sync_preserved_fields": CUSTOMER_SYNC_PRESERVED_FIELDS,
+            "customer_sync_preview": customer_sync_preview,
+            "customer_sync_confirmation_token": customer_sync_confirmation_token,
             "error": error,
             "message": message,
             "missing_fields": missing_fields,
         },
+        status_code=status_code,
     )
+
+
+def _validate_b2b_commercial_agreement_sync_request(
+    request: Request,
+    *,
+    csrf_token,
+) -> None:
+    try:
+        validate_commercial_agreement_customer_sync_csrf_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            csrf_token,
+        )
+        validate_role_permissions_request_origin(
+            origin_header=request.headers.get("origin"),
+            referer_header=request.headers.get("referer"),
+        )
+    except (
+        B2BCommercialAgreementCustomerSyncSecurityError,
+        RolePermissionCSRFError,
+    ) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 def _commercial_agreement_people_from_form(form) -> list[dict[str, str]]:

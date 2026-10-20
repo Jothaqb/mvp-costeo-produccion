@@ -14,7 +14,63 @@
           <button type="submit">Crear acuerdo comercial</button>
         </form>
       {% endif %}
+      {% if can(request, "b2b_commercial_agreement.edit") %}
+        <form method="post" action="/b2b/customers/{{ customer.id }}/commercial-agreements/customer-data-sync/preview">
+          <input type="hidden" name="csrf_token" value="{{ customer_sync_csrf_token }}">
+          <button type="submit">Actualizar todos los borradores</button>
+        </form>
+      {% endif %}
     </section>
+
+    {% if bulk_customer_sync_preview %}
+      <section class="warning">
+        <h2>Vista previa: actualización de todos los borradores</h2>
+        <p>
+          Revisados: <strong>{{ bulk_customer_sync_preview.reviewed_count }}</strong> |
+          Con cambios: <strong>{{ bulk_customer_sync_preview.changed_count }}</strong> |
+          Sin cambios: <strong>{{ bulk_customer_sync_preview.unchanged_count }}</strong>
+        </p>
+        {% for item in bulk_customer_sync_preview.agreements %}
+          {% if item.changes or item.exceptions %}
+            <h3>{{ item.customer_name }} — acuerdo #{{ item.agreement_id }} v{{ item.version_number }}</h3>
+            {% if item.changes %}
+              <table>
+                <thead><tr><th>Campo</th><th>Valor actual</th><th>Valor del cliente</th></tr></thead>
+                <tbody>
+                  {% for change in item.changes %}
+                    <tr>
+                      <td>{{ change.label }}</td>
+                      <td>{{ change.old_value if change.old_value is not none else "" }}</td>
+                      <td>{{ change.new_value if change.new_value is not none else "" }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <p>Los datos sincronizables ya están actualizados.</p>
+            {% endif %}
+            {% if item.exceptions %}
+              <p><strong>Campos preservados o que requieren decisión comercial:</strong></p>
+              <ul>{% for exception in item.exceptions %}<li>{{ exception }}</li>{% endfor %}</ul>
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+        <p><strong>Siempre se conservan:</strong></p>
+        <ul>{% for field in customer_sync_preserved_fields %}<li>{{ field }}</li>{% endfor %}</ul>
+        {% if bulk_customer_sync_preview.changed_count %}
+          <form method="post" action="/b2b/customers/{{ customer.id }}/commercial-agreements/customer-data-sync/confirm">
+            <input type="hidden" name="csrf_token" value="{{ customer_sync_csrf_token }}">
+            <input type="hidden" name="fingerprint" value="{{ bulk_customer_sync_preview.fingerprint }}">
+            <input type="hidden" name="confirmation_token" value="{{ bulk_customer_sync_confirmation_token }}">
+            <label>
+              <input type="checkbox" name="confirm_customer_data_sync" value="yes" required>
+              Confirmo la actualización de los snapshots indicados en todos los borradores aplicables.
+            </label>
+            <button type="submit">Confirmar actualización de todos los borradores</button>
+          </form>
+        {% endif %}
+      </section>
+    {% endif %}
 
     {% if has_draft %}
       <p class="muted-inline">Ya existe un borrador para este cliente. Debe completarse antes de crear otra versión.</p>

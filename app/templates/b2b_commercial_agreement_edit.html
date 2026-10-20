@@ -84,7 +84,51 @@
       >
         <button type="submit">Actualizar textos desde plantilla base</button>
       </form>
+      <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/customer-data-sync/preview">
+        <input type="hidden" name="csrf_token" value="{{ customer_sync_csrf_token }}">
+        <button type="submit">Actualizar datos del cliente</button>
+      </form>
     </section>
+
+    {% if customer_sync_preview %}
+      <section class="warning">
+        <h2>Vista previa de actualización desde B2B Customer</h2>
+        {% if customer_sync_preview.changes %}
+          <table>
+            <thead><tr><th>Campo</th><th>Valor actual</th><th>Valor del cliente</th></tr></thead>
+            <tbody>
+              {% for change in customer_sync_preview.changes %}
+                <tr>
+                  <td>{{ change.label }}</td>
+                  <td>{{ change.old_value if change.old_value is not none else "" }}</td>
+                  <td>{{ change.new_value if change.new_value is not none else "" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p>Los datos sincronizables del cliente ya están actualizados.</p>
+        {% endif %}
+        {% if customer_sync_preview.exceptions %}
+          <p><strong>Campos preservados o que requieren decisión comercial:</strong></p>
+          <ul>{% for exception in customer_sync_preview.exceptions %}<li>{{ exception }}</li>{% endfor %}</ul>
+        {% endif %}
+        <p><strong>Siempre se conservan:</strong></p>
+        <ul>{% for field in customer_sync_preserved_fields %}<li>{{ field }}</li>{% endfor %}</ul>
+        {% if customer_sync_preview.changes %}
+          <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/customer-data-sync/confirm">
+            <input type="hidden" name="csrf_token" value="{{ customer_sync_csrf_token }}">
+            <input type="hidden" name="fingerprint" value="{{ customer_sync_preview.fingerprint }}">
+            <input type="hidden" name="confirmation_token" value="{{ customer_sync_confirmation_token }}">
+            <label>
+              <input type="checkbox" name="confirm_customer_data_sync" value="yes" required>
+              Confirmo la actualización de los snapshots indicados en este borrador.
+            </label>
+            <button type="submit">Confirmar actualización</button>
+          </form>
+        {% endif %}
+      </section>
+    {% endif %}
 
     {% if can_sync_customer_payment_terms %}
       <section class="warning">
@@ -102,7 +146,7 @@
     <form method="post" action="/b2b/commercial-agreements/{{ agreement.id }}/edit">
       <fieldset>
         <legend>1. Información del cliente</legend>
-        <p>Los datos de esta sección son el snapshot tomado al crear la versión y no cambian si luego se edita el cliente.</p>
+        <p>Los datos de esta sección son el snapshot de la versión. En borrador pueden actualizarse de forma explícita desde la ficha del cliente; las versiones generadas conservan su histórico.</p>
         <div class="form-grid">
           <label>Nombre comercial<input value="{{ agreement.customer_name_snapshot or '' }}" readonly></label>
           <label>Razón social<input value="{{ agreement.legal_name_snapshot or '' }}" readonly></label>

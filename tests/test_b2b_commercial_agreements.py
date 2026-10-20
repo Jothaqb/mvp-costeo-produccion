@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.models import (
+    AuditLog,
     Base,
     B2BAROpeningBalance,
     B2BARPayment,
@@ -31,21 +32,31 @@ from app.models import (
 )
 from app.services.auth_service import ensure_auth_seed_state, require_permission
 from app.services.b2b_commercial_agreement_service import (
+    B2BCommercialAgreementCustomerSyncSecurityError,
+    B2BCommercialAgreementCustomerSyncStaleError,
     B2BCommercialAgreementValidationError,
     DEFAULT_AGREEMENT_SECTIONS,
     DEFAULT_AGREEMENT_SECTION_TEXTS,
     PAYMENT_TERM_OPTIONS,
     USUAL_DELIVERY_TYPE_OPTIONS,
+    build_commercial_agreement_customer_sync_confirmation_token,
+    build_commercial_agreement_customer_sync_csrf_token,
     create_commercial_agreement_draft,
+    execute_all_draft_commercial_agreement_customer_sync,
+    execute_commercial_agreement_customer_sync,
     find_missing_template_variables,
     format_person_contact_info,
     get_commercial_agreement,
     normalize_payment_terms,
     parse_person_contact_info,
+    preview_all_draft_commercial_agreement_customer_sync,
+    preview_commercial_agreement_customer_sync,
     render_agreement_template_text,
     reset_commercial_agreement_sections_to_template,
     sync_commercial_agreement_payment_terms_from_customer,
     update_commercial_agreement_draft,
+    validate_commercial_agreement_customer_sync_confirmation_token,
+    validate_commercial_agreement_customer_sync_csrf_token,
     validate_commercial_agreement,
 )
 from app.services.b2b_commercial_agreement_pdf_service import (
@@ -300,6 +311,313 @@ class B2BCommercialAgreementTests(unittest.TestCase):
             self.assertEqual(unchanged.customer_name_snapshot, "Cliente Acuerdo")
             self.assertEqual(unchanged.legal_name_snapshot, "Cliente Acuerdo S.A.")
             self.assertTrue(unchanged.customer_active_snapshot)
+
+    def test_individual_customer_sync_updates_all_shared_snapshots_and_audits(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            original_payment_terms = agreement.payment_terms
+            customer = db.get(B2BCustomer, self.customer_id)
+            second_channel = Channel(
+                name="Tienda Online",
+                active=True,
+                applies_to_b2b=True,
+            )
+            db.add(second_channel)
+            db.flush()
+            customer.customer_name = "Cliente Actualizado"
+            customer.legal_name = "Razón Actualizada S.A."
+            customer.legal_id = "3-101-999999"
+            customer.phone = "8777-1111"
+            customer.address = "Heredia centro"
+            customer.province = "Heredia"
+            customer.canton = "Heredia"
+            customer.district = "Mercedes"
+            customer.credit_days = 30
+            customer.channel_id = second_channel.id
+            customer.active = False
+            customer.default_payment_terms = "Crédito comercial aprobado"
+            db.commit()
+
+            preview = preview_commercial_agreement_customer_sync(db, agreement.id)
+            changed_fields = {change.field_name for change in preview.changes}
+            self.assertEqual(
+                changed_fields,
+                {
+                    "customer_name_snapshot",
+                    "legal_name_snapshot",
+                    "legal_id_snapshot",
+                    "phone_snapshot",
+                    "address_snapshot",
+                    "province_snapshot",
+                    "canton_snapshot",
+                    "district_snapshot",
+                    "credit_days_snapshot",
+                    "customer_active_snapshot",
+                    "b2b_channel_name_snapshot",
+                    "billing_address",
+                    "whatsapp",
+                },
+            )
+            self.assertTrue(any("Forma de pago diferente" in item for item in preview.exceptions))
+
+            result = execute_commercial_agreement_customer_sync(
+                db,
+                agreement_id=agreement.id,
+                expected_fingerprint=preview.fingerprint,
+                user_id=None,
+                username="admin",
+                request_path=f"/b2b/commercial-agreements/{agreement.id}/customer-data-sync/confirm",
+            )
+            self.assertEqual(result.updated_count, 1)
+            synced = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(synced.customer_name_snapshot, "Cliente Actualizado")
+            self.assertEqual(synced.legal_name_snapshot, "Razón Actualizada S.A.")
+            self.assertEqual(synced.legal_id_snapshot, "3-101-999999")
+            self.assertEqual(synced.phone_snapshot, "8777-1111")
+            self.assertEqual(synced.address_snapshot, "Heredia centro")
+            self.assertEqual(synced.province_snapshot, "Heredia")
+            self.assertEqual(synced.canton_snapshot, "Heredia")
+            self.assertEqual(synced.district_snapshot, "Mercedes")
+            self.assertEqual(synced.credit_days_snapshot, 30)
+            self.assertEqual(synced.b2b_channel_name_snapshot, "Tienda Online")
+            self.assertFalse(synced.customer_active_snapshot)
+            self.assertEqual(synced.billing_address, "Heredia centro")
+            self.assertEqual(synced.whatsapp, "8777-1111")
+            self.assertEqual(synced.payment_terms, original_payment_terms)
+            audit = db.query(AuditLog).one()
+            self.assertEqual(audit.action, "commercial_agreement_customer_data_synced")
+            self.assertEqual(audit.entity_id, str(agreement.id))
+            self.assertIn("customer_name_snapshot", audit.old_values)
+            self.assertIn("Cliente Actualizado", audit.new_values)
+
+    def test_customer_sync_preserves_custom_contract_fields_and_reports_exceptions(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            agreement.billing_address = "Dirección contractual personalizada"
+            agreement.whatsapp = "8999-9999"
+            agreement.contract_credit_days = 45
+            agreement.credit_limit = Decimal("500000")
+            agreement.b2b_discount_percent = Decimal("14")
+            agreement.legal_representative_name = "Representante Manual"
+            agreement.payment_terms = "Pago anticipado antes del despacho"
+            agreement.advance_payment_enabled = True
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.address = "Nueva dirección maestra"
+            customer.phone = "8111-1111"
+            customer.credit_days = 30
+            customer.default_payment_terms = "Crédito comercial aprobado"
+            db.commit()
+
+            preview = preview_commercial_agreement_customer_sync(db, agreement.id)
+            changed_fields = {change.field_name for change in preview.changes}
+            self.assertNotIn("billing_address", changed_fields)
+            self.assertNotIn("whatsapp", changed_fields)
+            self.assertTrue(any("Dirección de facturación personalizada" in value for value in preview.exceptions))
+            self.assertTrue(any("WhatsApp personalizado" in value for value in preview.exceptions))
+            self.assertTrue(any("Forma de pago diferente" in value for value in preview.exceptions))
+            self.assertTrue(any("Días de crédito contractual" in value for value in preview.exceptions))
+
+            execute_commercial_agreement_customer_sync(
+                db,
+                agreement_id=agreement.id,
+                expected_fingerprint=preview.fingerprint,
+                user_id=None,
+                username="admin",
+            )
+            synced = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(synced.billing_address, "Dirección contractual personalizada")
+            self.assertEqual(synced.whatsapp, "8999-9999")
+            self.assertEqual(synced.contract_credit_days, 45)
+            self.assertEqual(synced.credit_limit, Decimal("500000"))
+            self.assertEqual(synced.b2b_discount_percent, Decimal("14"))
+            self.assertEqual(synced.legal_representative_name, "Representante Manual")
+            self.assertEqual(synced.payment_terms, "Pago anticipado antes del despacho")
+            self.assertTrue(synced.advance_payment_enabled)
+
+    def test_bulk_customer_sync_updates_changed_draft_only(self) -> None:
+        with self.Session() as db:
+            first_agreement = self._create(db)
+            channel_id = db.get(B2BCustomer, self.customer_id).channel_id
+            second_customer = B2BCustomer(
+                customer_name="Cliente Sin Cambios",
+                legal_name="Sin Cambios S.A.",
+                legal_id="3-101-222222",
+                phone="8222-2222",
+                address="Alajuela",
+                province="Alajuela",
+                canton="Alajuela",
+                district="Alajuela",
+                credit_days=0,
+                default_payment_terms="Contado contra entrega",
+                channel_id=channel_id,
+                active=True,
+            )
+            db.add(second_customer)
+            db.commit()
+            second_agreement = create_commercial_agreement_draft(
+                db,
+                customer_id=second_customer.id,
+                user_id=None,
+            )
+            first_customer = db.get(B2BCustomer, self.customer_id)
+            first_customer.customer_name = "Cliente Cambiado"
+            db.commit()
+
+            preview = preview_all_draft_commercial_agreement_customer_sync(db)
+            self.assertEqual(preview.reviewed_count, 2)
+            self.assertEqual(preview.changed_count, 1)
+            self.assertEqual(preview.unchanged_count, 1)
+            result = execute_all_draft_commercial_agreement_customer_sync(
+                db,
+                expected_fingerprint=preview.fingerprint,
+                user_id=None,
+                username="admin",
+            )
+            self.assertEqual(result.updated_count, 1)
+            self.assertEqual(result.updated_agreement_ids, (first_agreement.id,))
+            self.assertEqual(
+                get_commercial_agreement(db, first_agreement.id).customer_name_snapshot,
+                "Cliente Cambiado",
+            )
+            self.assertEqual(
+                get_commercial_agreement(db, second_agreement.id).customer_name_snapshot,
+                "Cliente Sin Cambios",
+            )
+            self.assertEqual(db.query(AuditLog).count(), 1)
+
+    def test_customer_sync_rejects_stale_preview_and_rolls_back_atomically(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.customer_name = "Primera actualización"
+            db.commit()
+            preview = preview_commercial_agreement_customer_sync(db, agreement.id)
+            customer.customer_name = "Cambio posterior a vista previa"
+            db.commit()
+
+            with self.assertRaises(B2BCommercialAgreementCustomerSyncStaleError):
+                execute_commercial_agreement_customer_sync(
+                    db,
+                    agreement_id=agreement.id,
+                    expected_fingerprint=preview.fingerprint,
+                    user_id=None,
+                    username="admin",
+                )
+            unchanged = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(unchanged.customer_name_snapshot, "Cliente Acuerdo")
+            self.assertEqual(db.query(AuditLog).count(), 0)
+
+    def test_bulk_customer_sync_rolls_back_changes_when_audit_write_fails(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.customer_name = "Debe revertirse"
+            db.commit()
+            preview = preview_all_draft_commercial_agreement_customer_sync(db)
+
+            def reject_audit_write(session, _flush_context, _instances) -> None:
+                if any(isinstance(item, AuditLog) for item in session.new):
+                    raise RuntimeError("audit failed")
+
+            event.listen(db, "before_flush", reject_audit_write)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "audit failed"):
+                    execute_all_draft_commercial_agreement_customer_sync(
+                        db,
+                        expected_fingerprint=preview.fingerprint,
+                        user_id=None,
+                        username="admin",
+                    )
+            finally:
+                event.remove(db, "before_flush", reject_audit_write)
+            db.expire_all()
+            unchanged = get_commercial_agreement(db, agreement.id)
+            self.assertEqual(unchanged.customer_name_snapshot, "Cliente Acuerdo")
+            self.assertEqual(db.query(AuditLog).count(), 0)
+
+    def test_customer_sync_tokens_are_session_bound_and_constant_scope(self) -> None:
+        session_token = "session-a"
+        csrf_token = build_commercial_agreement_customer_sync_csrf_token(session_token)
+        validate_commercial_agreement_customer_sync_csrf_token(session_token, csrf_token)
+        with self.assertRaises(B2BCommercialAgreementCustomerSyncSecurityError):
+            validate_commercial_agreement_customer_sync_csrf_token("session-b", csrf_token)
+        confirmation_token = build_commercial_agreement_customer_sync_confirmation_token(
+            session_token,
+            scope="all-drafts",
+            fingerprint="abc123",
+        )
+        validate_commercial_agreement_customer_sync_confirmation_token(
+            session_token,
+            confirmation_token,
+            scope="all-drafts",
+            fingerprint="abc123",
+        )
+        for changed_session, changed_scope, changed_fingerprint in (
+            ("session-b", "all-drafts", "abc123"),
+            (session_token, "agreement:1", "abc123"),
+            (session_token, "all-drafts", "different"),
+        ):
+            with self.assertRaises(B2BCommercialAgreementCustomerSyncSecurityError):
+                validate_commercial_agreement_customer_sync_confirmation_token(
+                    changed_session,
+                    confirmation_token,
+                    scope=changed_scope,
+                    fingerprint=changed_fingerprint,
+                )
+
+    def test_non_draft_agreements_are_not_modified_by_bulk_customer_sync(self) -> None:
+        with self.Session() as db:
+            agreement = self._create(db)
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.customer_name = "Nombre posterior"
+            for status in ("generated", "signed", "archived"):
+                with self.subTest(status=status):
+                    agreement.status = status
+                    db.commit()
+                    preview = preview_all_draft_commercial_agreement_customer_sync(db)
+                    self.assertEqual(preview.reviewed_count, 0)
+                    self.assertEqual(preview.changed_count, 0)
+                    result = execute_all_draft_commercial_agreement_customer_sync(
+                        db,
+                        expected_fingerprint=preview.fingerprint,
+                        user_id=None,
+                        username="admin",
+                    )
+                    self.assertEqual(result.updated_count, 0)
+                    unchanged = get_commercial_agreement(db, agreement.id)
+                    self.assertEqual(unchanged.customer_name_snapshot, "Cliente Acuerdo")
+                    agreement = unchanged
+
+    def test_pdf_generated_after_sync_uses_updated_customer_snapshot(self) -> None:
+        with self.Session() as db:
+            agreement = self._complete(db)
+            customer = db.get(B2BCustomer, self.customer_id)
+            customer.customer_name = "Cliente PDF Actualizado"
+            db.commit()
+            preview = preview_commercial_agreement_customer_sync(db, agreement.id)
+            execute_commercial_agreement_customer_sync(
+                db,
+                agreement_id=agreement.id,
+                expected_fingerprint=preview.fingerprint,
+                user_id=None,
+                username="admin",
+            )
+
+            def assert_updated_snapshot(pdf_agreement, *, logo_bytes=None):
+                self.assertEqual(
+                    pdf_agreement.customer_name_snapshot,
+                    "Cliente PDF Actualizado",
+                )
+                return b"%PDF-controlled-test"
+
+            generated = generate_and_store_b2b_commercial_agreement_pdf(
+                db,
+                agreement_id=agreement.id,
+                user_id=None,
+                pdf_builder=assert_updated_snapshot,
+            )
+            self.assertEqual(generated.status, "generated")
+            self.assertEqual(generated.customer_name_snapshot, "Cliente PDF Actualizado")
 
     def test_only_one_draft_is_allowed_per_customer(self) -> None:
         with self.Session() as db:
@@ -1083,6 +1401,47 @@ class B2BCommercialAgreementTests(unittest.TestCase):
         self.assertNotIn("\n    Product,", pdf_source)
         self.assertNotIn("db.query(Product", pdf_source)
         self.assertNotIn("Anexo 1", pdf_source)
+
+    def test_customer_sync_routes_and_forms_require_backend_security_and_preview(self) -> None:
+        main_source = Path("app/main.py").read_text(encoding="utf-8")
+        editor_template = Path(
+            "app/templates/b2b_commercial_agreement_edit.html"
+        ).read_text(encoding="utf-8")
+        history_template = Path(
+            "app/templates/b2b_commercial_agreements.html"
+        ).read_text(encoding="utf-8")
+        route_markers = (
+            "async def preview_all_b2b_commercial_agreement_customer_data_sync",
+            "async def confirm_all_b2b_commercial_agreement_customer_data_sync",
+            "async def preview_b2b_commercial_agreement_customer_data_sync",
+            "async def confirm_b2b_commercial_agreement_customer_data_sync",
+        )
+        for marker in route_markers:
+            route_body = main_source.split(marker, 1)[1].split("\n\n@app.", 1)[0]
+            self.assertIn(
+                'require_permission(request, "b2b_commercial_agreement.edit")',
+                route_body,
+            )
+            self.assertIn(
+                "_validate_b2b_commercial_agreement_sync_request",
+                route_body,
+            )
+        security_helper = main_source.split(
+            "def _validate_b2b_commercial_agreement_sync_request", 1
+        )[1].split("\n\ndef ", 1)[0]
+        self.assertIn(
+            "validate_commercial_agreement_customer_sync_csrf_token",
+            security_helper,
+        )
+        self.assertIn("validate_role_permissions_request_origin", security_helper)
+        self.assertIn("status_code=403", security_helper)
+        for template in (editor_template, history_template):
+            self.assertIn('name="csrf_token"', template)
+            self.assertIn('name="fingerprint"', template)
+            self.assertIn('name="confirmation_token"', template)
+            self.assertIn('name="confirm_customer_data_sync"', template)
+        self.assertIn("Actualizar datos del cliente", editor_template)
+        self.assertIn("Actualizar todos los borradores", history_template)
 
     def test_schema_constraints_and_relationships_exist(self) -> None:
         self.assertIn("b2b_commercial_agreements", Base.metadata.tables)

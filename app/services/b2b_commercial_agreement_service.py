@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import re
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -8,11 +12,13 @@ from typing import Any
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.models import (
+    AuditLog,
     B2BCommercialAgreement,
     B2BCommercialAgreementPerson,
     B2BCommercialAgreementSection,
     B2BCustomer,
 )
+from app.services.audit_service import serialize_audit_payload
 
 
 AGREEMENT_STATUSES = {"draft", "generated", "signed", "archived"}
@@ -27,6 +33,28 @@ USUAL_DELIVERY_TYPE_OPTIONS = (
     "Ruta de entrega GREEN CORNER",
     "Encomienda",
     "Retiro",
+)
+CUSTOMER_SYNC_PRESERVED_FIELDS = (
+    "Representante legal, identificación y cargo",
+    "Correos de facturación y administrativo",
+    "Descuento comercial, límite y plazo contractual negociado",
+    "Forma de pago e indicadores contractuales",
+    "Personas autorizadas, condiciones y textos contractuales",
+    "Datos de firma y PDF histórico",
+)
+_CUSTOMER_SYNC_CSRF_PURPOSE = b"b2b-commercial-agreement-customer-sync-csrf-v1"
+_CUSTOMER_SYNC_CONFIRM_PURPOSE = b"b2b-commercial-agreement-customer-sync-confirm-v1"
+_CUSTOMER_SNAPSHOT_FIELDS = (
+    ("customer_name_snapshot", "Nombre comercial", "customer_name"),
+    ("legal_name_snapshot", "Razón social", "legal_name"),
+    ("legal_id_snapshot", "Cédula jurídica", "legal_id"),
+    ("phone_snapshot", "Teléfono", "phone"),
+    ("address_snapshot", "Dirección", "address"),
+    ("province_snapshot", "Provincia", "province"),
+    ("canton_snapshot", "Cantón", "canton"),
+    ("district_snapshot", "Distrito", "district"),
+    ("credit_days_snapshot", "Días de crédito del cliente", "credit_days"),
+    ("customer_active_snapshot", "Estado activo del cliente", "active"),
 )
 _PAYMENT_TERM_ALIASES = {
     "contado": "Contado contra entrega",
@@ -253,6 +281,56 @@ class B2BCommercialAgreementValidationError(Exception):
     pass
 
 
+class B2BCommercialAgreementCustomerSyncSecurityError(Exception):
+    pass
+
+
+class B2BCommercialAgreementCustomerSyncStaleError(
+    B2BCommercialAgreementValidationError
+):
+    pass
+
+
+@dataclass(frozen=True)
+class AgreementCustomerSyncChange:
+    field_name: str
+    label: str
+    old_value: Any
+    new_value: Any
+
+
+@dataclass(frozen=True)
+class AgreementCustomerSyncPreview:
+    agreement_id: int
+    customer_id: int
+    customer_name: str
+    version_number: int
+    status: str
+    changes: tuple[AgreementCustomerSyncChange, ...]
+    exceptions: tuple[str, ...]
+    fingerprint: str
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.changes)
+
+
+@dataclass(frozen=True)
+class BulkAgreementCustomerSyncPreview:
+    reviewed_count: int
+    changed_count: int
+    unchanged_count: int
+    agreements: tuple[AgreementCustomerSyncPreview, ...]
+    fingerprint: str
+
+
+@dataclass(frozen=True)
+class AgreementCustomerSyncResult:
+    reviewed_count: int
+    updated_count: int
+    updated_agreement_ids: tuple[int, ...]
+
+
 def _base_section_text(section_key: str) -> str:
     return DEFAULT_AGREEMENT_SECTION_TEXTS[section_key]
 
@@ -384,12 +462,450 @@ def get_commercial_agreement(db: Session, agreement_id: int) -> B2BCommercialAgr
     return (
         db.query(B2BCommercialAgreement)
         .options(
-            joinedload(B2BCommercialAgreement.customer),
+            joinedload(B2BCommercialAgreement.customer).joinedload(
+                B2BCustomer.channel_record
+            ),
             selectinload(B2BCommercialAgreement.authorized_people),
             selectinload(B2BCommercialAgreement.sections),
         )
+        .populate_existing()
         .filter(B2BCommercialAgreement.id == agreement_id)
         .one()
+    )
+
+
+def build_commercial_agreement_customer_sync_csrf_token(
+    session_token: str | None,
+) -> str:
+    normalized_session_token = (session_token or "").strip()
+    if not normalized_session_token:
+        raise B2BCommercialAgreementCustomerSyncSecurityError(
+            "No hay una sesión válida para generar la protección CSRF."
+        )
+    return hmac.new(
+        normalized_session_token.encode("utf-8"),
+        _CUSTOMER_SYNC_CSRF_PURPOSE,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def validate_commercial_agreement_customer_sync_csrf_token(
+    session_token: str | None,
+    submitted_token: str | None,
+) -> None:
+    normalized_submitted_token = (submitted_token or "").strip()
+    if not normalized_submitted_token:
+        raise B2BCommercialAgreementCustomerSyncSecurityError(
+            "Falta el token CSRF del formulario."
+        )
+    expected_token = build_commercial_agreement_customer_sync_csrf_token(session_token)
+    if not hmac.compare_digest(normalized_submitted_token, expected_token):
+        raise B2BCommercialAgreementCustomerSyncSecurityError(
+            "El token CSRF no es válido para esta sesión."
+        )
+
+
+def build_commercial_agreement_customer_sync_confirmation_token(
+    session_token: str | None,
+    *,
+    scope: str,
+    fingerprint: str,
+) -> str:
+    normalized_session_token = (session_token or "").strip()
+    if not normalized_session_token:
+        raise B2BCommercialAgreementCustomerSyncSecurityError(
+            "No hay una sesión válida para confirmar la actualización."
+        )
+    payload = (
+        _CUSTOMER_SYNC_CONFIRM_PURPOSE
+        + b"|"
+        + scope.encode("utf-8")
+        + b"|"
+        + fingerprint.encode("ascii")
+    )
+    return hmac.new(
+        normalized_session_token.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def validate_commercial_agreement_customer_sync_confirmation_token(
+    session_token: str | None,
+    submitted_token: str | None,
+    *,
+    scope: str,
+    fingerprint: str,
+) -> None:
+    normalized_submitted_token = (submitted_token or "").strip()
+    if not normalized_submitted_token:
+        raise B2BCommercialAgreementCustomerSyncSecurityError(
+            "Falta la confirmación firmada de la vista previa."
+        )
+    expected_token = build_commercial_agreement_customer_sync_confirmation_token(
+        session_token,
+        scope=scope,
+        fingerprint=fingerprint,
+    )
+    if not hmac.compare_digest(normalized_submitted_token, expected_token):
+        raise B2BCommercialAgreementCustomerSyncSecurityError(
+            "La confirmación no corresponde a esta sesión o vista previa."
+        )
+
+
+def preview_commercial_agreement_customer_sync(
+    db: Session,
+    agreement_id: int,
+) -> AgreementCustomerSyncPreview:
+    agreement = get_commercial_agreement(db, agreement_id)
+    _require_draft(agreement)
+    return _build_customer_sync_preview(agreement)
+
+
+def preview_all_draft_commercial_agreement_customer_sync(
+    db: Session,
+) -> BulkAgreementCustomerSyncPreview:
+    agreements = _query_draft_agreements_for_customer_sync(db).all()
+    return _build_bulk_customer_sync_preview(agreements)
+
+
+def execute_commercial_agreement_customer_sync(
+    db: Session,
+    *,
+    agreement_id: int,
+    expected_fingerprint: str,
+    user_id: int | None,
+    username: str,
+    request_path: str | None = None,
+) -> AgreementCustomerSyncResult:
+    try:
+        agreement = (
+            _query_agreements_for_customer_sync(db)
+            .filter(B2BCommercialAgreement.id == agreement_id)
+            .with_for_update()
+            .one()
+        )
+        _require_draft(agreement)
+        preview = _build_customer_sync_preview(agreement)
+        if not hmac.compare_digest(preview.fingerprint, expected_fingerprint or ""):
+            raise B2BCommercialAgreementCustomerSyncStaleError(
+                "Los datos cambiaron después de la vista previa. Revise nuevamente antes de confirmar."
+            )
+        updated_ids: tuple[int, ...] = ()
+        if preview.changes:
+            _apply_customer_sync_changes(
+                db,
+                agreement=agreement,
+                preview=preview,
+                user_id=user_id,
+                username=username,
+                request_path=request_path,
+                scope="individual",
+            )
+            updated_ids = (agreement.id,)
+        db.commit()
+        return AgreementCustomerSyncResult(
+            reviewed_count=1,
+            updated_count=len(updated_ids),
+            updated_agreement_ids=updated_ids,
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+
+def execute_all_draft_commercial_agreement_customer_sync(
+    db: Session,
+    *,
+    expected_fingerprint: str,
+    user_id: int | None,
+    username: str,
+    request_path: str | None = None,
+) -> AgreementCustomerSyncResult:
+    try:
+        agreements = (
+            _query_draft_agreements_for_customer_sync(db)
+            .with_for_update()
+            .all()
+        )
+        preview = _build_bulk_customer_sync_preview(agreements)
+        if not hmac.compare_digest(preview.fingerprint, expected_fingerprint or ""):
+            raise B2BCommercialAgreementCustomerSyncStaleError(
+                "Los borradores o datos de clientes cambiaron después de la vista previa. "
+                "Genere una nueva revisión antes de confirmar."
+            )
+        agreements_by_id = {agreement.id: agreement for agreement in agreements}
+        updated_ids: list[int] = []
+        for agreement_preview in preview.agreements:
+            if not agreement_preview.changes:
+                continue
+            agreement = agreements_by_id[agreement_preview.agreement_id]
+            _apply_customer_sync_changes(
+                db,
+                agreement=agreement,
+                preview=agreement_preview,
+                user_id=user_id,
+                username=username,
+                request_path=request_path,
+                scope="all_drafts",
+            )
+            updated_ids.append(agreement.id)
+        db.commit()
+        return AgreementCustomerSyncResult(
+            reviewed_count=preview.reviewed_count,
+            updated_count=len(updated_ids),
+            updated_agreement_ids=tuple(updated_ids),
+        )
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _query_agreements_for_customer_sync(db: Session):
+    return (
+        db.query(B2BCommercialAgreement)
+        .options(
+            joinedload(B2BCommercialAgreement.customer).joinedload(
+                B2BCustomer.channel_record
+            )
+        )
+        .populate_existing()
+    )
+
+
+def _query_draft_agreements_for_customer_sync(db: Session):
+    return (
+        _query_agreements_for_customer_sync(db)
+        .filter(B2BCommercialAgreement.status == "draft")
+        .order_by(B2BCommercialAgreement.id)
+    )
+
+
+def _build_customer_sync_preview(
+    agreement: B2BCommercialAgreement,
+) -> AgreementCustomerSyncPreview:
+    customer = agreement.customer
+    changes: list[AgreementCustomerSyncChange] = []
+    exceptions: list[str] = []
+    old_address_snapshot = agreement.address_snapshot
+    old_phone_snapshot = agreement.phone_snapshot
+
+    for agreement_field, label, customer_field in _CUSTOMER_SNAPSHOT_FIELDS:
+        _append_customer_sync_change(
+            changes,
+            agreement_field,
+            label,
+            getattr(agreement, agreement_field),
+            getattr(customer, customer_field),
+        )
+    channel_name = (
+        customer.channel_record.name if customer.channel_record is not None else None
+    )
+    _append_customer_sync_change(
+        changes,
+        "b2b_channel_name_snapshot",
+        "Canal B2B",
+        agreement.b2b_channel_name_snapshot,
+        channel_name,
+    )
+
+    address_changed = not _customer_sync_values_equal(
+        old_address_snapshot, customer.address
+    )
+    if address_changed:
+        if _customer_sync_values_equal(agreement.billing_address, old_address_snapshot):
+            _append_customer_sync_change(
+                changes,
+                "billing_address",
+                "Dirección de facturación (sin personalizar)",
+                agreement.billing_address,
+                customer.address,
+            )
+        else:
+            exceptions.append(
+                "Dirección de facturación personalizada: se conserva y no se reemplaza por la dirección del cliente."
+            )
+
+    phone_changed = not _customer_sync_values_equal(old_phone_snapshot, customer.phone)
+    if phone_changed:
+        if _customer_sync_values_equal(agreement.whatsapp, old_phone_snapshot):
+            _append_customer_sync_change(
+                changes,
+                "whatsapp",
+                "WhatsApp (sin personalizar)",
+                agreement.whatsapp,
+                customer.phone,
+            )
+        else:
+            exceptions.append(
+                "WhatsApp personalizado: se conserva y no se reemplaza por el teléfono del cliente."
+            )
+
+    customer_payment_terms = normalize_payment_terms(customer.default_payment_terms)
+    agreement_payment_terms = normalize_payment_terms(agreement.payment_terms)
+    if not _customer_sync_values_equal(customer_payment_terms, agreement_payment_terms):
+        exceptions.append(
+            "Forma de pago diferente: se conserva la condición contractual del borrador; "
+            "debe decidirse por separado con la acción de forma de pago."
+        )
+    if (
+        agreement.credit_days_snapshot != customer.credit_days
+        and agreement.contract_credit_days is not None
+    ):
+        exceptions.append(
+            "Días de crédito contractual negociados: se conservan aunque se actualicen los días de crédito del cliente."
+        )
+
+    state_payload = _customer_sync_state_payload(agreement)
+    return AgreementCustomerSyncPreview(
+        agreement_id=agreement.id,
+        customer_id=customer.id,
+        customer_name=customer.customer_name,
+        version_number=agreement.version_number,
+        status=agreement.status,
+        changes=tuple(changes),
+        exceptions=tuple(exceptions),
+        fingerprint=_customer_sync_fingerprint(
+            {"scope": f"agreement:{agreement.id}", "agreement": state_payload}
+        ),
+    )
+
+
+def _build_bulk_customer_sync_preview(
+    agreements: list[B2BCommercialAgreement],
+) -> BulkAgreementCustomerSyncPreview:
+    agreement_previews = tuple(
+        _build_customer_sync_preview(agreement) for agreement in agreements
+    )
+    changed_count = sum(preview.has_changes for preview in agreement_previews)
+    return BulkAgreementCustomerSyncPreview(
+        reviewed_count=len(agreement_previews),
+        changed_count=changed_count,
+        unchanged_count=len(agreement_previews) - changed_count,
+        agreements=agreement_previews,
+        fingerprint=_customer_sync_fingerprint(
+            {
+                "scope": "all_drafts",
+                "agreements": [
+                    _customer_sync_state_payload(agreement) for agreement in agreements
+                ],
+            }
+        ),
+    )
+
+
+def _customer_sync_state_payload(agreement: B2BCommercialAgreement) -> dict[str, Any]:
+    customer = agreement.customer
+    customer_values = {
+        customer_field: getattr(customer, customer_field)
+        for _agreement_field, _label, customer_field in _CUSTOMER_SNAPSHOT_FIELDS
+    }
+    return {
+        "agreement_id": agreement.id,
+        "customer_id": agreement.customer_id,
+        "status": agreement.status,
+        "agreement_updated_at": agreement.updated_at,
+        "customer_updated_at": customer.updated_at,
+        "snapshots": {
+            agreement_field: getattr(agreement, agreement_field)
+            for agreement_field, _label, _customer_field in _CUSTOMER_SNAPSHOT_FIELDS
+        },
+        "b2b_channel_name_snapshot": agreement.b2b_channel_name_snapshot,
+        "billing_address": agreement.billing_address,
+        "whatsapp": agreement.whatsapp,
+        "payment_terms": agreement.payment_terms,
+        "advance_payment_enabled": agreement.advance_payment_enabled,
+        "credit_approved": agreement.credit_approved,
+        "contract_credit_days": agreement.contract_credit_days,
+        "customer": {
+            **customer_values,
+            "channel_id": customer.channel_id,
+            "channel_name": (
+                customer.channel_record.name
+                if customer.channel_record is not None
+                else None
+            ),
+            "default_payment_terms": customer.default_payment_terms,
+        },
+    }
+
+
+def _customer_sync_fingerprint(payload: dict[str, Any]) -> str:
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _append_customer_sync_change(
+    changes: list[AgreementCustomerSyncChange],
+    field_name: str,
+    label: str,
+    old_value: Any,
+    new_value: Any,
+) -> None:
+    if _customer_sync_values_equal(old_value, new_value):
+        return
+    changes.append(
+        AgreementCustomerSyncChange(
+            field_name=field_name,
+            label=label,
+            old_value=old_value,
+            new_value=new_value,
+        )
+    )
+
+
+def _customer_sync_values_equal(left: Any, right: Any) -> bool:
+    if isinstance(left, str) or isinstance(right, str):
+        return str(left or "").strip() == str(right or "").strip()
+    return left == right
+
+
+def _apply_customer_sync_changes(
+    db: Session,
+    *,
+    agreement: B2BCommercialAgreement,
+    preview: AgreementCustomerSyncPreview,
+    user_id: int | None,
+    username: str,
+    request_path: str | None,
+    scope: str,
+) -> None:
+    old_values = {
+        change.field_name: change.old_value for change in preview.changes
+    }
+    new_values = {
+        change.field_name: change.new_value for change in preview.changes
+    }
+    for change in preview.changes:
+        setattr(agreement, change.field_name, change.new_value)
+    agreement.updated_by_user_id = user_id
+    db.add(
+        AuditLog(
+            user_id=user_id,
+            username=(username or "system")[:100],
+            module="commercial",
+            action="commercial_agreement_customer_data_synced",
+            entity_type="b2b_commercial_agreement",
+            entity_id=str(agreement.id),
+            entity_label=f"{agreement.customer_name_snapshot} v{agreement.version_number}",
+            old_values=serialize_audit_payload(old_values),
+            new_values=serialize_audit_payload(new_values),
+            request_path=request_path,
+            method="POST",
+            notes=serialize_audit_payload(
+                {
+                    "scope": scope,
+                    "preview_fingerprint": preview.fingerprint,
+                    "preserved_exceptions": list(preview.exceptions),
+                }
+            ),
+        )
     )
 
 
