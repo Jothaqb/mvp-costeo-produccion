@@ -64,16 +64,40 @@
             <td>{{ fmt.money_crc(summary.total.total_net_sales) }}</td>
           </tr>
           <tr>
+            <th scope="row">Product net sales</th>
+            <td>{{ fmt.money_crc(summary.b2b.product_net_sales) }}</td>
+            <td>{{ fmt.money_crc(summary.b2c.product_net_sales) }}</td>
+            <td>{{ fmt.money_crc(summary.total.product_net_sales) }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Shipping charged</th>
+            <td>{{ fmt.money_crc(summary.b2b.shipping_net_sales) }}</td>
+            <td>{{ fmt.money_crc(summary.b2c.shipping_net_sales) }}</td>
+            <td>{{ fmt.money_crc(summary.total.shipping_net_sales) }}</td>
+          </tr>
+          <tr>
             <th scope="row">COGS</th>
             <td>{{ fmt.money_crc(summary.b2b.cogs) if summary.b2b.has_complete_cogs else "N/A" }}</td>
             <td>{{ fmt.money_crc(summary.b2c.cogs) if summary.b2c.has_complete_cogs else "N/A" }}</td>
             <td>{{ fmt.money_crc(summary.total.cogs) if summary.total.has_complete_cogs else "N/A" }}</td>
           </tr>
           <tr>
-            <th scope="row">Gross Profit</th>
+            <th scope="row">Product margin</th>
             <td>{{ fmt.money_crc(summary.b2b.gross_profit) if summary.b2b.gross_profit is not none else "N/A" }}</td>
             <td>{{ fmt.money_crc(summary.b2c.gross_profit) if summary.b2c.gross_profit is not none else "N/A" }}</td>
             <td>{{ fmt.money_crc(summary.total.gross_profit) if summary.total.gross_profit is not none else "N/A" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Actual shipping cost</th>
+            <td>{{ fmt.money_crc(summary.b2b.shipping_cost) if summary.b2b.has_complete_shipping_cost else "Pending" }}</td>
+            <td>{{ fmt.money_crc(summary.b2c.shipping_cost) if summary.b2c.has_complete_shipping_cost else "Pending" }}</td>
+            <td>{{ fmt.money_crc(summary.total.shipping_cost) if summary.total.has_complete_shipping_cost else "Pending" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">Total order margin</th>
+            <td>{{ fmt.money_crc(summary.b2b.total_margin) if summary.b2b.total_margin is not none else "Pending" }}</td>
+            <td>{{ fmt.money_crc(summary.b2c.total_margin) if summary.b2c.total_margin is not none else "Pending" }}</td>
+            <td>{{ fmt.money_crc(summary.total.total_margin) if summary.total.total_margin is not none else "Pending" }}</td>
           </tr>
           <tr>
             <th scope="row">Average Ticket</th>
@@ -102,11 +126,11 @@
         <div class="chart-panel-header">
           <div>
             <p class="eyebrow">Mix</p>
-            <h2>Gross Profit mix</h2>
+            <h2>Product margin mix</h2>
           </div>
         </div>
         {% if gross_profit_mix_chart %}
-          <svg id="gross-profit-mix-chart" class="pie-chart pie-chart-circular" viewBox="0 0 260 260" aria-label="Gross Profit mix"></svg>
+          <svg id="gross-profit-mix-chart" class="pie-chart pie-chart-circular" viewBox="0 0 260 260" aria-label="Product margin mix"></svg>
           <div id="gross-profit-mix-legend" class="pie-chart-legend-list"></div>
         {% else %}
           <p class="chart-empty chart-empty-visible">{{ gross_profit_chart_message }}</p>

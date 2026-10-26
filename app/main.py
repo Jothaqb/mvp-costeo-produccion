@@ -52,6 +52,7 @@ from app.database import (
     ensure_sprint5_comparison_columns,
     ensure_sprint6_loyverse_cost_sync_columns,
     ensure_sprint7c_lot_columns_and_tables,
+    ensure_shopify_phase1a_schema,
     get_db,
 )
 from app.models import (
@@ -195,10 +196,14 @@ from app.services.accounting_income_statement_service import (
 )
 from app.services.b2c_sales_service import (
     B2CValidationError,
+    build_b2c_shipping_cost_csrf_token,
+    calculate_b2c_order_margins,
     change_b2c_sales_order_status,
     create_b2c_sales_order,
     invoice_b2c_order_in_erp,
+    record_b2c_shipping_cost_in_session,
     update_b2c_sales_order,
+    validate_b2c_shipping_cost_csrf_token,
 )
 from app.services.b2c_customer_service import (
     B2CCustomerValidationError,
@@ -420,6 +425,7 @@ from app.services.admin_role_permission_service import (
     validate_role_permissions_request_origin,
 )
 from app.services.audit_service import (
+    add_audit_event_in_session,
     diff_audit_snapshot_rows,
     diff_audit_snapshots,
     format_audit_payload_for_display,
@@ -554,6 +560,7 @@ ensure_b2b_sales_followup_columns()
 ensure_b2b_invoice_snapshot_columns()
 ensure_b2b_accounts_receivable_tables()
 ensure_b2c_sales_tables()
+ensure_shopify_phase1a_schema()
 ensure_discount_master_tables()
 ensure_b2b_loyverse_mapping_tables()
 ensure_b2c_customer_tables()
@@ -4991,6 +4998,7 @@ def export_total_sales(
             row.customer_name or "",
             row.channel_name or "",
             row.sku,
+            row.line_type,
             row.description,
             row.category_name or "",
             row.quantity,
@@ -5014,6 +5022,7 @@ def export_total_sales(
             "Customer",
             "Channel",
             "SKU",
+            "Line Type",
             "Description",
             "Category",
             "Quantity",
@@ -5078,16 +5087,16 @@ def sales_summary(
                 and summary.b2c.gross_profit >= ZERO
             ):
                 gross_profit_mix_chart = {
-                    "title": "Gross Profit mix",
+                    "title": "Product margin mix",
                     "series": [
                         {"label": "B2B", "value": _serialize_decimal_for_chart(summary.b2b.gross_profit)},
                         {"label": "B2C", "value": _serialize_decimal_for_chart(summary.b2c.gross_profit)},
                     ],
                 }
             else:
-                gross_profit_chart_message = "Gross Profit chart unavailable for the current mix."
+                gross_profit_chart_message = "Product margin chart unavailable for the current mix."
         else:
-            gross_profit_chart_message = "Gross Profit chart unavailable because COGS coverage is incomplete."
+            gross_profit_chart_message = "Product margin chart unavailable because COGS coverage is incomplete."
     except ValueError:
         error = "Dates must use YYYY-MM-DD."
         try:
@@ -5152,6 +5161,10 @@ def export_sales_summary(
             bucket.total_net_sales,
             _csv_blank_if_none(bucket.cogs),
             _csv_blank_if_none(bucket.gross_profit),
+            bucket.product_net_sales,
+            bucket.shipping_net_sales,
+            _csv_blank_if_none(bucket.shipping_cost),
+            _csv_blank_if_none(bucket.total_margin),
             bucket.total_orders,
             bucket.total_lines,
             bucket.total_quantity,
@@ -5172,6 +5185,10 @@ def export_sales_summary(
             "Net Sales",
             "COGS",
             "Gross Profit",
+            "Product Net Sales",
+            "Shipping Net Sales",
+            "Actual Shipping Cost",
+            "Total Order Margin",
             "Orders",
             "Lines",
             "Quantity",
@@ -5508,6 +5525,10 @@ def export_sales_by_order(
             row.net_sales,
             _csv_blank_if_none(row.cogs),
             _csv_blank_if_none(row.gross_profit),
+            row.product_net_sales,
+            row.shipping_net_sales,
+            _csv_blank_if_none(row.shipping_cost),
+            _csv_blank_if_none(row.total_margin),
             row.lines_count,
             row.average_line_value,
             row.detail_url,
@@ -5531,6 +5552,10 @@ def export_sales_by_order(
             "Net Sales",
             "COGS",
             "Gross Profit",
+            "Product Net Sales",
+            "Shipping Net Sales",
+            "Actual Shipping Cost",
+            "Total Order Margin",
             "Lines",
             "Average Line Value",
             "Detail URL",
@@ -10070,8 +10095,83 @@ def b2c_order_detail(order_id: int, request: Request, db: Session = Depends(get_
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_detail.html",
-        context={"title": "B2C Order Detail", "order": order, "lines": lines, "error": None},
+        context={
+            "title": "B2C Order Detail",
+            "order": order,
+            "lines": lines,
+            "has_shipping_line": any((line.line_type or "product") == "shipping" for line in lines),
+            "margin_summary": calculate_b2c_order_margins(order),
+            "shipping_cost_csrf_token": build_b2c_shipping_cost_csrf_token(
+                request.cookies.get(SESSION_COOKIE_NAME)
+            ),
+            "error": None,
+        },
     )
+
+
+@app.post("/b2c/orders/{order_id}/shipping-cost")
+def update_b2c_shipping_cost(
+    order_id: int,
+    request: Request,
+    shipping_cost_amount: str = Form(...),
+    shipping_cost_source: str = Form(...),
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    require_permission(request, "sales.invoice")
+    try:
+        validate_b2c_shipping_cost_csrf_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            csrf_token,
+        )
+        validate_role_permissions_request_origin(
+            origin_header=request.headers.get("origin"),
+            referer_header=request.headers.get("referer"),
+        )
+    except (B2CValidationError, RolePermissionCSRFError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    current_user = getattr(request.state, "current_user", None)
+    if current_user is None:
+        raise HTTPException(status_code=403, detail="Authenticated user is required.")
+    try:
+        order_before = (
+            db.query(B2CSalesOrder)
+            .options(joinedload(B2CSalesOrder.lines))
+            .filter(B2CSalesOrder.id == order_id)
+            .with_for_update(of=B2CSalesOrder)
+            .populate_existing()
+            .one()
+        )
+        old_snapshot = snapshot_b2c_sales_order_for_audit(order_before)
+        order_after = record_b2c_shipping_cost_in_session(
+            db,
+            order_id=order_id,
+            amount=Decimal(shipping_cost_amount.strip()),
+            source=shipping_cost_source,
+            user_id=current_user.id,
+        )
+        new_snapshot = snapshot_b2c_sales_order_for_audit(order_after)
+        add_audit_event_in_session(
+            db,
+            module="sales",
+            action="b2c_shipping_cost_recorded",
+            entity_type="b2c_sales_order",
+            entity_id=order_after.id,
+            entity_label=order_after.order_number,
+            old_values=old_snapshot,
+            new_values=new_snapshot,
+            request=request,
+            user=current_user,
+        )
+        db.commit()
+    except (B2CValidationError, InvalidOperation, ValueError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+    return _redirect(f"/b2c/orders/{order_id}")
 
 
 @app.get("/b2c/orders/{order_id}/edit", response_class=HTMLResponse)
@@ -10260,7 +10360,17 @@ def update_b2c_order_status(
         return templates.TemplateResponse(
             request=request,
             name="b2c_order_detail.html",
-            context={"title": "B2C Order Detail", "order": order, "lines": lines, "error": str(exc)},
+            context={
+                "title": "B2C Order Detail",
+                "order": order,
+                "lines": lines,
+                "has_shipping_line": any((line.line_type or "product") == "shipping" for line in lines),
+                "margin_summary": calculate_b2c_order_margins(order),
+                "shipping_cost_csrf_token": build_b2c_shipping_cost_csrf_token(
+                    request.cookies.get(SESSION_COOKIE_NAME)
+                ),
+                "error": str(exc),
+            },
         )
 
 @app.get("/imports", response_class=HTMLResponse)

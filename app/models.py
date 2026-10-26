@@ -1063,6 +1063,14 @@ class B2CSalesOrder(Base):
     cost_total_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     gross_margin_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
     gross_margin_percent: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    shipping_cost_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    shipping_cost_source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    shipping_cost_recorded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    shipping_cost_recorded_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id"),
+        nullable=True,
+        index=True,
+    )
     loyverse_receipt_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     loyverse_receipt_number: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     loyverse_receipt_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -1092,10 +1100,22 @@ class B2CSalesOrder(Base):
 
 class B2CSalesOrderLine(Base):
     __tablename__ = "b2c_sales_order_lines"
+    __table_args__ = (
+        CheckConstraint(
+            "line_type IN ('product', 'shipping')",
+            name="ck_b2c_sales_order_lines_line_type",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     sales_order_id: Mapped[int] = mapped_column(ForeignKey("b2c_sales_orders.id"), nullable=False)
     line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    line_type: Mapped[str] = mapped_column(
+        String(20),
+        default="product",
+        server_default="product",
+        nullable=False,
+    )
     sku_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
     description_snapshot: Mapped[str] = mapped_column(String(255), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
@@ -1116,6 +1136,141 @@ class B2CSalesOrderLine(Base):
     )
 
     sales_order: Mapped[B2CSalesOrder] = relationship(back_populates="lines")
+
+
+class ShopifyWebhookEvent(Base):
+    __tablename__ = "shopify_webhook_events"
+    __table_args__ = (
+        UniqueConstraint("shop_domain", "webhook_id", name="uq_shopify_webhook_event_delivery"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    shop_domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    webhook_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    topic: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    processing_status: Mapped[str] = mapped_column(String(50), default="received", nullable=False, index=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ShopifyOrderIntegration(Base):
+    __tablename__ = "shopify_order_integrations"
+    __table_args__ = (
+        UniqueConstraint("shop_domain", "shopify_order_gid", name="uq_shopify_order_integration_order"),
+        UniqueConstraint("b2c_sales_order_id", name="uq_shopify_order_integration_b2c_order"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    shop_domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    shopify_order_gid: Mapped[str] = mapped_column(String(255), nullable=False)
+    shopify_order_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    shopify_customer_gid: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    source_webhook_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("shopify_webhook_events.id"),
+        nullable=True,
+        index=True,
+    )
+    b2c_sales_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("b2c_sales_orders.id"),
+        nullable=True,
+    )
+    import_status: Mapped[str] = mapped_column(String(50), default="received", nullable=False, index=True)
+    review_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    review_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    financial_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    fulfillment_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    currency_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    product_net_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    shipping_gross_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    shipping_discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    shipping_net_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    tax_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    shopify_total_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    delivery_method_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    shipping_source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    shipping_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipping_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    shopify_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    shopify_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    lines: Mapped[list["ShopifyOrderLineIntegration"]] = relationship(
+        back_populates="order_integration",
+        cascade="all, delete-orphan",
+    )
+
+
+class ShopifyOrderLineIntegration(Base):
+    __tablename__ = "shopify_order_line_integrations"
+    __table_args__ = (
+        UniqueConstraint(
+            "shopify_order_integration_id",
+            "shopify_line_gid",
+            name="uq_shopify_order_line_integration_line",
+        ),
+        UniqueConstraint("b2c_sales_order_line_id", name="uq_shopify_order_line_integration_b2c_line"),
+        CheckConstraint(
+            "line_type IN ('product', 'shipping')",
+            name="ck_shopify_order_line_integrations_line_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    shopify_order_integration_id: Mapped[int] = mapped_column(
+        ForeignKey("shopify_order_integrations.id"),
+        nullable=False,
+        index=True,
+    )
+    shopify_line_gid: Mapped[str] = mapped_column(String(255), nullable=False)
+    shopify_variant_gid: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    b2c_sales_order_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("b2c_sales_order_lines.id"),
+        nullable=True,
+    )
+    line_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    sku_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    gross_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    net_amount: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    order_integration: Mapped[ShopifyOrderIntegration] = relationship(back_populates="lines")
+
+
+class ShopifyCustomerMapping(Base):
+    __tablename__ = "shopify_customer_mappings"
+    __table_args__ = (
+        UniqueConstraint("shop_domain", "shopify_customer_gid", name="uq_shopify_customer_mapping_customer"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    shop_domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    shopify_customer_gid: Mapped[str] = mapped_column(String(255), nullable=False)
+    b2c_customer_id: Mapped[int] = mapped_column(ForeignKey("b2c_customers.id"), nullable=False, index=True)
+    email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone_snapshot: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
 
 class PurchaseOrder(Base):

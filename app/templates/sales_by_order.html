@@ -55,8 +55,16 @@
         <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.cogs) if result.summary.has_complete_cogs else "N/A" }}</h2>
       </div>
       <div class="kpi-card-compact">
-        <p class="eyebrow">Gross Profit</p>
+        <p class="eyebrow">Product margin</p>
         <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.gross_profit) if result.summary.gross_profit is not none else "N/A" }}</h2>
+      </div>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Shipping charged</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.shipping_net_sales) }}</h2>
+      </div>
+      <div class="kpi-card-compact">
+        <p class="eyebrow">Total order margin</p>
+        <h2 class="kpi-card-value">{{ fmt.money_crc(result.summary.total_margin) if result.summary.total_margin is not none else "Pending" }}</h2>
       </div>
       <div class="kpi-card-compact">
         <p class="eyebrow">Average Ticket</p>
@@ -77,7 +85,10 @@
             <th>Discount</th>
             <th>Net sales</th>
             <th>COGS</th>
-            <th>Gross Profit</th>
+            <th>Product margin</th>
+            <th>Shipping charged</th>
+            <th>Shipping cost</th>
+            <th>Total margin</th>
             <th>Quantity</th>
             <th>Lines</th>
             <th>Average line value</th>
@@ -97,6 +108,9 @@
               <td>{{ fmt.money_crc(row.net_sales) }}</td>
               <td>{{ fmt.money_crc(row.cogs) if row.has_complete_cogs else "N/A" }}</td>
               <td>{{ fmt.money_crc(row.gross_profit) if row.gross_profit is not none else "N/A" }}</td>
+              <td>{{ fmt.money_crc(row.shipping_net_sales) }}</td>
+              <td>{{ fmt.money_crc(row.shipping_cost) if row.has_complete_shipping_cost else "Pending" }}</td>
+              <td>{{ fmt.money_crc(row.total_margin) if row.total_margin is not none else "Pending" }}</td>
               <td>{{ row.total_quantity }}</td>
               <td>{{ row.lines_count }}</td>
               <td>{{ fmt.money_crc(row.average_line_value) }}</td>
@@ -105,7 +119,7 @@
           {% endfor %}
           {% if not result.rows %}
             <tr>
-              <td colspan="14">No invoiced sales match the current filters.</td>
+              <td colspan="17">No invoiced sales match the current filters.</td>
             </tr>
           {% endif %}
         </tbody>

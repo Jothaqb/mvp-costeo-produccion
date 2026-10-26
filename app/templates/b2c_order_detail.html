@@ -26,12 +26,33 @@
       <div><dt>Discount</dt><dd>{{ order.discount_name_snapshot or "" }}</dd></div>
       <div><dt>Discount value</dt><dd>{{ order.discount_value_snapshot if order.discount_value_snapshot is not none else "" }}</dd></div>
       <div><dt>Discount amount</dt><dd>{{ fmt.money_crc(order.discount_amount) }}</dd></div>
-      <div><dt>Net Sales</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
-      <div><dt>COGS</dt><dd>{{ fmt.money_crc(order.cost_total_snapshot) }}</dd></div>
-      <div><dt>Gross Profit</dt><dd>{{ fmt.money_crc(order.gross_margin_amount) }}</dd></div>
-      <div><dt>Gross Profit %</dt><dd>{{ "{:.2f}%".format(order.gross_margin_percent * 100) if order.gross_margin_percent is not none else "" }}</dd></div>
+      <div><dt>Total invoiced sale</dt><dd>{{ fmt.money_crc(order.total_amount) }}</dd></div>
+      <div><dt>Net product sales</dt><dd>{{ fmt.money_crc(margin_summary.product_net_sales) }}</dd></div>
+      <div><dt>Shipping charged</dt><dd>{{ fmt.money_crc(margin_summary.shipping_net_sales) }}</dd></div>
+      <div><dt>Product COGS</dt><dd>{{ fmt.money_crc(margin_summary.product_cost) if margin_summary.product_cost is not none else "Pending invoice" }}</dd></div>
+      <div><dt>Product margin</dt><dd>{{ fmt.money_crc(margin_summary.product_margin_amount) if margin_summary.product_margin_amount is not none else "Pending invoice" }}</dd></div>
+      <div><dt>Product margin %</dt><dd>{{ "{:.2f}%".format(margin_summary.product_margin_percent * 100) if margin_summary.product_margin_percent is not none else "Pending invoice" }}</dd></div>
+      <div><dt>Actual shipping cost</dt><dd>{{ fmt.money_crc(margin_summary.shipping_cost) if margin_summary.shipping_cost is not none else "Pending" }}</dd></div>
+      <div><dt>Total order margin</dt><dd>{{ fmt.money_crc(margin_summary.total_margin_amount) if margin_summary.total_margin_amount is not none else "Pending shipping cost or invoice" }}</dd></div>
+      <div><dt>Total order margin %</dt><dd>{{ "{:.2f}%".format(margin_summary.total_margin_percent * 100) if margin_summary.total_margin_percent is not none else "Pending" }}</dd></div>
       <div><dt>Observations</dt><dd>{{ order.observations or "" }}</dd></div>
     </dl>
+
+    {% if has_shipping_line and can(request, "sales.invoice") %}
+      <details>
+        <summary>Record actual shipping cost</summary>
+        <form method="post" action="/b2c/orders/{{ order.id }}/shipping-cost">
+          <input type="hidden" name="csrf_token" value="{{ shipping_cost_csrf_token }}">
+          <label>Actual shipping cost
+            <input name="shipping_cost_amount" type="number" min="0" step="0.0001" required value="{{ order.shipping_cost_amount if order.shipping_cost_amount is not none else '' }}">
+          </label>
+          <label>Source
+            <input name="shipping_cost_source" maxlength="100" required value="{{ order.shipping_cost_source or 'manual' }}">
+          </label>
+          <button type="submit">Save shipping cost</button>
+        </form>
+      </details>
+    {% endif %}
 
     {% if order.status == "draft" %}
       <div class="actions">
@@ -63,6 +84,7 @@
       <thead>
         <tr>
           <th>#</th>
+          <th>Type</th>
           <th>SKU</th>
           <th>Description</th>
           <th>Unit price</th>
@@ -79,6 +101,7 @@
         {% for line in lines %}
           <tr>
             <td>{{ line.line_number }}</td>
+            <td>{{ line.line_type or "product" }}</td>
             <td>{{ line.sku_snapshot }}</td>
             <td>{{ line.description_snapshot }}</td>
             <td>{{ fmt.money_crc(line.unit_price_snapshot) }}</td>
@@ -86,9 +109,9 @@
             <td>{{ fmt.money_crc(line.line_total) }}</td>
             <td>{{ fmt.money_crc(line.discount_amount_snapshot) }}</td>
             <td>{{ fmt.money_crc(line.net_line_total_snapshot) }}</td>
-            <td>{{ fmt.money_crc(line.cost_total_snapshot) }}</td>
-            <td>{{ fmt.money_crc(line.gross_margin_amount) }}</td>
-            <td>{{ "{:.2f}%".format(line.gross_margin_percent * 100) if line.gross_margin_percent is not none else "" }}</td>
+            <td>{{ fmt.money_crc(line.cost_total_snapshot) if line.line_type != "shipping" else "N/A (logistics)" }}</td>
+            <td>{{ fmt.money_crc(line.gross_margin_amount) if line.line_type != "shipping" else "N/A" }}</td>
+            <td>{{ "{:.2f}%".format(line.gross_margin_percent * 100) if line.line_type != "shipping" and line.gross_margin_percent is not none else "N/A" }}</td>
           </tr>
         {% endfor %}
       </tbody>

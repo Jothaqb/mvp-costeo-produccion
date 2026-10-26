@@ -46,7 +46,7 @@
       <div class="chart-panel-header">
         <div>
           <p class="eyebrow">Monthly trend</p>
-          <h2>Net Sales, COGS and Gross Profit</h2>
+          <h2>Net Sales, product COGS and product margin</h2>
         </div>
       </div>
       <svg id="total-sales-monthly-chart" class="report-chart" viewBox="0 0 760 320" aria-label="Monthly sales trend"></svg>
@@ -54,10 +54,10 @@
       <div class="line-chart-legend" aria-hidden="true">
         <span><i class="chart-swatch chart-swatch-net"></i>Net Sales</span>
         <span><i class="chart-swatch chart-swatch-cogs"></i>COGS</span>
-        <span><i class="chart-swatch chart-swatch-profit"></i>Gross Profit</span>
+        <span><i class="chart-swatch chart-swatch-profit"></i>Product margin</span>
       </div>
       {% if monthly_cogs_hidden %}
-        <p class="chart-note">COGS and Gross Profit are hidden for months with incomplete COGS coverage.</p>
+        <p class="chart-note">Product COGS and product margin are hidden for months with incomplete COGS coverage.</p>
       {% endif %}
     </div>
   </section>
@@ -72,6 +72,7 @@
           <th>Customer</th>
           <th>Channel</th>
           <th>SKU</th>
+          <th>Line type</th>
           <th>Description</th>
           <th>Category</th>
           <th>Quantity</th>
@@ -93,6 +94,7 @@
             <td>{{ row.customer_name or "" }}</td>
             <td>{{ row.channel_name or "" }}</td>
             <td>{{ row.sku }}</td>
+            <td>{{ "Shipping" if row.line_type == "shipping" else "Product" }}</td>
             <td>{{ row.description }}</td>
             <td>{{ row.category_name or "" }}</td>
             <td>{{ row.quantity }}</td>
@@ -113,7 +115,7 @@
         {% endfor %}
         {% if not rows %}
           <tr>
-            <td colspan="16">No invoiced sales match the current filters.</td>
+            <td colspan="17">No invoiced sales match the current filters.</td>
           </tr>
         {% endif %}
       </tbody>

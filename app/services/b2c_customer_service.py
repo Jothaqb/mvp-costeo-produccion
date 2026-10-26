@@ -15,7 +15,7 @@ class B2CCustomerInitializationResult:
     skipped: int
 
 
-def create_b2c_customer(
+def create_b2c_customer_in_session(
     db: Session,
     *,
     name: str,
@@ -42,6 +42,35 @@ def create_b2c_customer(
         active=active,
     )
     db.add(customer)
+    db.flush()
+    return customer
+
+
+def create_b2c_customer(
+    db: Session,
+    *,
+    name: str,
+    phone: str,
+    email: str,
+    address: str,
+    province: str,
+    canton: str,
+    district: str,
+    observations: str,
+    active: bool,
+) -> B2CCustomer:
+    customer = create_b2c_customer_in_session(
+        db,
+        name=name,
+        phone=phone,
+        email=email,
+        address=address,
+        province=province,
+        canton=canton,
+        district=district,
+        observations=observations,
+        active=active,
+    )
     db.commit()
     db.refresh(customer)
     return customer

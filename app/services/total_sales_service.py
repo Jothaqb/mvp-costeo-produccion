@@ -38,6 +38,8 @@ class TotalSalesRow:
     order_status: str
     order_created_at: datetime
     line_number: int
+    line_type: str
+    order_shipping_cost: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,12 @@ class SalesSummaryBucket:
     cogs_lines_with_value: int
     cogs_total_lines: int
     cogs_coverage_label: str
+    product_net_sales: Decimal
+    shipping_net_sales: Decimal
+    product_margin: Decimal | None
+    shipping_cost: Decimal | None
+    total_margin: Decimal | None
+    has_complete_shipping_cost: bool
 
 
 @dataclass(frozen=True)
@@ -78,6 +86,12 @@ class MonthlySalesPoint:
     cogs_lines_with_value: int
     cogs_total_lines: int
     cogs_coverage_label: str
+    product_net_sales: Decimal
+    shipping_net_sales: Decimal
+    product_margin: Decimal | None
+    shipping_cost: Decimal | None
+    total_margin: Decimal | None
+    has_complete_shipping_cost: bool
 
 
 @dataclass(frozen=True)
@@ -174,6 +188,12 @@ class SalesByOrderRow:
     cogs_total_lines: int
     cogs_coverage_label: str
     detail_url: str
+    product_net_sales: Decimal
+    shipping_net_sales: Decimal
+    product_margin: Decimal | None
+    shipping_cost: Decimal | None
+    total_margin: Decimal | None
+    has_complete_shipping_cost: bool
 
 
 @dataclass(frozen=True)
@@ -192,6 +212,12 @@ class SalesByOrderSummary:
     cogs_lines_with_value: int
     cogs_total_lines: int
     cogs_coverage_label: str
+    product_net_sales: Decimal
+    shipping_net_sales: Decimal
+    product_margin: Decimal | None
+    shipping_cost: Decimal | None
+    total_margin: Decimal | None
+    has_complete_shipping_cost: bool
 
 
 @dataclass(frozen=True)
@@ -244,6 +270,8 @@ def get_total_sales_rows(
             order_status=row.order_status,
             order_created_at=row.order_created_at,
             line_number=row.line_number,
+            line_type=row.line_type,
+            order_shipping_cost=row.order_shipping_cost,
         )
         for row in rows
     ]
@@ -294,6 +322,12 @@ def get_sales_summary(
         cogs_lines_with_value=total_bucket.cogs_lines_with_value,
         cogs_total_lines=total_bucket.cogs_total_lines,
         cogs_coverage_label=total_bucket.cogs_coverage_label,
+        product_net_sales=total_bucket.product_net_sales,
+        shipping_net_sales=total_bucket.shipping_net_sales,
+        product_margin=total_bucket.product_margin,
+        shipping_cost=total_bucket.shipping_cost,
+        total_margin=total_bucket.total_margin,
+        has_complete_shipping_cost=total_bucket.has_complete_shipping_cost,
     )
     return SalesSummary(total=total_bucket, b2b=b2b_bucket, b2c=b2c_bucket)
 
@@ -427,6 +461,8 @@ def _get_b2b_sales_rows(
                 order_status=order.status,
                 order_created_at=order.created_at,
                 line_number=line.line_number,
+                line_type="product",
+                order_shipping_cost=ZERO,
             )
         )
     return rows
@@ -482,6 +518,8 @@ def _get_b2c_sales_rows(
                 order_status=order.status,
                 order_created_at=order.created_at,
                 line_number=line.line_number,
+                line_type=(line.line_type or "product").strip().lower(),
+                order_shipping_cost=order.shipping_cost_amount,
             )
         )
     return rows
@@ -508,15 +546,27 @@ def _build_sales_summary_bucket(
     total_gross_sales = sum((row.gross_sales for row in rows), ZERO)
     total_net_sales = sum((row.line_total for row in rows), ZERO)
     total_lines = len(rows)
-    total_quantity = sum((row.quantity for row in rows), ZERO)
+    product_rows = _product_rows(rows)
+    total_quantity = sum((row.quantity for row in product_rows), ZERO)
     total_discount = sum(((row.discount_amount or ZERO) for row in rows), ZERO)
     total_orders = len({(row.sales_source, row.order_id) for row in rows})
     average_order_value = _safe_divide(total_net_sales, Decimal(total_orders))
     average_line_value = _safe_divide(total_net_sales, Decimal(total_lines))
     cogs, has_complete_cogs, cogs_lines_with_value, cogs_total_lines, cogs_coverage_label = _aggregate_cogs(
-        [row.cogs for row in rows]
+        [row.cogs for row in product_rows]
     )
-    gross_profit = _gross_profit_for_row(total_net_sales, cogs) if has_complete_cogs else None
+    product_net_sales = sum((row.line_total for row in product_rows), ZERO)
+    shipping_net_sales = total_net_sales - product_net_sales
+    product_margin = _gross_profit_for_row(product_net_sales, cogs) if has_complete_cogs else None
+    shipping_cost, has_complete_shipping_cost = _aggregate_shipping_cost(rows)
+    total_margin = (
+        total_net_sales - (cogs or ZERO) - (shipping_cost or ZERO)
+        if has_complete_cogs and has_complete_shipping_cost
+        else None
+    )
+    # Keep the legacy gross_profit field product-only. Shipping profitability is exposed
+    # separately and is never treated as definitive while the real carrier cost is absent.
+    gross_profit = product_margin
     if total_net_sales_base is None:
         sales_percent = ZERO
     else:
@@ -538,10 +588,17 @@ def _build_sales_summary_bucket(
         cogs_lines_with_value=cogs_lines_with_value,
         cogs_total_lines=cogs_total_lines,
         cogs_coverage_label=cogs_coverage_label,
+        product_net_sales=product_net_sales,
+        shipping_net_sales=shipping_net_sales,
+        product_margin=product_margin,
+        shipping_cost=shipping_cost,
+        total_margin=total_margin,
+        has_complete_shipping_cost=has_complete_shipping_cost,
     )
 
 
 def _build_sales_items_pareto(rows: list[TotalSalesRow]) -> SalesItemsPareto:
+    rows = _product_rows(rows)
     grouped_rows: dict[str, list[TotalSalesRow]] = {}
     for row in rows:
         sku = (row.sku or "").strip() or "(sin SKU)"
@@ -634,10 +691,20 @@ def _build_total_sales_monthly_summary(rows: list[TotalSalesRow]) -> list[Monthl
     for month_start in sorted(grouped_rows):
         month_rows = grouped_rows[month_start]
         net_sales = sum((row.line_total for row in month_rows), ZERO)
+        product_rows = _product_rows(month_rows)
+        product_net_sales = sum((row.line_total for row in product_rows), ZERO)
+        shipping_net_sales = net_sales - product_net_sales
         cogs, has_complete_cogs, cogs_lines_with_value, cogs_total_lines, cogs_coverage_label = _aggregate_cogs(
-            [row.cogs for row in month_rows]
+            [row.cogs for row in product_rows]
         )
-        gross_profit = _gross_profit_for_row(net_sales, cogs) if has_complete_cogs else None
+        product_margin = _gross_profit_for_row(product_net_sales, cogs) if has_complete_cogs else None
+        shipping_cost, has_complete_shipping_cost = _aggregate_shipping_cost(month_rows)
+        total_margin = (
+            net_sales - (cogs or ZERO) - (shipping_cost or ZERO)
+            if has_complete_cogs and has_complete_shipping_cost
+            else None
+        )
+        gross_profit = product_margin
         monthly_points.append(
             MonthlySalesPoint(
                 month_start=month_start,
@@ -649,12 +716,19 @@ def _build_total_sales_monthly_summary(rows: list[TotalSalesRow]) -> list[Monthl
                 cogs_lines_with_value=cogs_lines_with_value,
                 cogs_total_lines=cogs_total_lines,
                 cogs_coverage_label=cogs_coverage_label,
+                product_net_sales=product_net_sales,
+                shipping_net_sales=shipping_net_sales,
+                product_margin=product_margin,
+                shipping_cost=shipping_cost,
+                total_margin=total_margin,
+                has_complete_shipping_cost=has_complete_shipping_cost,
             )
         )
     return monthly_points
 
 
 def _build_sales_categories_pareto(rows: list[TotalSalesRow]) -> SalesCategoriesPareto:
+    rows = _product_rows(rows)
     grouped_rows: dict[str, list[TotalSalesRow]] = {}
     for row in rows:
         category_name = (row.category_name or "").strip() or "(sin categoría)"
@@ -748,16 +822,26 @@ def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
         first_row = order_group_rows[0]
         gross_sales = sum((row.gross_sales for row in order_group_rows), ZERO)
         net_sales = sum((row.line_total for row in order_group_rows), ZERO)
-        total_quantity = sum((row.quantity for row in order_group_rows), ZERO)
+        product_rows = _product_rows(order_group_rows)
+        total_quantity = sum((row.quantity for row in product_rows), ZERO)
         total_discount = sum(((row.discount_amount or ZERO) for row in order_group_rows), ZERO)
         lines_count = len(order_group_rows)
-        items_count = len({((row.sku or "").strip() or "(sin SKU)") for row in order_group_rows})
-        categories_count = len({((row.category_name or "").strip() or "(sin categoría)") for row in order_group_rows})
+        items_count = len({((row.sku or "").strip() or "(sin SKU)") for row in product_rows})
+        categories_count = len({((row.category_name or "").strip() or "(sin categoría)") for row in product_rows})
         average_line_value = _safe_divide(net_sales, Decimal(lines_count))
         cogs, has_complete_cogs, cogs_lines_with_value, cogs_total_lines, cogs_coverage_label = _aggregate_cogs(
-            [row.cogs for row in order_group_rows]
+            [row.cogs for row in product_rows]
         )
-        gross_profit = _gross_profit_for_row(net_sales, cogs) if has_complete_cogs else None
+        product_net_sales = sum((row.line_total for row in product_rows), ZERO)
+        shipping_net_sales = net_sales - product_net_sales
+        product_margin = _gross_profit_for_row(product_net_sales, cogs) if has_complete_cogs else None
+        shipping_cost, has_complete_shipping_cost = _aggregate_shipping_cost(order_group_rows)
+        total_margin = (
+            net_sales - (cogs or ZERO) - (shipping_cost or ZERO)
+            if has_complete_cogs and has_complete_shipping_cost
+            else None
+        )
+        gross_profit = product_margin
         detail_url = f"/b2b/orders/{order_id}" if sales_source == "B2B" else f"/b2c/orders/{order_id}"
         order_rows.append(
             SalesByOrderRow(
@@ -783,6 +867,12 @@ def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
                 cogs_total_lines=cogs_total_lines,
                 cogs_coverage_label=cogs_coverage_label,
                 detail_url=detail_url,
+                product_net_sales=product_net_sales,
+                shipping_net_sales=shipping_net_sales,
+                product_margin=product_margin,
+                shipping_cost=shipping_cost,
+                total_margin=total_margin,
+                has_complete_shipping_cost=has_complete_shipping_cost,
             )
         )
 
@@ -804,9 +894,18 @@ def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
     b2b_orders = sum((1 for row in order_rows if row.sales_source == "B2B"))
     b2c_orders = sum((1 for row in order_rows if row.sales_source == "B2C"))
     cogs, has_complete_cogs, cogs_lines_with_value, cogs_total_lines, cogs_coverage_label = _aggregate_cogs(
-        [row.cogs for row in rows]
+        [row.cogs for row in _product_rows(rows)]
     )
-    gross_profit = _gross_profit_for_row(total_net_sales, cogs) if has_complete_cogs else None
+    product_net_sales = sum((row.product_net_sales for row in order_rows), ZERO)
+    shipping_net_sales = sum((row.shipping_net_sales for row in order_rows), ZERO)
+    product_margin = _gross_profit_for_row(product_net_sales, cogs) if has_complete_cogs else None
+    shipping_cost, has_complete_shipping_cost = _aggregate_shipping_cost(rows)
+    total_margin = (
+        total_net_sales - (cogs or ZERO) - (shipping_cost or ZERO)
+        if has_complete_cogs and has_complete_shipping_cost
+        else None
+    )
+    gross_profit = product_margin
     summary = SalesByOrderSummary(
         total_gross_sales=total_gross_sales,
         total_discount=total_discount,
@@ -822,8 +921,30 @@ def _build_sales_by_order(rows: list[TotalSalesRow]) -> SalesByOrderResult:
         cogs_lines_with_value=cogs_lines_with_value,
         cogs_total_lines=cogs_total_lines,
         cogs_coverage_label=cogs_coverage_label,
+        product_net_sales=product_net_sales,
+        shipping_net_sales=shipping_net_sales,
+        product_margin=product_margin,
+        shipping_cost=shipping_cost,
+        total_margin=total_margin,
+        has_complete_shipping_cost=has_complete_shipping_cost,
     )
     return SalesByOrderResult(summary=summary, rows=order_rows)
+
+
+def _product_rows(rows: list[TotalSalesRow]) -> list[TotalSalesRow]:
+    return [row for row in rows if row.line_type != "shipping"]
+
+
+def _aggregate_shipping_cost(rows: list[TotalSalesRow]) -> tuple[Decimal | None, bool]:
+    shipping_orders: dict[tuple[str, int], Decimal | None] = {}
+    for row in rows:
+        if row.line_type != "shipping":
+            continue
+        key = (row.sales_source, row.order_id)
+        shipping_orders[key] = row.order_shipping_cost
+    if any(cost is None for cost in shipping_orders.values()):
+        return None, False
+    return sum((cost or ZERO for cost in shipping_orders.values()), ZERO), True
 
 
 def _resolve_pareto_description(rows: list[TotalSalesRow]) -> str:

@@ -1441,9 +1441,14 @@ def ensure_b2c_sales_tables() -> None:
                 status VARCHAR(50) NOT NULL,
                 subtotal_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
                 total_amount NUMERIC(12, 4) NOT NULL DEFAULT 0,
+                shipping_cost_amount NUMERIC(12, 4),
+                shipping_cost_source VARCHAR(100),
+                shipping_cost_recorded_at DATETIME,
+                shipping_cost_recorded_by_user_id INTEGER,
                 observations TEXT,
                 created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL
+                updated_at DATETIME NOT NULL,
+                FOREIGN KEY(shipping_cost_recorded_by_user_id) REFERENCES users (id)
             )
             """
         )
@@ -1453,6 +1458,9 @@ def ensure_b2c_sales_tables() -> None:
                 id INTEGER NOT NULL PRIMARY KEY,
                 sales_order_id INTEGER NOT NULL,
                 line_number INTEGER NOT NULL,
+                line_type VARCHAR(20) NOT NULL DEFAULT 'product'
+                    CONSTRAINT ck_b2c_sales_order_lines_line_type
+                    CHECK (line_type IN ('product', 'shipping')),
                 sku_snapshot VARCHAR(100) NOT NULL,
                 description_snapshot VARCHAR(255) NOT NULL,
                 quantity NUMERIC(12, 4) NOT NULL,
@@ -1481,6 +1489,88 @@ def ensure_b2c_sales_tables() -> None:
             "CREATE INDEX IF NOT EXISTS ix_b2c_sales_order_lines_sales_order_id ON b2c_sales_order_lines (sales_order_id)"
         )
         ensure_b2c_loyverse_receipt_columns(connection)
+
+
+def ensure_shopify_phase1a_schema() -> None:
+    """Add Phase 1A B2C columns without changing historical values.
+
+    New Shopify integration tables are created by ``Base.metadata.create_all``.
+    This helper is only needed for incremental columns on existing B2C tables.
+    """
+    if engine.dialect.name not in {"sqlite", "postgresql"}:
+        return
+
+    with engine.begin() as connection:
+        if engine.dialect.name == "postgresql":
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_order_lines "
+                "ADD COLUMN IF NOT EXISTS line_type VARCHAR(20) NOT NULL DEFAULT 'product'"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS shipping_cost_amount NUMERIC(12, 4)"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS shipping_cost_source VARCHAR(100)"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS shipping_cost_recorded_at TIMESTAMP"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE b2c_sales_orders ADD COLUMN IF NOT EXISTS shipping_cost_recorded_by_user_id INTEGER"
+            )
+            line_type_check = connection.exec_driver_sql(
+                "SELECT 1 FROM pg_constraint "
+                "WHERE conname = 'ck_b2c_sales_order_lines_line_type' "
+                "AND conrelid = 'b2c_sales_order_lines'::regclass"
+            ).fetchone()
+            if line_type_check is None:
+                connection.exec_driver_sql(
+                    "ALTER TABLE b2c_sales_order_lines "
+                    "ADD CONSTRAINT ck_b2c_sales_order_lines_line_type "
+                    "CHECK (line_type IN ('product', 'shipping'))"
+                )
+            shipping_cost_fk = connection.exec_driver_sql(
+                "SELECT 1 "
+                "FROM pg_constraint c "
+                "JOIN pg_attribute a "
+                "  ON a.attrelid = c.conrelid "
+                " AND a.attname = 'shipping_cost_recorded_by_user_id' "
+                " AND a.attnum = ANY(c.conkey) "
+                "WHERE c.conrelid = 'b2c_sales_orders'::regclass "
+                "  AND c.contype = 'f'"
+            ).fetchone()
+            if shipping_cost_fk is None:
+                connection.exec_driver_sql(
+                    "ALTER TABLE b2c_sales_orders "
+                    "ADD CONSTRAINT fk_b2c_sales_orders_shipping_cost_user "
+                    "FOREIGN KEY (shipping_cost_recorded_by_user_id) REFERENCES users(id)"
+                )
+        else:
+            _ensure_columns(
+                connection,
+                "b2c_sales_order_lines",
+                {
+                    "line_type": (
+                        "VARCHAR(20) NOT NULL DEFAULT 'product' "
+                        "CONSTRAINT ck_b2c_sales_order_lines_line_type "
+                        "CHECK (line_type IN ('product', 'shipping'))"
+                    )
+                },
+            )
+            _ensure_columns(
+                connection,
+                "b2c_sales_orders",
+                {
+                    "shipping_cost_amount": "NUMERIC(12, 4)",
+                    "shipping_cost_source": "VARCHAR(100)",
+                    "shipping_cost_recorded_at": "DATETIME",
+                    "shipping_cost_recorded_by_user_id": "INTEGER",
+                },
+            )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_shipping_cost_recorded_by_user_id "
+            "ON b2c_sales_orders (shipping_cost_recorded_by_user_id)"
+        )
 
 
 def ensure_b2c_loyverse_receipt_columns(existing_connection=None) -> None:
@@ -2002,13 +2092,27 @@ def _ensure_b2c_sales_orders_channel_constraint_removed(connection) -> None:
             cost_total_snapshot NUMERIC(12, 4),
             gross_margin_amount NUMERIC(12, 4),
             gross_margin_percent NUMERIC(12, 4),
+            shipping_cost_amount NUMERIC(12, 4),
+            shipping_cost_source VARCHAR(100),
+            shipping_cost_recorded_at DATETIME,
+            shipping_cost_recorded_by_user_id INTEGER,
+            loyverse_receipt_id VARCHAR(100),
+            loyverse_receipt_number VARCHAR(100),
+            loyverse_receipt_date DATETIME,
+            loyverse_receipt_status VARCHAR(50),
+            loyverse_payment_type_id_snapshot VARCHAR(100),
+            loyverse_payment_type_name_snapshot VARCHAR(255),
+            loyverse_source VARCHAR(50),
+            loyverse_imported_at DATETIME,
+            loyverse_raw_payload_summary TEXT,
             observations TEXT,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
             CONSTRAINT ck_b2c_sales_orders_status CHECK (status IN ('draft', 'invoiced', 'cancelled')),
             FOREIGN KEY(b2c_customer_id) REFERENCES b2c_customers (id),
             FOREIGN KEY(discount_rule_id) REFERENCES discount_rules (id),
-            FOREIGN KEY(channel_id) REFERENCES channels (id)
+            FOREIGN KEY(channel_id) REFERENCES channels (id),
+            FOREIGN KEY(shipping_cost_recorded_by_user_id) REFERENCES users (id)
         )
         """
     )
@@ -2040,6 +2144,19 @@ def _ensure_b2c_sales_orders_channel_constraint_removed(connection) -> None:
             cost_total_snapshot,
             gross_margin_amount,
             gross_margin_percent,
+            shipping_cost_amount,
+            shipping_cost_source,
+            shipping_cost_recorded_at,
+            shipping_cost_recorded_by_user_id,
+            loyverse_receipt_id,
+            loyverse_receipt_number,
+            loyverse_receipt_date,
+            loyverse_receipt_status,
+            loyverse_payment_type_id_snapshot,
+            loyverse_payment_type_name_snapshot,
+            loyverse_source,
+            loyverse_imported_at,
+            loyverse_raw_payload_summary,
             observations,
             created_at,
             updated_at
@@ -2070,6 +2187,19 @@ def _ensure_b2c_sales_orders_channel_constraint_removed(connection) -> None:
             cost_total_snapshot,
             gross_margin_amount,
             gross_margin_percent,
+            shipping_cost_amount,
+            shipping_cost_source,
+            shipping_cost_recorded_at,
+            shipping_cost_recorded_by_user_id,
+            loyverse_receipt_id,
+            loyverse_receipt_number,
+            loyverse_receipt_date,
+            loyverse_receipt_status,
+            loyverse_payment_type_id_snapshot,
+            loyverse_payment_type_name_snapshot,
+            loyverse_source,
+            loyverse_imported_at,
+            loyverse_raw_payload_summary,
             observations,
             created_at,
             updated_at
@@ -2091,6 +2221,10 @@ def _ensure_b2c_sales_orders_channel_constraint_removed(connection) -> None:
     )
     connection.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_discount_rule_id ON b2c_sales_orders (discount_rule_id)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_b2c_sales_orders_shipping_cost_recorded_by_user_id "
+        "ON b2c_sales_orders (shipping_cost_recorded_by_user_id)"
     )
 
 
