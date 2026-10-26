@@ -855,16 +855,13 @@ class ShopifyPhase1ATests(unittest.TestCase):
             self.assertIsNone(db.get(B2CSalesOrder, order.id).shipping_cost_amount)
             self.assertEqual(db.query(AuditLog).filter_by(action="atomic_shipping_cost_test").count(), 0)
 
-    def test_shopify_is_disabled_without_configuration_and_no_live_endpoint_exists(self) -> None:
+    def test_shopify_is_disabled_without_configuration(self) -> None:
         previous = os.environ.pop("SHOPIFY_INTEGRATION_ENABLED", None)
         try:
             self.assertFalse(shopify_integration_enabled())
         finally:
             if previous is not None:
                 os.environ["SHOPIFY_INTEGRATION_ENABLED"] = previous
-        main_source = Path("app/main.py").read_text(encoding="utf-8")
-        self.assertNotIn('@app.post("/shopify', main_source)
-        self.assertNotIn('@app.post("/webhooks/shopify', main_source)
 
     def _direct_order(self, db, number: str) -> B2CSalesOrder:
         order = B2CSalesOrder(

@@ -1573,6 +1573,50 @@ def ensure_shopify_phase1a_schema() -> None:
         )
 
 
+def ensure_shopify_phase1b_schema() -> None:
+    """Add the durable Phase 1B webhook and financial snapshot columns.
+
+    All columns are nullable so existing Phase 1A rows retain their exact meaning.
+    ``Base.metadata.create_all`` creates fresh installations; this helper upgrades
+    existing PostgreSQL and SQLite databases idempotently.
+    """
+    if engine.dialect.name not in {"sqlite", "postgresql"}:
+        return
+
+    webhook_columns = {
+        "payload_body": "TEXT",
+        "api_version": "VARCHAR(20)",
+        "triggered_at": "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME",
+        "processing_started_at": "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME",
+        "next_attempt_at": "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME",
+    }
+    integration_columns = {
+        "total_received_amount": "NUMERIC(12, 4)",
+        "outstanding_amount": "NUMERIC(12, 4)",
+        "refunded_amount": "NUMERIC(12, 4)",
+        "financial_updated_at": "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME",
+    }
+    with engine.begin() as connection:
+        if engine.dialect.name == "postgresql":
+            for column_name, column_type in webhook_columns.items():
+                connection.exec_driver_sql(
+                    f"ALTER TABLE shopify_webhook_events "
+                    f"ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+                )
+            for column_name, column_type in integration_columns.items():
+                connection.exec_driver_sql(
+                    f"ALTER TABLE shopify_order_integrations "
+                    f"ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+                )
+        else:
+            _ensure_columns(connection, "shopify_webhook_events", webhook_columns)
+            _ensure_columns(connection, "shopify_order_integrations", integration_columns)
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_shopify_webhook_events_next_attempt_at "
+            "ON shopify_webhook_events (next_attempt_at)"
+        )
+
+
 def ensure_b2c_loyverse_receipt_columns(existing_connection=None) -> None:
     if engine.dialect.name not in {"sqlite", "postgresql"}:
         return

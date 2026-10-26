@@ -237,17 +237,18 @@ def lock_shopify_customer_identity(
     bind = db.get_bind()
     if bind.dialect.name != "postgresql":
         return
-    identity = "|".join(
-        (
-            (shop_domain or "").strip().lower(),
-            (shopify_customer_gid or "").strip(),
-            normalize_shopify_phone(phone) or "",
-            normalize_shopify_email(email) or "",
-        )
-    )
-    digest = hashlib.sha256(identity.encode("utf-8")).digest()
-    lock_key = int.from_bytes(digest[:8], byteorder="big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
-    db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
+    normalized_domain = (shop_domain or "").strip().lower()
+    identities = {
+        f"gid|{normalized_domain}|{(shopify_customer_gid or '').strip()}",
+        f"phone|{normalize_shopify_phone(phone) or ''}",
+        f"email|{normalize_shopify_email(email) or ''}",
+    }
+    # Separate, sorted locks serialize buyers that share any one trusted
+    # identifier, even if Shopify GIDs or optional contact fields differ.
+    for identity in sorted(value for value in identities if not value.endswith("|")):
+        digest = hashlib.sha256(identity.encode("utf-8")).digest()
+        lock_key = int.from_bytes(digest[:8], byteorder="big", signed=False) & 0x7FFF_FFFF_FFFF_FFFF
+        db.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key})
 
 
 def add_shopify_customer_mapping_in_session(
@@ -282,6 +283,8 @@ def register_shopify_webhook_event_in_session(
     webhook_id: str,
     topic: str,
     raw_body: bytes,
+    api_version: str | None = None,
+    triggered_at: datetime | None = None,
 ) -> tuple[ShopifyWebhookEvent, bool]:
     normalized_domain = (shop_domain or "").strip().lower()
     normalized_webhook_id = (webhook_id or "").strip()
@@ -306,6 +309,9 @@ def register_shopify_webhook_event_in_session(
         webhook_id=normalized_webhook_id,
         topic=normalized_topic,
         payload_sha256=payload_sha256,
+        payload_body=raw_body.decode("utf-8"),
+        api_version=(api_version or "").strip()[:20] or None,
+        triggered_at=triggered_at,
         processing_status="received",
         received_at=datetime.utcnow(),
     )

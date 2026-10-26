@@ -4,6 +4,8 @@
 {% block content %}
   <section>
     <h1>{{ title }}</h1>
+    {% if request.query_params.get('message') %}<p class="success">{{ request.query_params.get('message') }}</p>{% endif %}
+    {% if request.query_params.get('error') %}<p class="error">{{ request.query_params.get('error') }}</p>{% endif %}
     <section class="actions">
       {% if can(request, "sales.create") %}<a class="button" href="/b2c/orders/new">New B2C order</a>{% endif %}
       {% if can(request, "sales.import") %}<a class="button" href="/b2c/orders/import">Import Historical CSV</a>{% endif %}
@@ -58,4 +60,46 @@
       </tbody>
     </table>
   </section>
+
+  {% if pending_shopify_rows %}
+    <section>
+      <h2>Shopify orders pending review</h2>
+      <p class="muted-inline">
+        These persisted Shopify orders did not create partial B2C drafts. Resolve the reported cause and queue a retry.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Shopify order</th>
+            <th>Status</th>
+            <th>Reason</th>
+            <th>Financial status</th>
+            <th>Received</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in pending_shopify_rows %}
+            <tr>
+              <td>{{ row.order_label }}</td>
+              <td>{{ row.event.processing_status }}</td>
+              <td>{{ (row.integration.review_message if row.integration else '') or (row.integration.error_message if row.integration else '') or row.event.error_message or '' }}</td>
+              <td>{{ row.integration.financial_status if row.integration else '' }}</td>
+              <td>{{ row.event.received_at }}</td>
+              <td>
+                {% if can(request, "sales.create") and shopify_integration_enabled and row.retry_csrf_token and row.event.processing_status not in ("processing", "processed") %}
+                  <form method="post" action="/b2c/orders/shopify-events/{{ row.event.id }}/retry">
+                    <input type="hidden" name="csrf_token" value="{{ row.retry_csrf_token }}">
+                    <button type="submit">Retry import</button>
+                  </form>
+                {% else %}
+                  <span class="muted-inline">Unavailable</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
 {% endblock %}

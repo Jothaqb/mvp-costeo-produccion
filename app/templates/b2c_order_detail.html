@@ -38,6 +38,20 @@
       <div><dt>Observations</dt><dd>{{ order.observations or "" }}</dd></div>
     </dl>
 
+    {% if shopify_integration %}
+      <h2>Shopify source</h2>
+      <dl class="summary">
+        <div><dt>Shopify order</dt><dd>{{ shopify_integration.shopify_order_name or shopify_integration.shopify_order_gid }}</dd></div>
+        <div><dt>Financial status</dt><dd>{{ shopify_integration.financial_status or "Pending" }}</dd></div>
+        <div><dt>Currency</dt><dd>{{ shopify_integration.currency_code or "" }}</dd></div>
+        <div><dt>Total received</dt><dd>{{ fmt.money_crc(shopify_integration.total_received_amount) if shopify_integration.total_received_amount is not none else "Not supplied" }}</dd></div>
+        <div><dt>Outstanding</dt><dd>{{ fmt.money_crc(shopify_integration.outstanding_amount) if shopify_integration.outstanding_amount is not none else "Not supplied" }}</dd></div>
+        <div><dt>Refunded</dt><dd>{{ fmt.money_crc(shopify_integration.refunded_amount) if shopify_integration.refunded_amount is not none else "Not supplied" }}</dd></div>
+        <div><dt>Delivery method</dt><dd>{{ shopify_integration.shipping_title or shopify_integration.delivery_method_type or "" }}</dd></div>
+      </dl>
+      <p class="muted-inline">Shopify payment information is informational. Receiving this order does not create an ERP payment, invoice, inventory movement, or Kardex entry.</p>
+    {% endif %}
+
     {% if has_shipping_line and can(request, "sales.invoice") %}
       <details>
         <summary>Record actual shipping cost</summary>

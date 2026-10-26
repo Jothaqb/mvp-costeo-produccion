@@ -1,5 +1,7 @@
+import asyncio
 import csv
 import io
+import json
 import os
 from collections import Counter
 from datetime import date, datetime, timedelta
@@ -14,6 +16,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response, JSONResp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import (
@@ -53,6 +56,7 @@ from app.database import (
     ensure_sprint6_loyverse_cost_sync_columns,
     ensure_sprint7c_lot_columns_and_tables,
     ensure_shopify_phase1a_schema,
+    ensure_shopify_phase1b_schema,
     get_db,
 )
 from app.models import (
@@ -100,6 +104,8 @@ from app.models import (
     RolePermission,
     Route,
     RouteActivity,
+    ShopifyOrderIntegration,
+    ShopifyWebhookEvent,
     Supplier,
     User,
     UserRole,
@@ -211,6 +217,27 @@ from app.services.b2c_customer_service import (
     initialize_b2c_customers_from_mappings,
     list_b2c_customer_options,
     update_b2c_customer,
+)
+from app.services.shopify_phase1a_service import (
+    ShopifyPhase1AError,
+    register_shopify_webhook_event_in_session,
+    shopify_integration_enabled,
+)
+from app.services.shopify_phase1b_service import (
+    SHOPIFY_ORDERS_CREATE_TOPIC,
+    SHOPIFY_WEBHOOK_PATH,
+    ShopifyConfigurationError,
+    ShopifyGraphQLClient,
+    ShopifyPhase1BError,
+    ShopifyWebhookSecurityError,
+    build_shopify_retry_csrf_token,
+    load_shopify_runtime_config,
+    queue_shopify_event_retry_in_session,
+    run_shopify_worker_cycle,
+    shopify_worker_enabled,
+    shopify_worker_interval_seconds,
+    validate_shopify_retry_csrf_token,
+    validate_shopify_webhook_request,
 )
 from app.services.b2b_loyverse_mapping_service import (
     LoyverseMappingSyncError,
@@ -561,6 +588,7 @@ ensure_b2b_invoice_snapshot_columns()
 ensure_b2b_accounts_receivable_tables()
 ensure_b2c_sales_tables()
 ensure_shopify_phase1a_schema()
+ensure_shopify_phase1b_schema()
 ensure_discount_master_tables()
 ensure_b2b_loyverse_mapping_tables()
 ensure_b2c_customer_tables()
@@ -600,8 +628,56 @@ PRODUCTION_ORDER_REVERSE_ROLE_CODES = {"admin"}
 AUTH_PUBLIC_EXTRA_PATHS = {
     "/auth/forgot-password",
     "/auth/reset-password",
+    SHOPIFY_WEBHOOK_PATH,
 }
 templates.env.globals["can"] = can
+_shopify_worker_task: asyncio.Task | None = None
+_shopify_worker_stop: asyncio.Event | None = None
+
+
+async def _shopify_worker_loop(stop_event: asyncio.Event) -> None:
+    try:
+        interval = shopify_worker_interval_seconds()
+        config = load_shopify_runtime_config()
+        graph_ql_client = ShopifyGraphQLClient.from_environment()
+    except ShopifyConfigurationError as exc:
+        print(f"[shopify] background processor is not configured: {exc}")
+        return
+    while not stop_event.is_set():
+        try:
+            await asyncio.to_thread(
+                run_shopify_worker_cycle,
+                SessionLocal,
+                max_events=10,
+                config=config,
+                graph_ql_client=graph_ql_client,
+            )
+        except Exception as exc:
+            print(f"[shopify] background processor cycle failed: {type(exc).__name__}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
+
+
+@app.on_event("startup")
+async def start_shopify_background_processor() -> None:
+    global _shopify_worker_stop, _shopify_worker_task
+    if not shopify_worker_enabled():
+        return
+    _shopify_worker_stop = asyncio.Event()
+    _shopify_worker_task = asyncio.create_task(_shopify_worker_loop(_shopify_worker_stop))
+
+
+@app.on_event("shutdown")
+async def stop_shopify_background_processor() -> None:
+    global _shopify_worker_stop, _shopify_worker_task
+    if _shopify_worker_stop is not None:
+        _shopify_worker_stop.set()
+    if _shopify_worker_task is not None:
+        await _shopify_worker_task
+    _shopify_worker_stop = None
+    _shopify_worker_task = None
 
 
 def _redirect(url: str) -> RedirectResponse:
@@ -1017,6 +1093,77 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     if exc.status_code == 401:
         return _auth_redirect("/login", request)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.post(SHOPIFY_WEBHOOK_PATH)
+async def receive_shopify_orders_create_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    try:
+        config = load_shopify_runtime_config()
+    except ShopifyConfigurationError:
+        raise HTTPException(status_code=503, detail="Shopify integration is not configured.")
+
+    content_length = (request.headers.get("content-length") or "").strip()
+    if content_length.isdigit() and int(content_length) > config.max_webhook_bytes:
+        raise HTTPException(status_code=413, detail="Shopify webhook body is too large.")
+    body_chunks: list[bytes] = []
+    body_size = 0
+    async for chunk in request.stream():
+        body_size += len(chunk)
+        if body_size > config.max_webhook_bytes:
+            raise HTTPException(status_code=413, detail="Shopify webhook body is too large.")
+        body_chunks.append(chunk)
+    raw_body = b"".join(body_chunks)
+    try:
+        shop_domain, webhook_id, api_version, triggered_at = validate_shopify_webhook_request(
+            raw_body=raw_body,
+            headers={key.lower(): value for key, value in request.headers.items()},
+            config=config,
+        )
+        event, created = register_shopify_webhook_event_in_session(
+            db,
+            shop_domain=shop_domain,
+            webhook_id=webhook_id,
+            topic=SHOPIFY_ORDERS_CREATE_TOPIC,
+            raw_body=raw_body,
+            api_version=api_version,
+            triggered_at=triggered_at,
+        )
+        db.commit()
+    except ShopifyWebhookSecurityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except ShopifyPhase1AError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IntegrityError:
+        # A concurrent retry may win the unique delivery key. Re-run the
+        # idempotency comparison after rollback instead of returning 500.
+        db.rollback()
+        try:
+            event, created = register_shopify_webhook_event_in_session(
+                db,
+                shop_domain=shop_domain,
+                webhook_id=webhook_id,
+                topic=SHOPIFY_ORDERS_CREATE_TOPIC,
+                raw_body=raw_body,
+                api_version=api_version,
+                triggered_at=triggered_at,
+            )
+            db.rollback()
+        except ShopifyPhase1AError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return JSONResponse(
+        status_code=202,
+        content={
+            "accepted": True,
+            "duplicate": not created,
+            "event_id": event.id,
+        },
+    )
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -9897,6 +10044,50 @@ def b2c_orders(
     if filters["status"] in _b2c_statuses():
         order_query = order_query.filter(B2CSalesOrder.status == filters["status"])
     orders = order_query.order_by(B2CSalesOrder.created_at.desc(), B2CSalesOrder.id.desc()).all()
+    pending_shopify_events = (
+        db.query(ShopifyWebhookEvent)
+        .filter(ShopifyWebhookEvent.processing_status != "processed")
+        .order_by(ShopifyWebhookEvent.received_at.desc(), ShopifyWebhookEvent.id.desc())
+        .limit(100)
+        .all()
+    )
+    event_ids = {event.id for event in pending_shopify_events}
+    integrations_by_event_id = {
+        integration.source_webhook_event_id: integration
+        for integration in db.query(ShopifyOrderIntegration)
+        .filter(ShopifyOrderIntegration.source_webhook_event_id.in_(event_ids))
+        .all()
+    } if event_ids else {}
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    pending_shopify_rows = []
+    for event in pending_shopify_events:
+        integration = integrations_by_event_id.get(event.id)
+        retry_csrf_token = None
+        if session_token:
+            retry_csrf_token = build_shopify_retry_csrf_token(session_token, event.id)
+        order_label = event.webhook_id
+        if integration is not None:
+            order_label = integration.shopify_order_name or integration.shopify_order_gid
+        elif event.payload_body:
+            try:
+                payload = json.loads(event.payload_body)
+                if isinstance(payload, dict):
+                    order_label = str(
+                        payload.get("name")
+                        or payload.get("admin_graphql_api_id")
+                        or payload.get("id")
+                        or event.webhook_id
+                    )
+            except (TypeError, ValueError):
+                pass
+        pending_shopify_rows.append(
+            {
+                "integration": integration,
+                "event": event,
+                "order_label": order_label,
+                "retry_csrf_token": retry_csrf_token,
+            }
+        )
     return templates.TemplateResponse(
         request=request,
         name="b2c_orders_list.html",
@@ -9906,8 +10097,51 @@ def b2c_orders(
             "statuses": _b2c_statuses(),
             "filters": filters,
             "result_count": len(orders),
+            "pending_shopify_rows": pending_shopify_rows,
+            "shopify_integration_enabled": shopify_integration_enabled(),
         },
     )
+
+
+@app.post("/b2c/orders/shopify-events/{event_id}/retry")
+def retry_shopify_order_import(
+    event_id: int,
+    request: Request,
+    csrf_token: str = Form(...),
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "sales.create")
+    try:
+        validate_role_permissions_request_origin(
+            origin_header=request.headers.get("origin"),
+            referer_header=request.headers.get("referer"),
+        )
+        validate_shopify_retry_csrf_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            event_id,
+            csrf_token,
+        )
+        event = queue_shopify_event_retry_in_session(db, event_id=event_id)
+        add_audit_event_in_session(
+            db,
+            module="shopify",
+            action="shopify_order_retry_requested",
+            entity_type="shopify_webhook_event",
+            entity_id=event.id,
+            entity_label=event.webhook_id,
+            new_values={"processing_status": event.processing_status},
+            notes="An authorized ERP user queued a persisted Shopify event for automatic retry.",
+            request=request,
+            user=current_user,
+        )
+        db.commit()
+    except (RolePermissionCSRFError, ShopifyWebhookSecurityError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (ShopifyPhase1BError, ValueError) as exc:
+        db.rollback()
+        return _redirect(f"/b2c/orders?error={quote(str(exc))}")
+    return _redirect("/b2c/orders?message=Shopify%20event%20queued%20for%20retry")
 
 
 @app.get("/b2c/orders/import", response_class=HTMLResponse)
@@ -10092,6 +10326,11 @@ def b2c_order_detail(order_id: int, request: Request, db: Session = Depends(get_
         .order_by(B2CSalesOrderLine.line_number)
         .all()
     )
+    shopify_integration = (
+        db.query(ShopifyOrderIntegration)
+        .filter(ShopifyOrderIntegration.b2c_sales_order_id == order_id)
+        .one_or_none()
+    )
     return templates.TemplateResponse(
         request=request,
         name="b2c_order_detail.html",
@@ -10104,6 +10343,7 @@ def b2c_order_detail(order_id: int, request: Request, db: Session = Depends(get_
             "shipping_cost_csrf_token": build_b2c_shipping_cost_csrf_token(
                 request.cookies.get(SESSION_COOKIE_NAME)
             ),
+            "shopify_integration": shopify_integration,
             "error": None,
         },
     )
