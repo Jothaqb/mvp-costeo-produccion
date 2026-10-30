@@ -969,6 +969,47 @@ class B2BSalesOrder(Base):
     )
 
 
+class B2BLoyverseInvoiceDispatch(Base):
+    __tablename__ = "b2b_loyverse_invoice_dispatches"
+    __table_args__ = (
+        UniqueConstraint(
+            "sales_order_id",
+            name="uq_b2b_loyverse_invoice_dispatches_order",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'processing', 'success', 'failed', 'unknown')",
+            name="ck_b2b_loyverse_invoice_dispatches_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    sales_order_id: Mapped[int] = mapped_column(
+        ForeignKey("b2b_sales_orders.id"),
+        nullable=False,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    queued_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    queued_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    sales_order: Mapped[B2BSalesOrder] = relationship("B2BSalesOrder")
+    queued_by_user: Mapped["User"] = relationship("User")
+
+
 class B2BSalesOrderLine(Base):
     __tablename__ = "b2b_sales_order_lines"
 

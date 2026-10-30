@@ -11,6 +11,10 @@
     </div>
     <dl class="summary">
       <div><dt>Status</dt><dd>{{ order.status }}</dd></div>
+      {% if loyverse_status is defined %}
+        <div><dt>Loyverse</dt><dd>{{ loyverse_status.label }}{% if loyverse_status.detail %} — {{ loyverse_status.detail }}{% endif %}</dd></div>
+        {% if order.loyverse_invoice_synced_at %}<div><dt>Enviado a Loyverse</dt><dd>{{ order.loyverse_invoice_synced_at }}</dd></div>{% endif %}
+      {% endif %}
       {% if order.cancelled_at %}<div><dt>Cancelled at</dt><dd>{{ order.cancelled_at }}</dd></div>{% endif %}
       {% if order.cancellation_reason %}<div><dt>Cancellation reason</dt><dd>{{ order.cancellation_reason }}</dd></div>{% endif %}
       <div><dt>Customer</dt><dd>{{ order.customer_name_snapshot }}</dd></div>

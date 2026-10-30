@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -22,6 +22,7 @@ LOYVERSE_REQUEST_TIMEOUT_SECONDS = 8
 SYNC_STATUS_SUCCESS = "success"
 SYNC_STATUS_FAILED = "failed"
 SYNC_STATUS_UNKNOWN = "unknown"
+SYNC_STATUS_HISTORICAL_CONFIRMED = "historical_confirmed"
 
 
 class B2BLoyverseInvoiceError(B2BValidationError):
@@ -30,6 +31,22 @@ class B2BLoyverseInvoiceError(B2BValidationError):
 
 class LoyverseReceiptUnknownError(B2BLoyverseInvoiceError):
     pass
+
+
+def resolve_reliable_b2b_invoice_date(
+    order: B2BSalesOrder,
+) -> tuple[date | None, str]:
+    """Resolve only dates that prove when ERP invoicing happened.
+
+    Unlike accounting reports, this deliberately does not fall back to
+    ``delivery_date`` or ``created_at`` because neither is reliable evidence
+    for deciding whether a Loyverse receipt belongs to a date range.
+    """
+    if order.invoice_date is not None:
+        return order.invoice_date, "invoice_date"
+    if order.invoiced_at is not None:
+        return order.invoiced_at.date(), "invoiced_at"
+    return None, "missing"
 
 
 def invoice_b2b_order_in_loyverse(db: Session, order_id: int) -> B2BSalesOrder:

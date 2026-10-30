@@ -23,6 +23,7 @@ if str(ROOT_DIR) not in sys.path:
 from app.models import B2BSalesOrder  # noqa: E402
 from app.services.b2b_loyverse_invoice_service import (  # noqa: E402
     SYNC_STATUS_FAILED,
+    SYNC_STATUS_HISTORICAL_CONFIRMED,
     SYNC_STATUS_SUCCESS,
     SYNC_STATUS_UNKNOWN,
     _recalculate_order_total,
@@ -44,7 +45,13 @@ from tools.b2b_loyverse_monthly_invoice_job import (  # noqa: E402
 
 COSTA_RICA_TIMEZONE_NAME = "America/Costa_Rica"
 DEFAULT_EXPORT_ROOT = "artifacts/b2b_loyverse_daily"
-SUPPORTED_SYNC_STATUSES = {"", SYNC_STATUS_SUCCESS, SYNC_STATUS_FAILED, SYNC_STATUS_UNKNOWN}
+SUPPORTED_SYNC_STATUSES = {
+    "",
+    SYNC_STATUS_SUCCESS,
+    SYNC_STATUS_FAILED,
+    SYNC_STATUS_UNKNOWN,
+    SYNC_STATUS_HISTORICAL_CONFIRMED,
+}
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -294,6 +301,12 @@ def evaluate_daily_order(
             order,
             "blocked",
             "Loyverse sync status is success but no local receipt reference is stored; manual reconciliation is required.",
+        )
+    if sync_status == SYNC_STATUS_HISTORICAL_CONFIRMED:
+        return terminal_evaluation(
+            order,
+            "already_sent",
+            "The business confirmed this historical ERP invoice was already sent to Loyverse.",
         )
     if sync_status not in SUPPORTED_SYNC_STATUSES:
         return terminal_evaluation(

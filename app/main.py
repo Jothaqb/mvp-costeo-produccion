@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import hmac
 import io
 import json
 import os
@@ -244,6 +245,23 @@ from app.services.b2b_loyverse_mapping_service import (
     refresh_loyverse_customer_mappings,
     refresh_loyverse_payment_type_mappings,
     refresh_loyverse_variant_mappings,
+)
+from app.services.b2b_loyverse_invoicing_workflow_service import (
+    B2BLoyverseInvoicingSecurityError,
+    B2BLoyverseInvoicingStalePlanError,
+    B2BLoyverseInvoicingWorkflowError,
+    b2b_loyverse_invoice_worker_enabled,
+    b2b_loyverse_invoice_worker_interval_seconds,
+    build_b2b_loyverse_invoicing_confirmation_token,
+    build_b2b_loyverse_invoicing_csrf_token,
+    build_b2b_loyverse_invoicing_preview,
+    lock_b2b_loyverse_invoicing_range,
+    loyverse_integration_status,
+    queue_b2b_loyverse_invoicing_preview,
+    run_b2b_loyverse_invoice_worker_cycle,
+    validate_b2b_loyverse_execution_configuration,
+    validate_b2b_loyverse_invoicing_confirmation_token,
+    validate_b2b_loyverse_invoicing_csrf_token,
 )
 from app.services.b2b_customer_import_service import (
     B2BCustomerImportResult,
@@ -633,6 +651,8 @@ AUTH_PUBLIC_EXTRA_PATHS = {
 templates.env.globals["can"] = can
 _shopify_worker_task: asyncio.Task | None = None
 _shopify_worker_stop: asyncio.Event | None = None
+_b2b_loyverse_worker_task: asyncio.Task | None = None
+_b2b_loyverse_worker_stop: asyncio.Event | None = None
 
 
 async def _shopify_worker_loop(stop_event: asyncio.Event) -> None:
@@ -678,6 +698,50 @@ async def stop_shopify_background_processor() -> None:
         await _shopify_worker_task
     _shopify_worker_stop = None
     _shopify_worker_task = None
+
+
+async def _b2b_loyverse_worker_loop(stop_event: asyncio.Event) -> None:
+    try:
+        validate_b2b_loyverse_execution_configuration()
+        interval = b2b_loyverse_invoice_worker_interval_seconds()
+    except B2BLoyverseInvoicingWorkflowError as exc:
+        print(f"[b2b-loyverse] background processor is not configured: {exc}")
+        return
+    while not stop_event.is_set():
+        try:
+            await asyncio.to_thread(
+                run_b2b_loyverse_invoice_worker_cycle,
+                SessionLocal,
+                max_orders=5,
+            )
+        except Exception as exc:
+            print(f"[b2b-loyverse] background processor cycle failed: {type(exc).__name__}")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
+
+
+@app.on_event("startup")
+async def start_b2b_loyverse_background_processor() -> None:
+    global _b2b_loyverse_worker_stop, _b2b_loyverse_worker_task
+    if not b2b_loyverse_invoice_worker_enabled():
+        return
+    _b2b_loyverse_worker_stop = asyncio.Event()
+    _b2b_loyverse_worker_task = asyncio.create_task(
+        _b2b_loyverse_worker_loop(_b2b_loyverse_worker_stop)
+    )
+
+
+@app.on_event("shutdown")
+async def stop_b2b_loyverse_background_processor() -> None:
+    global _b2b_loyverse_worker_stop, _b2b_loyverse_worker_task
+    if _b2b_loyverse_worker_stop is not None:
+        _b2b_loyverse_worker_stop.set()
+    if _b2b_loyverse_worker_task is not None:
+        await _b2b_loyverse_worker_task
+    _b2b_loyverse_worker_stop = None
+    _b2b_loyverse_worker_task = None
 
 
 def _redirect(url: str) -> RedirectResponse:
@@ -9673,8 +9737,156 @@ def b2b_orders(
             "customers": customers,
             "statuses": _b2b_statuses(),
             "filters": filters,
+            "loyverse_statuses": {
+                order.id: loyverse_integration_status(order) for order in orders
+            },
         },
     )
+
+
+@app.get("/b2b/orders/loyverse-invoicing", response_class=HTMLResponse)
+def b2b_loyverse_invoicing_preview_page(
+    request: Request,
+    start_date: str = Query(""),
+    end_date: str = Query(""),
+    preview: str = Query(""),
+    message: str = Query(""),
+    error: str = Query(""),
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    require_permission(request, "sales.invoice")
+    today = current_b2b_operational_date()
+    default_start = today.replace(day=1)
+    selected_start = start_date.strip() or default_start.isoformat()
+    selected_end = end_date.strip() or today.isoformat()
+    preview_result = None
+    page_error = error.strip() or None
+    confirmation_token = None
+    csrf_token = build_b2b_loyverse_invoicing_csrf_token(
+        request.cookies.get(SESSION_COOKIE_NAME)
+    )
+    if preview == "1" and page_error is None:
+        try:
+            parsed_start = date.fromisoformat(selected_start)
+            parsed_end = date.fromisoformat(selected_end)
+            preview_result = build_b2b_loyverse_invoicing_preview(
+                db,
+                start_date=parsed_start,
+                end_date=parsed_end,
+            )
+            confirmation_token = build_b2b_loyverse_invoicing_confirmation_token(
+                request.cookies.get(SESSION_COOKIE_NAME),
+                start_date=parsed_start,
+                end_date=parsed_end,
+                plan_fingerprint=preview_result.plan_fingerprint,
+            )
+        except (ValueError, B2BLoyverseInvoicingWorkflowError) as exc:
+            page_error = str(exc)
+    return templates.TemplateResponse(
+        request=request,
+        name="b2b_loyverse_invoicing.html",
+        context={
+            "title": "Facturar B2B en Loyverse",
+            "start_date": selected_start,
+            "end_date": selected_end,
+            "preview": preview_result,
+            "message": message.strip() or None,
+            "error": page_error,
+            "csrf_token": csrf_token,
+            "confirmation_token": confirmation_token,
+            "worker_enabled": b2b_loyverse_invoice_worker_enabled(),
+        },
+    )
+
+
+@app.post("/b2b/orders/loyverse-invoicing/confirm")
+async def confirm_b2b_loyverse_invoicing(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    current_user = require_permission(request, "sales.invoice")
+    form = await request.form()
+    try:
+        validate_role_permissions_request_origin(
+            origin_header=request.headers.get("origin"),
+            referer_header=request.headers.get("referer"),
+        )
+        validate_b2b_loyverse_invoicing_csrf_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            str(form.get("csrf_token") or ""),
+        )
+        if str(form.get("confirmation") or "") != "confirmed":
+            raise B2BLoyverseInvoicingSecurityError(
+                "Debe aceptar expresamente la confirmación antes de poner pedidos en cola."
+            )
+        parsed_start = date.fromisoformat(str(form.get("start_date") or ""))
+        parsed_end = date.fromisoformat(str(form.get("end_date") or ""))
+        submitted_fingerprint = str(form.get("plan_fingerprint") or "").strip()
+        validate_b2b_loyverse_invoicing_confirmation_token(
+            request.cookies.get(SESSION_COOKIE_NAME),
+            str(form.get("confirmation_token") or ""),
+            start_date=parsed_start,
+            end_date=parsed_end,
+            plan_fingerprint=submitted_fingerprint,
+        )
+        validate_b2b_loyverse_execution_configuration()
+        lock_b2b_loyverse_invoicing_range(
+            db,
+            start_date=parsed_start,
+            end_date=parsed_end,
+        )
+        current_preview = build_b2b_loyverse_invoicing_preview(
+            db,
+            start_date=parsed_start,
+            end_date=parsed_end,
+        )
+        if not hmac.compare_digest(
+            submitted_fingerprint,
+            current_preview.plan_fingerprint,
+        ):
+            raise B2BLoyverseInvoicingStalePlanError(
+                "Los pedidos o mapeos cambiaron desde la vista previa; genere una nueva revisión."
+            )
+        if current_preview.eligible_count == 0:
+            db.rollback()
+            target = (
+                "/b2b/orders/loyverse-invoicing?preview=1"
+                f"&start_date={quote(parsed_start.isoformat())}"
+                f"&end_date={quote(parsed_end.isoformat())}"
+                "&message="
+                f"{quote('No hay pedidos elegibles; no se modificó ningún registro.')}"
+            )
+            return _redirect(target)
+        queued_count = queue_b2b_loyverse_invoicing_preview(
+            db,
+            preview=current_preview,
+            user=current_user,
+            request=request,
+        )
+        db.commit()
+        return _redirect(
+            "/b2b/orders/loyverse-invoicing?message="
+            + quote(
+                f"Se pusieron {queued_count} pedidos en cola. "
+                "El procesamiento continuará fuera de esta solicitud."
+            )
+        )
+    except (RolePermissionCSRFError, B2BLoyverseInvoicingSecurityError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (
+        ValueError,
+        B2BLoyverseInvoicingStalePlanError,
+        B2BLoyverseInvoicingWorkflowError,
+        IntegrityError,
+    ) as exc:
+        db.rollback()
+        start_value = quote(str(form.get("start_date") or ""))
+        end_value = quote(str(form.get("end_date") or ""))
+        return _redirect(
+            "/b2b/orders/loyverse-invoicing?preview=1"
+            f"&start_date={start_value}&end_date={end_value}&error={quote(str(exc))}"
+        )
 
 
 @app.get("/b2b/orders/import", response_class=HTMLResponse)
@@ -9834,7 +10046,13 @@ def b2b_order_detail(order_id: int, request: Request, db: Session = Depends(get_
     return templates.TemplateResponse(
         request=request,
         name="b2b_order_detail.html",
-        context={"title": "B2B Order Detail", "order": order, "lines": lines, "error": None},
+        context={
+            "title": "B2B Order Detail",
+            "order": order,
+            "lines": lines,
+            "error": None,
+            "loyverse_status": loyverse_integration_status(order),
+        },
     )
 
 

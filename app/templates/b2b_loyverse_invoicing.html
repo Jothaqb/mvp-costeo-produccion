@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% import "_formatting.html" as fmt %}
+
+{% block content %}
+  <section>
+    <h1>Facturar B2B en Loyverse</h1>
+    <p>
+      La selección utiliza la fecha real de facturación ERP (<code>invoice_date</code> o,
+      para registros legacy, <code>invoiced_at</code>). Nunca usa la fecha de entrega.
+      La fecha final es inclusiva.
+    </p>
+    <p><a href="/b2b/orders">Volver a B2B Sales Orders</a></p>
+    {% if message %}<p class="success">{{ message }}</p>{% endif %}
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    {% if not worker_enabled %}
+      <p class="warning">
+        El procesamiento está deshabilitado. La vista previa es segura y no llama a Loyverse;
+        la confirmación permanecerá bloqueada hasta configurar el trabajador autorizado.
+      </p>
+    {% endif %}
+    <form method="get" action="/b2b/orders/loyverse-invoicing">
+      <input type="hidden" name="preview" value="1">
+      <label for="start_date">Fecha inicial</label>
+      <input id="start_date" name="start_date" type="date" value="{{ start_date }}" required>
+      <label for="end_date">Fecha final</label>
+      <input id="end_date" name="end_date" type="date" value="{{ end_date }}" required>
+      <button type="submit">Vista previa</button>
+    </form>
+  </section>
+
+  {% if preview %}
+    <section>
+      <h2>Resumen</h2>
+      <dl class="summary">
+        <div><dt>Total B2B encontrados</dt><dd>{{ preview.total_found }}</dd></div>
+        <div><dt>Elegibles</dt><dd>{{ preview.eligible_count }}</dd></div>
+        <div><dt>Ya enviados</dt><dd>{{ preview.already_sent_count }}</dd></div>
+        <div><dt>Excluidos</dt><dd>{{ preview.excluded_count }}</dd></div>
+        <div><dt>Bloqueados</dt><dd>{{ preview.blocked_count }}</dd></div>
+        <div><dt>Monto que se enviaría</dt><dd>{{ fmt.money_crc(preview.eligible_amount) }}</dd></div>
+        <div><dt>Falta mapeo de cliente</dt><dd>{{ preview.missing_customer_mapping_count }}</dd></div>
+        <div><dt>Falta mapeo de producto</dt><dd>{{ preview.missing_variant_mapping_count }}</dd></div>
+        <div><dt>Falta mapeo de pago</dt><dd>{{ preview.missing_payment_type_mapping_count }}</dd></div>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Detalle</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Pedido</th>
+            <th>Fecha facturación ERP</th>
+            <th>ERP</th>
+            <th>Clasificación</th>
+            <th>Monto</th>
+            <th>Referencia Loyverse</th>
+            <th>Resultado / motivo</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preview.rows %}
+            <tr>
+              <td><a href="/b2b/orders/{{ row.order_id }}">{{ row.order_number }}</a></td>
+              <td>{{ row.invoice_date }} ({{ row.invoice_date_source }})</td>
+              <td>{{ row.erp_status }}</td>
+              <td>{{ row.classification }}</td>
+              <td>{{ fmt.money_crc(row.total_amount) }}</td>
+              <td>{{ row.loyverse_receipt_number or row.loyverse_receipt_id or "" }}</td>
+              <td>{{ row.reason }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Confirmación</h2>
+      <p>
+        La confirmación vuelve a calcular el plan y solo pone en cola los pedidos que continúan
+        elegibles. El POST a Loyverse se ejecuta fuera de la solicitud web.
+      </p>
+      <form method="post" action="/b2b/orders/loyverse-invoicing/confirm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="confirmation_token" value="{{ confirmation_token }}">
+        <input type="hidden" name="plan_fingerprint" value="{{ preview.plan_fingerprint }}">
+        <input type="hidden" name="start_date" value="{{ preview.start_date }}">
+        <input type="hidden" name="end_date" value="{{ preview.end_date }}">
+        <label>
+          <input type="checkbox" name="confirmation" value="confirmed" required>
+          Confirmo que revisé la vista previa y autorizo poner en cola únicamente los pedidos elegibles.
+        </label>
+        <button type="submit" {% if not worker_enabled or preview.eligible_count == 0 %}disabled{% endif %}>
+          Confirmar facturación
+        </button>
+      </form>
+    </section>
+  {% endif %}
+{% endblock %}

@@ -26,6 +26,7 @@ from app.services.b2b_loyverse_invoice_service import (  # noqa: E402
     B2BLoyverseInvoiceError,
     LoyverseReceiptUnknownError,
     SYNC_STATUS_FAILED,
+    SYNC_STATUS_HISTORICAL_CONFIRMED,
     SYNC_STATUS_SUCCESS,
     SYNC_STATUS_UNKNOWN,
     _build_line_payloads,
@@ -37,6 +38,7 @@ from app.services.b2b_loyverse_invoice_service import (  # noqa: E402
     _resolve_payment_type_id,
     _resolve_variant_id,
     _string_value,
+    resolve_reliable_b2b_invoice_date,
 )
 from app.services.erp_loyverse_stock_preview_service import (  # noqa: E402
     _resolve_loyverse_store_id,
@@ -357,6 +359,13 @@ def evaluate_order(
             eligible=False,
             reason="A Loyverse receipt reference is already stored locally.",
         )
+    if base["loyverse_sync_status"] == SYNC_STATUS_HISTORICAL_CONFIRMED:
+        return Evaluation(
+            **base,
+            classification="already_sent",
+            eligible=False,
+            reason="The business confirmed this historical ERP invoice was already sent to Loyverse.",
+        )
     if base["loyverse_sync_status"] == SYNC_STATUS_UNKNOWN:
         return Evaluation(
             **base,
@@ -648,6 +657,8 @@ def execute_one(
     customer_override_loyverse_id: str,
     customer_override_loyverse_name: str,
     excluded_order_numbers: set[str],
+    required_order_status: str | None = None,
+    approved_date_field: str = "delivery_date",
 ) -> tuple[dict[str, object], dict[str, object] | None]:
     db: Session = session_factory()
     api_call_started = False
@@ -658,13 +669,37 @@ def execute_one(
             .filter(B2BSalesOrder.id == evaluation.order_id)
             .one()
         )
-        if not (start_date <= order.delivery_date < end_date_exclusive):
-            return execution_row(evaluation, "failed", "Order left the approved delivery-date range.", timezone), {
+        if approved_date_field == "invoice_date":
+            approved_order_date, approved_date_source = resolve_reliable_b2b_invoice_date(order)
+        elif approved_date_field == "delivery_date":
+            approved_order_date, approved_date_source = order.delivery_date, "delivery_date"
+        else:
+            approved_order_date, approved_date_source = None, "unsupported"
+        if approved_order_date is None or not (
+            start_date <= approved_order_date < end_date_exclusive
+        ):
+            message = (
+                f"Order left the approved {approved_date_field} range or has no reliable date "
+                f"(source={approved_date_source})."
+            )
+            return execution_row(evaluation, "failed", message, timezone), {
                 "order_id": order.id,
                 "order_number": order.order_number,
                 "stage": "execute_revalidation",
                 "classification": "failed",
-                "error": "Order left the approved delivery-date range.",
+                "error": message,
+            }
+        if required_order_status is not None and order.status != required_order_status:
+            message = (
+                f"Order status changed to {order.status}; required status is "
+                f"{required_order_status}. Receipt was not sent."
+            )
+            return execution_row(evaluation, "failed", message, timezone), {
+                "order_id": order.id,
+                "order_number": order.order_number,
+                "stage": "execute_revalidation",
+                "classification": "failed",
+                "error": message,
             }
         refreshed = evaluate_order(
             db,

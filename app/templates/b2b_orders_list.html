@@ -7,6 +7,7 @@
     <section class="actions">
       {% if can(request, "sales.create") %}<a class="button" href="/b2b/orders/new">New B2B order</a>{% endif %}
       {% if can(request, "sales.import") %}<a class="button" href="/b2b/orders/import">Import Historical CSV</a>{% endif %}
+      {% if can(request, "sales.invoice") %}<a class="button" href="/b2b/orders/loyverse-invoicing">Facturar en Loyverse</a>{% endif %}
       <a class="button" href="/b2b/customers">Customers</a>
     </section>
     <form method="get" action="/b2b/orders">
@@ -39,6 +40,7 @@
           <th>Customer</th>
           <th>Delivery date</th>
           <th>Status</th>
+          <th>Loyverse</th>
           <th>Net Sales</th>
           <th>COGS</th>
           <th>Gross Profit</th>
@@ -54,6 +56,12 @@
             <td>{{ order.customer_name_snapshot }}</td>
             <td>{{ order.delivery_date }}</td>
             <td>{{ order.status }}</td>
+            {% set integration = loyverse_statuses.get(order.id) %}
+            <td>
+              <strong>{{ integration.label }}</strong>
+              {% if integration.detail %}<br><small>{{ integration.detail }}</small>{% endif %}
+              {% if order.loyverse_invoice_synced_at %}<br><small>{{ order.loyverse_invoice_synced_at }}</small>{% endif %}
+            </td>
             <td>{{ fmt.money_crc(order.total_amount) }}</td>
             <td>{{ fmt.money_crc(order.cost_total_snapshot) if order.cost_total_snapshot is not none else "—" }}</td>
             <td>{{ fmt.money_crc(order.gross_margin_amount) if order.gross_margin_amount is not none else "—" }}</td>
