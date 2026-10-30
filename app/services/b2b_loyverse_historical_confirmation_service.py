@@ -20,9 +20,12 @@ from app.services.b2b_loyverse_invoice_service import (
 
 
 HISTORICAL_CONFIRMATION_CUTOFF = date(2026, 10, 1)
+HISTORICAL_IMPORT_PREFIX = "Historical CSV import"
 HISTORICAL_CONFIRMATION_TEXT = (
     "El negocio confirma que todos los pedidos B2B facturados en ERP antes del "
-    "01/10/2026 ya fueron facturados en Loyverse."
+    "01/10/2026 y los pedidos identificados por la marca interna "
+    "Historical CSV import corresponden a la migración histórica y ya fueron "
+    "facturados en Loyverse."
 )
 EXECUTION_CONFIRMATION = "MARK_PRE_OCTOBER_2026_B2B_LOYVERSE_HISTORY"
 
@@ -53,7 +56,15 @@ class HistoricalConfirmationPlan:
 
     @property
     def candidate_count(self) -> int:
-        return sum(row.classification == "candidate" for row in self.rows)
+        return self.dated_historical_candidate_count + self.migrated_import_candidate_count
+
+    @property
+    def dated_historical_candidate_count(self) -> int:
+        return sum(row.classification == "candidate_dated_historical" for row in self.rows)
+
+    @property
+    def migrated_import_candidate_count(self) -> int:
+        return sum(row.classification == "candidate_migrated_import" for row in self.rows)
 
     @property
     def already_historical_count(self) -> int:
@@ -101,7 +112,7 @@ def _duplicate_receipt_order_ids(db: Session) -> set[int]:
 
 def _fingerprint(cutoff_date: date, rows: list[HistoricalConfirmationEvidence]) -> str:
     payload = {
-        "schema": "b2b-loyverse-historical-confirmation-v1",
+        "schema": "b2b-loyverse-historical-confirmation-v2",
         "cutoff_date": cutoff_date.isoformat(),
         "rows": [row.__dict__ for row in sorted(rows, key=lambda item: item.order_id)],
     }
@@ -136,6 +147,7 @@ def build_historical_confirmation_plan(
 
     for order in orders:
         invoice_date, date_source = resolve_reliable_b2b_invoice_date(order)
+        is_migrated_import = (order.observations or "").startswith(HISTORICAL_IMPORT_PREFIX)
         sync_status = (order.loyverse_invoice_sync_status or "").strip()
         receipt_id = (order.loyverse_receipt_id or "").strip()
         receipt_number = (order.loyverse_receipt_number or "").strip()
@@ -149,10 +161,7 @@ def build_historical_confirmation_plan(
         if has_date_conflict:
             classification = "review_date_conflict"
             reason = "invoice_date e invoiced_at no coinciden; se requiere validación manual."
-        elif invoice_date is None:
-            classification = "review_unreliable_date"
-            reason = "No existe invoice_date ni invoiced_at; delivery_date no se acepta como evidencia."
-        elif invoice_date >= cutoff_date:
+        elif invoice_date is not None and invoice_date >= cutoff_date:
             classification = "outside_cutoff"
             reason = "La fecha real de facturación no es anterior al corte histórico."
         elif order.id in duplicate_ids:
@@ -167,8 +176,21 @@ def build_historical_confirmation_plan(
         elif sync_status == SYNC_STATUS_HISTORICAL_CONFIRMED:
             classification = "already_historical"
             reason = "La confirmación histórica ya está registrada."
+        elif is_migrated_import:
+            classification = "candidate_migrated_import"
+            reason = (
+                "La marca interna Historical CSV import identifica el pedido como parte de la "
+                "migración histórica confirmada por el negocio; no se inventará una fecha ni un "
+                "comprobante Loyverse."
+            )
+        elif invoice_date is None:
+            classification = "review_unreliable_date"
+            reason = (
+                "No existe invoice_date ni invoiced_at y tampoco la marca interna de migración; "
+                "el pedido requiere validación explícita por ID."
+            )
         else:
-            classification = "candidate"
+            classification = "candidate_dated_historical"
             reason = (
                 "Se conservará la referencia Loyverse existente y se registrará la confirmación del negocio."
                 if receipt_id or receipt_number
@@ -224,7 +246,12 @@ def execute_historical_confirmation(
                 raise B2BLoyverseHistoricalConfirmationError(
                     "El dry-run cambió; genere evidencia nueva antes de ejecutar."
                 )
-            candidates = [row for row in plan.rows if row.classification == "candidate"]
+            candidates = [
+                row
+                for row in plan.rows
+                if row.classification
+                in {"candidate_dated_historical", "candidate_migrated_import"}
+            ]
             candidates_by_id = {row.order_id: row for row in candidates}
             if not candidates_by_id:
                 return plan

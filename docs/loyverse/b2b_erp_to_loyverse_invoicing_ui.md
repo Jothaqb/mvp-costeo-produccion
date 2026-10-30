@@ -78,7 +78,22 @@ mapeos faltantes. No confirmar hasta conciliar todos los bloqueados y aprobar el
 
 `tools/mark_b2b_loyverse_historical_invoices.py` prepara evidencia sin escribir por defecto. Solo
 considera confiables `invoice_date` e `invoiced_at`; las facturas sin ambas fechas quedan en
-`review_unreliable_date`. El dry-run requiere un directorio nuevo:
+`review_unreliable_date`, salvo que `observations` comience con la marca técnica
+`Historical CSV import` escrita por el importador histórico del ERP. Esa marca permite separar
+los pedidos de la migración confirmada por el negocio sin inventar una fecha de factura ni un
+comprobante. Una fecha nula por sí sola nunca basta: si falta la marca, el pedido permanece en la
+lista explícita de revisión por ID. Una fecha confiable desde el 01/10/2026 siempre prevalece y
+mantiene el pedido fuera del marcado histórico.
+
+Cada dry-run genera `orders.csv` y cuatro archivos separados:
+
+- `orders_migrated_identified.csv` para la carga histórica identificada técnicamente.
+- `orders_historical_normal.csv` para facturas normales anteriores al corte.
+- `orders_review.csv` para IDs que requieren validación explícita.
+- `orders_from_october.csv` para pedidos controlados por el flujo permanente.
+
+El fingerprint usa la revisión `v2`, por lo que cualquier evidencia producida antes de este ajuste
+es obsoleta y no puede utilizarse para ejecutar. El dry-run requiere un directorio nuevo:
 
 ```text
 python tools/mark_b2b_loyverse_historical_invoices.py --export-dir <directorio-nuevo>

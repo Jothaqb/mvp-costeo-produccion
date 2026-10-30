@@ -28,7 +28,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Dry-run or explicitly confirm that reliable pre-2026-10-01 B2B ERP invoices "
-            "were already invoiced in Loyverse. Dry-run is the default."
+            "and technically identified Historical CSV imports were already invoiced in "
+            "Loyverse. Dry-run is the default."
         )
     )
     parser.add_argument("--export-dir", type=Path)
@@ -51,8 +52,12 @@ def _write_evidence(export_dir: Path, plan) -> None:
         "cutoff_date_exclusive": plan.cutoff_date.isoformat(),
         "invoice_date_policy": ["invoice_date", "invoiced_at"],
         "delivery_date_accepted": False,
+        "migrated_import_policy": "observations starts with exact internal prefix Historical CSV import",
+        "null_date_alone_accepted": False,
         "total_invoiced_orders_reviewed": len(plan.rows),
         "candidate_count": plan.candidate_count,
+        "migrated_import_candidate_count": plan.migrated_import_candidate_count,
+        "dated_historical_candidate_count": plan.dated_historical_candidate_count,
         "already_historical_count": plan.already_historical_count,
         "outside_cutoff_count": plan.outside_cutoff_count,
         "review_count": plan.review_count,
@@ -80,6 +85,29 @@ def _write_evidence(export_dir: Path, plan) -> None:
         writer = csv.DictWriter(output, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(asdict(row) for row in plan.rows)
+    separated_exports = (
+        (
+            "orders_migrated_identified.csv",
+            (row for row in plan.rows if row.classification == "candidate_migrated_import"),
+        ),
+        (
+            "orders_historical_normal.csv",
+            (row for row in plan.rows if row.classification == "candidate_dated_historical"),
+        ),
+        (
+            "orders_review.csv",
+            (row for row in plan.rows if row.classification.startswith("review_")),
+        ),
+        (
+            "orders_from_october.csv",
+            (row for row in plan.rows if row.classification == "outside_cutoff"),
+        ),
+    )
+    for file_name, rows in separated_exports:
+        with (export_dir / file_name).open("w", newline="", encoding="utf-8-sig") as output:
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(asdict(row) for row in rows)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
         print("mode: dry-run")
         print(f"cutoff_date_exclusive: {HISTORICAL_CONFIRMATION_CUTOFF.isoformat()}")
         print(f"candidate_count: {plan.candidate_count}")
+        print(f"migrated_import_candidate_count: {plan.migrated_import_candidate_count}")
+        print(f"dated_historical_candidate_count: {plan.dated_historical_candidate_count}")
         print(f"already_historical_count: {plan.already_historical_count}")
         print(f"review_count: {plan.review_count}")
         print(f"fingerprint: {plan.fingerprint}")

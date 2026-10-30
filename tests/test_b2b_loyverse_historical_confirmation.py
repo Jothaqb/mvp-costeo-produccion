@@ -1,6 +1,10 @@
+import csv
+import json
+import tempfile
 import unittest
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -30,6 +34,7 @@ from app.services.b2b_loyverse_invoice_service import (
 from app.services.b2b_loyverse_invoicing_workflow_service import loyverse_integration_status
 from tools.b2b_loyverse_daily_invoice_job import evaluate_daily_order
 from tools.b2b_loyverse_monthly_invoice_job import evaluate_order
+from tools.mark_b2b_loyverse_historical_invoices import _write_evidence
 
 
 class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
@@ -81,6 +86,8 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
         sync_status: str | None = None,
         receipt_id: str | None = None,
         receipt_number: str | None = None,
+        observations: str | None = None,
+        status: str = "invoiced",
     ) -> B2BSalesOrder:
         order = B2BSalesOrder(
             order_number=number,
@@ -89,8 +96,9 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
             delivery_date=date(2026, 9, 15),
             invoice_date=invoice_date,
             invoiced_at=invoiced_at,
-            status="invoiced",
+            status=status,
             total_amount=Decimal("1000"),
+            observations=observations,
             loyverse_invoice_sync_status=sync_status,
             loyverse_receipt_id=receipt_id,
             loyverse_receipt_number=receipt_number,
@@ -121,15 +129,110 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
         self.db.rollback()
         rows = {row.order_number: row for row in plan.rows}
 
-        self.assertEqual(rows["HIST-EXPLICIT"].classification, "candidate")
+        self.assertEqual(rows["HIST-EXPLICIT"].classification, "candidate_dated_historical")
         self.assertEqual(rows["HIST-EXPLICIT"].invoice_date_source, "invoice_date")
-        self.assertEqual(rows["HIST-INVOICED-AT"].classification, "candidate")
+        self.assertEqual(rows["HIST-INVOICED-AT"].classification, "candidate_dated_historical")
         self.assertEqual(rows["HIST-INVOICED-AT"].invoice_date_source, "invoiced_at")
         self.assertEqual(rows["HIST-UNRELIABLE"].classification, "review_unreliable_date")
         self.assertEqual(rows["HIST-DATE-CONFLICT"].classification, "review_date_conflict")
         self.assertEqual(rows["CURRENT"].classification, "outside_cutoff")
         self.assertEqual(rows["HIST-UNKNOWN"].classification, "review_unknown")
         self.assertEqual(self.db.query(AuditLog).count(), before_audits)
+
+    def test_migrated_import_marker_is_required_for_missing_date_exception(self) -> None:
+        migrated = self._order(
+            "MIGRATED-NO-DATE",
+            invoice_date=None,
+            observations="Historical CSV import\nlegacy source 1594",
+            receipt_id="existing-receipt-id",
+            receipt_number="EXISTING-1594",
+        )
+        unmarked = self._order(
+            "UNMARKED-NO-DATE",
+            invoice_date=None,
+            observations="Normal administrative note",
+        )
+        october_import = self._order(
+            "MIGRATED-OCTOBER",
+            invoice_date=date(2026, 10, 1),
+            observations="Historical CSV import",
+        )
+        unknown_import = self._order(
+            "MIGRATED-UNKNOWN",
+            invoice_date=None,
+            observations="Historical CSV import 1600",
+            sync_status="unknown",
+        )
+
+        plan = build_historical_confirmation_plan(self.db)
+        rows = {row.order_number: row for row in plan.rows}
+
+        self.assertEqual(rows[migrated.order_number].classification, "candidate_migrated_import")
+        self.assertEqual(rows[unmarked.order_number].classification, "review_unreliable_date")
+        self.assertEqual(rows[october_import.order_number].classification, "outside_cutoff")
+        self.assertEqual(rows[unknown_import.order_number].classification, "review_unknown")
+        self.assertEqual(plan.migrated_import_candidate_count, 1)
+        self.assertEqual(plan.dated_historical_candidate_count, 0)
+
+        executed = execute_historical_confirmation(
+            self.Session,
+            confirmed_by_user_id=self.user.id,
+            expected_fingerprint=plan.fingerprint,
+            business_confirmation=HISTORICAL_CONFIRMATION_TEXT,
+        )
+
+        self.assertEqual(executed.candidate_count, 1)
+        self.db.expire_all()
+        stored_migrated = self.db.get(B2BSalesOrder, migrated.id)
+        self.assertEqual(stored_migrated.status, "invoiced")
+        self.assertEqual(stored_migrated.total_amount, Decimal("1000"))
+        self.assertIsNone(stored_migrated.invoice_date)
+        self.assertIsNone(stored_migrated.invoiced_at)
+        self.assertEqual(stored_migrated.loyverse_receipt_id, "existing-receipt-id")
+        self.assertEqual(stored_migrated.loyverse_receipt_number, "EXISTING-1594")
+        self.assertEqual(
+            stored_migrated.loyverse_invoice_sync_status,
+            SYNC_STATUS_HISTORICAL_CONFIRMED,
+        )
+        self.assertIsNone(
+            self.db.get(B2BSalesOrder, unmarked.id).loyverse_invoice_sync_status
+        )
+        self.assertIsNone(
+            self.db.get(B2BSalesOrder, october_import.id).loyverse_invoice_sync_status
+        )
+        self.assertEqual(
+            self.db.get(B2BSalesOrder, unknown_import.id).loyverse_invoice_sync_status,
+            "unknown",
+        )
+
+    def test_dry_run_exports_migrated_dated_review_and_october_separately(self) -> None:
+        self._order(
+            "EXPORT-MIGRATED",
+            invoice_date=None,
+            observations="Historical CSV import",
+        )
+        self._order("EXPORT-DATED", invoice_date=date(2026, 9, 1))
+        self._order("EXPORT-REVIEW", invoice_date=None)
+        self._order("EXPORT-OCTOBER", invoice_date=date(2026, 10, 1))
+        plan = build_historical_confirmation_plan(self.db)
+
+        with tempfile.TemporaryDirectory() as directory:
+            export_dir = Path(directory) / "evidence"
+            _write_evidence(export_dir, plan)
+            summary = json.loads((export_dir / "summary.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(summary["migrated_import_candidate_count"], 1)
+            self.assertEqual(summary["dated_historical_candidate_count"], 1)
+            expected = {
+                "orders_migrated_identified.csv": "EXPORT-MIGRATED",
+                "orders_historical_normal.csv": "EXPORT-DATED",
+                "orders_review.csv": "EXPORT-REVIEW",
+                "orders_from_october.csv": "EXPORT-OCTOBER",
+            }
+            for file_name, expected_order_number in expected.items():
+                with (export_dir / file_name).open(encoding="utf-8-sig", newline="") as source:
+                    rows = list(csv.DictReader(source))
+                self.assertEqual([row["order_number"] for row in rows], [expected_order_number])
 
     def test_execute_marks_candidates_preserves_receipts_and_audits_business_confirmation(self) -> None:
         no_receipt = self._order("HIST-NO-RECEIPT", invoice_date=date(2026, 9, 1))
