@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 
@@ -28,6 +29,13 @@ HISTORICAL_CONFIRMATION_TEXT = (
     "facturados en Loyverse."
 )
 EXECUTION_CONFIRMATION = "MARK_PRE_OCTOBER_2026_B2B_LOYVERSE_HISTORY"
+EXPLICIT_ID_CONFIRMATION_TEXT = (
+    "El negocio confirma que únicamente los pedidos B2B identificados por ID en la "
+    "lista aprobada, sin fecha de facturación ni marca técnica de migración, "
+    "corresponden a operaciones históricas ya facturadas en Loyverse antes del "
+    "01/10/2026. No se inventarán fechas ni comprobantes."
+)
+EXPLICIT_ID_EXECUTION_CONFIRMATION = "MARK_APPROVED_B2B_LOYVERSE_HISTORY_BY_ID"
 
 
 class B2BLoyverseHistoricalConfirmationError(RuntimeError):
@@ -44,6 +52,7 @@ class HistoricalConfirmationEvidence:
     current_sync_status: str
     receipt_id: str
     receipt_number: str
+    explicitly_approved: bool
     classification: str
     reason: str
 
@@ -52,11 +61,19 @@ class HistoricalConfirmationEvidence:
 class HistoricalConfirmationPlan:
     cutoff_date: date
     rows: tuple[HistoricalConfirmationEvidence, ...]
+    explicit_order_ids: tuple[int, ...]
+    missing_explicit_order_ids: tuple[int, ...]
     fingerprint: str
 
     @property
     def candidate_count(self) -> int:
+        if self.explicit_order_ids:
+            return self.explicit_id_candidate_count
         return self.dated_historical_candidate_count + self.migrated_import_candidate_count
+
+    @property
+    def explicit_id_candidate_count(self) -> int:
+        return sum(row.classification == "candidate_explicit_id" for row in self.rows)
 
     @property
     def dated_historical_candidate_count(self) -> int:
@@ -71,12 +88,34 @@ class HistoricalConfirmationPlan:
         return sum(row.classification == "already_historical" for row in self.rows)
 
     @property
+    def already_sent_count(self) -> int:
+        return sum(row.classification == "already_sent" for row in self.rows)
+
+    @property
     def outside_cutoff_count(self) -> int:
         return sum(row.classification == "outside_cutoff" for row in self.rows)
 
     @property
     def review_count(self) -> int:
         return sum(row.classification.startswith("review_") for row in self.rows)
+
+    @property
+    def explicit_selection_is_valid(self) -> bool:
+        if not self.explicit_order_ids or self.missing_explicit_order_ids:
+            return False
+        selected_rows = [row for row in self.rows if row.explicitly_approved]
+        return len(selected_rows) == len(self.explicit_order_ids) and all(
+            row.classification in {"candidate_explicit_id", "already_historical"}
+            for row in selected_rows
+        )
+
+    @property
+    def explicit_rejected_count(self) -> int:
+        return sum(
+            row.explicitly_approved
+            and row.classification not in {"candidate_explicit_id", "already_historical"}
+            for row in self.rows
+        ) + len(self.missing_explicit_order_ids)
 
 
 def _duplicate_receipt_order_ids(db: Session) -> set[int]:
@@ -110,10 +149,18 @@ def _duplicate_receipt_order_ids(db: Session) -> set[int]:
     }
 
 
-def _fingerprint(cutoff_date: date, rows: list[HistoricalConfirmationEvidence]) -> str:
+def _fingerprint(
+    cutoff_date: date,
+    rows: list[HistoricalConfirmationEvidence],
+    explicit_order_ids: tuple[int, ...],
+    missing_explicit_order_ids: tuple[int, ...],
+) -> str:
     payload = {
-        "schema": "b2b-loyverse-historical-confirmation-v2",
+        "schema": "b2b-loyverse-historical-confirmation-v3",
         "cutoff_date": cutoff_date.isoformat(),
+        "execution_scope": "explicit_ids" if explicit_order_ids else "standard",
+        "explicit_order_ids": explicit_order_ids,
+        "missing_explicit_order_ids": missing_explicit_order_ids,
         "rows": [row.__dict__ for row in sorted(rows, key=lambda item: item.order_id)],
     }
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -125,7 +172,14 @@ def build_historical_confirmation_plan(
     *,
     cutoff_date: date = HISTORICAL_CONFIRMATION_CUTOFF,
     lock_rows: bool = False,
+    explicit_order_ids: Iterable[int] | None = None,
 ) -> HistoricalConfirmationPlan:
+    normalized_explicit_ids = tuple(sorted({int(order_id) for order_id in explicit_order_ids or ()}))
+    if any(order_id <= 0 for order_id in normalized_explicit_ids):
+        raise B2BLoyverseHistoricalConfirmationError(
+            "La lista explícita contiene IDs de pedido inválidos."
+        )
+    explicit_id_set = set(normalized_explicit_ids)
     query = (
         db.query(B2BSalesOrder)
         .filter(B2BSalesOrder.status == "invoiced")
@@ -143,6 +197,8 @@ def build_historical_confirmation_plan(
     )
     dispatch_by_order_id = {dispatch.sales_order_id: dispatch for dispatch in dispatches}
     duplicate_ids = _duplicate_receipt_order_ids(db)
+    invoiced_order_ids = {order.id for order in orders}
+    missing_explicit_order_ids = tuple(sorted(explicit_id_set - invoiced_order_ids))
     rows: list[HistoricalConfirmationEvidence] = []
 
     for order in orders:
@@ -151,6 +207,7 @@ def build_historical_confirmation_plan(
         sync_status = (order.loyverse_invoice_sync_status or "").strip()
         receipt_id = (order.loyverse_receipt_id or "").strip()
         receipt_number = (order.loyverse_receipt_number or "").strip()
+        explicitly_approved = order.id in explicit_id_set
         dispatch = dispatch_by_order_id.get(order.id)
         has_date_conflict = (
             order.invoice_date is not None
@@ -173,9 +230,49 @@ def build_historical_confirmation_plan(
         elif dispatch is not None and dispatch.status in {"queued", "processing", "unknown"}:
             classification = "review_active_dispatch"
             reason = f"Existe una ejecución persistente con estado {dispatch.status}."
+        elif dispatch is not None and dispatch.status == "success":
+            classification = "review_success_without_receipt"
+            reason = (
+                "Existe una ejecución persistente success sin referencia Loyverse en el pedido; "
+                "se requiere conciliación manual."
+            )
+        elif dispatch is not None and dispatch.status == "failed":
+            classification = "review_failed_dispatch"
+            reason = (
+                "Existe una ejecución persistente fallida; se requiere revisar ese intento antes "
+                "de aplicar una confirmación histórica."
+            )
         elif sync_status == SYNC_STATUS_HISTORICAL_CONFIRMED:
             classification = "already_historical"
             reason = "La confirmación histórica ya está registrada."
+        elif receipt_id or receipt_number:
+            classification = "already_sent"
+            reason = "El pedido ya conserva una referencia Loyverse y no será modificado."
+        elif sync_status == "success":
+            classification = "review_success_without_receipt"
+            reason = (
+                "El estado Loyverse es success pero no existe una referencia local; "
+                "se requiere conciliación manual."
+            )
+        elif explicitly_approved and invoice_date is not None:
+            classification = "review_explicit_id_has_reliable_date"
+            reason = (
+                "El ID aprobado tiene fecha de facturación confiable y no corresponde a la "
+                "excepción controlada para fechas nulas."
+            )
+        elif explicitly_approved and is_migrated_import:
+            classification = "review_explicit_id_has_migration_marker"
+            reason = (
+                "El ID aprobado ya tiene la marca técnica de migración y debe procesarse por "
+                "la regla estándar, no por la excepción manual."
+            )
+        elif explicitly_approved:
+            classification = "candidate_explicit_id"
+            reason = (
+                "El ID figura en la lista exacta aprobada por el negocio; no tiene fecha "
+                "confiable, referencia Loyverse, envío activo, resultado unknown ni marca de "
+                "migración. No se inventará fecha ni comprobante."
+            )
         elif is_migrated_import:
             classification = "candidate_migrated_import"
             reason = (
@@ -207,6 +304,7 @@ def build_historical_confirmation_plan(
                 current_sync_status=sync_status,
                 receipt_id=receipt_id,
                 receipt_number=receipt_number,
+                explicitly_approved=explicitly_approved,
                 classification=classification,
                 reason=reason,
             )
@@ -215,7 +313,14 @@ def build_historical_confirmation_plan(
     return HistoricalConfirmationPlan(
         cutoff_date=cutoff_date,
         rows=tuple(rows),
-        fingerprint=_fingerprint(cutoff_date, rows),
+        explicit_order_ids=normalized_explicit_ids,
+        missing_explicit_order_ids=missing_explicit_order_ids,
+        fingerprint=_fingerprint(
+            cutoff_date,
+            rows,
+            normalized_explicit_ids,
+            missing_explicit_order_ids,
+        ),
     )
 
 
@@ -225,8 +330,13 @@ def execute_historical_confirmation(
     confirmed_by_user_id: int,
     expected_fingerprint: str,
     business_confirmation: str,
+    explicit_order_ids: Iterable[int] | None = None,
 ) -> HistoricalConfirmationPlan:
-    if business_confirmation != HISTORICAL_CONFIRMATION_TEXT:
+    normalized_explicit_ids = tuple(sorted({int(order_id) for order_id in explicit_order_ids or ()}))
+    required_business_confirmation = (
+        EXPLICIT_ID_CONFIRMATION_TEXT if normalized_explicit_ids else HISTORICAL_CONFIRMATION_TEXT
+    )
+    if business_confirmation != required_business_confirmation:
         raise B2BLoyverseHistoricalConfirmationError(
             "La confirmación textual del negocio no coincide con la declaración aprobada."
         )
@@ -241,17 +351,28 @@ def execute_historical_confirmation(
                 raise B2BLoyverseHistoricalConfirmationError(
                     "Se requiere un usuario activo con permiso sales.invoice."
                 )
-            plan = build_historical_confirmation_plan(db, lock_rows=True)
+            plan = build_historical_confirmation_plan(
+                db,
+                lock_rows=True,
+                explicit_order_ids=normalized_explicit_ids,
+            )
             if not hmac.compare_digest(plan.fingerprint, expected_fingerprint):
                 raise B2BLoyverseHistoricalConfirmationError(
                     "El dry-run cambió; genere evidencia nueva antes de ejecutar."
                 )
-            candidates = [
-                row
-                for row in plan.rows
-                if row.classification
-                in {"candidate_dated_historical", "candidate_migrated_import"}
-            ]
+            if normalized_explicit_ids:
+                if not plan.explicit_selection_is_valid:
+                    raise B2BLoyverseHistoricalConfirmationError(
+                        "La lista explícita contiene pedidos ausentes, no facturados o con "
+                        "contradicciones. No se aplicó ningún cambio."
+                    )
+                candidate_classes = {"candidate_explicit_id"}
+            else:
+                candidate_classes = {
+                    "candidate_dated_historical",
+                    "candidate_migrated_import",
+                }
+            candidates = [row for row in plan.rows if row.classification in candidate_classes]
             candidates_by_id = {row.order_id: row for row in candidates}
             if not candidates_by_id:
                 return plan
@@ -283,6 +404,9 @@ def execute_historical_confirmation(
                         "invoice_date_source": evidence.invoice_date_source,
                         "cutoff_date": plan.cutoff_date,
                         "dry_run_fingerprint": plan.fingerprint,
+                        "confirmation_scope": (
+                            "explicit_ids" if normalized_explicit_ids else "standard"
+                        ),
                     },
                     notes=business_confirmation,
                     user=user,
@@ -298,6 +422,10 @@ def execute_historical_confirmation(
                     "candidate_count": len(candidates),
                     "cutoff_date": plan.cutoff_date,
                     "dry_run_fingerprint": plan.fingerprint,
+                    "confirmation_scope": (
+                        "explicit_ids" if normalized_explicit_ids else "standard"
+                    ),
+                    "explicit_order_ids": list(normalized_explicit_ids),
                 },
                 notes=business_confirmation,
                 user=user,

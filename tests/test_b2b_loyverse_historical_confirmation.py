@@ -15,6 +15,7 @@ from app.database import Base
 from app.models import (
     AuditLog,
     B2BCustomer,
+    B2BLoyverseInvoiceDispatch,
     B2BSalesOrder,
     Permission,
     Role,
@@ -23,6 +24,7 @@ from app.models import (
     UserRole,
 )
 from app.services.b2b_loyverse_historical_confirmation_service import (
+    EXPLICIT_ID_CONFIRMATION_TEXT,
     HISTORICAL_CONFIRMATION_TEXT,
     B2BLoyverseHistoricalConfirmationError,
     build_historical_confirmation_plan,
@@ -34,7 +36,10 @@ from app.services.b2b_loyverse_invoice_service import (
 from app.services.b2b_loyverse_invoicing_workflow_service import loyverse_integration_status
 from tools.b2b_loyverse_daily_invoice_job import evaluate_daily_order
 from tools.b2b_loyverse_monthly_invoice_job import evaluate_order
-from tools.mark_b2b_loyverse_historical_invoices import _write_evidence
+from tools.mark_b2b_loyverse_historical_invoices import (
+    _load_explicit_order_ids,
+    _write_evidence,
+)
 
 
 class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
@@ -144,8 +149,6 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
             "MIGRATED-NO-DATE",
             invoice_date=None,
             observations="Historical CSV import\nlegacy source 1594",
-            receipt_id="existing-receipt-id",
-            receipt_number="EXISTING-1594",
         )
         unmarked = self._order(
             "UNMARKED-NO-DATE",
@@ -188,8 +191,8 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
         self.assertEqual(stored_migrated.total_amount, Decimal("1000"))
         self.assertIsNone(stored_migrated.invoice_date)
         self.assertIsNone(stored_migrated.invoiced_at)
-        self.assertEqual(stored_migrated.loyverse_receipt_id, "existing-receipt-id")
-        self.assertEqual(stored_migrated.loyverse_receipt_number, "EXISTING-1594")
+        self.assertIsNone(stored_migrated.loyverse_receipt_id)
+        self.assertIsNone(stored_migrated.loyverse_receipt_number)
         self.assertEqual(
             stored_migrated.loyverse_invoice_sync_status,
             SYNC_STATUS_HISTORICAL_CONFIRMED,
@@ -257,7 +260,7 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
             business_confirmation=HISTORICAL_CONFIRMATION_TEXT,
         )
 
-        self.assertEqual(executed.candidate_count, 2)
+        self.assertEqual(executed.candidate_count, 1)
         self.db.expire_all()
         stored_no_receipt = self.db.get(B2BSalesOrder, no_receipt.id)
         stored_with_receipt = self.db.get(B2BSalesOrder, with_receipt.id)
@@ -268,10 +271,7 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
             SYNC_STATUS_HISTORICAL_CONFIRMED,
         )
         self.assertIsNone(stored_no_receipt.loyverse_receipt_id)
-        self.assertEqual(
-            stored_with_receipt.loyverse_invoice_sync_status,
-            SYNC_STATUS_HISTORICAL_CONFIRMED,
-        )
+        self.assertEqual(stored_with_receipt.loyverse_invoice_sync_status, "success")
         self.assertEqual(stored_with_receipt.loyverse_receipt_id, "real-receipt-id")
         self.assertEqual(stored_with_receipt.loyverse_receipt_number, "R-REAL")
         self.assertEqual(stored_unknown.loyverse_invoice_sync_status, "unknown")
@@ -283,7 +283,7 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
             self.db.query(AuditLog)
             .filter(AuditLog.action == "b2b_loyverse_historical_invoice_confirmed")
             .count(),
-            2,
+            1,
         )
         audit = (
             self.db.query(AuditLog)
@@ -292,6 +292,316 @@ class B2BLoyverseHistoricalConfirmationTests(unittest.TestCase):
         )
         self.assertEqual(audit.notes, HISTORICAL_CONFIRMATION_TEXT)
         self.assertEqual(audit.user_id, self.user.id)
+
+    def test_explicit_id_plan_marks_only_exact_approved_orders(self) -> None:
+        approved = self._order("EXPLICIT-APPROVED", invoice_date=None)
+        unapproved = self._order("EXPLICIT-NOT-APPROVED", invoice_date=None)
+        already_sent = self._order(
+            "EXPLICIT-ALREADY-SENT",
+            invoice_date=None,
+            sync_status="success",
+            receipt_id="receipt-existing",
+            receipt_number="R-EXISTING",
+        )
+
+        plan = build_historical_confirmation_plan(
+            self.db,
+            explicit_order_ids=[approved.id],
+        )
+        rows = {row.order_number: row for row in plan.rows}
+
+        self.assertTrue(plan.explicit_selection_is_valid)
+        self.assertEqual(plan.explicit_order_ids, (approved.id,))
+        self.assertEqual(plan.candidate_count, 1)
+        self.assertEqual(rows[approved.order_number].classification, "candidate_explicit_id")
+        self.assertEqual(
+            rows[unapproved.order_number].classification,
+            "review_unreliable_date",
+        )
+        self.assertEqual(rows[already_sent.order_number].classification, "already_sent")
+        self.assertEqual(plan.already_sent_count, 1)
+
+        execute_historical_confirmation(
+            self.Session,
+            confirmed_by_user_id=self.user.id,
+            expected_fingerprint=plan.fingerprint,
+            business_confirmation=EXPLICIT_ID_CONFIRMATION_TEXT,
+            explicit_order_ids=[approved.id],
+        )
+
+        self.db.expire_all()
+        self.assertEqual(
+            self.db.get(B2BSalesOrder, approved.id).loyverse_invoice_sync_status,
+            SYNC_STATUS_HISTORICAL_CONFIRMED,
+        )
+        self.assertIsNone(
+            self.db.get(B2BSalesOrder, unapproved.id).loyverse_invoice_sync_status
+        )
+        stored_already_sent = self.db.get(B2BSalesOrder, already_sent.id)
+        self.assertEqual(stored_already_sent.loyverse_invoice_sync_status, "success")
+        self.assertEqual(stored_already_sent.loyverse_receipt_id, "receipt-existing")
+        self.assertEqual(stored_already_sent.loyverse_receipt_number, "R-EXISTING")
+
+    def test_explicit_id_contradictions_block_the_entire_transaction(self) -> None:
+        safe = self._order("EXPLICIT-SAFE", invoice_date=None)
+        unknown = self._order(
+            "EXPLICIT-UNKNOWN",
+            invoice_date=None,
+            sync_status="unknown",
+        )
+        sent = self._order(
+            "EXPLICIT-SENT",
+            invoice_date=None,
+            sync_status="success",
+            receipt_number="R-SENT",
+        )
+        active = self._order("EXPLICIT-ACTIVE", invoice_date=None)
+        dispatch_success = self._order("EXPLICIT-DISPATCH-SUCCESS", invoice_date=None)
+        dispatch_failed = self._order("EXPLICIT-DISPATCH-FAILED", invoice_date=None)
+        success_without_receipt = self._order(
+            "EXPLICIT-SUCCESS-NO-RECEIPT",
+            invoice_date=None,
+            sync_status="success",
+        )
+        duplicate = self._order(
+            "EXPLICIT-DUPLICATE",
+            invoice_date=None,
+            receipt_number="R-DUPLICATED",
+        )
+        self._order(
+            "EXPLICIT-DUPLICATE-OTHER",
+            invoice_date=None,
+            receipt_number="R-DUPLICATED",
+        )
+        self.db.add(
+            B2BLoyverseInvoiceDispatch(
+                sales_order_id=active.id,
+                status="processing",
+                start_date=date(2026, 6, 1),
+                end_date=date(2026, 7, 31),
+                plan_fingerprint="a" * 64,
+                payload_fingerprint="b" * 64,
+                queued_by_user_id=self.user.id,
+            )
+        )
+        self.db.add_all(
+            [
+                B2BLoyverseInvoiceDispatch(
+                    sales_order_id=dispatch_success.id,
+                    status="success",
+                    start_date=date(2026, 6, 1),
+                    end_date=date(2026, 7, 31),
+                    plan_fingerprint="c" * 64,
+                    payload_fingerprint="d" * 64,
+                    queued_by_user_id=self.user.id,
+                ),
+                B2BLoyverseInvoiceDispatch(
+                    sales_order_id=dispatch_failed.id,
+                    status="failed",
+                    start_date=date(2026, 6, 1),
+                    end_date=date(2026, 7, 31),
+                    plan_fingerprint="e" * 64,
+                    payload_fingerprint="f" * 64,
+                    queued_by_user_id=self.user.id,
+                ),
+            ]
+        )
+        self.db.commit()
+        selected_ids = [
+            safe.id,
+            unknown.id,
+            sent.id,
+            active.id,
+            dispatch_success.id,
+            dispatch_failed.id,
+            success_without_receipt.id,
+            duplicate.id,
+            999999,
+        ]
+
+        plan = build_historical_confirmation_plan(
+            self.db,
+            explicit_order_ids=selected_ids,
+        )
+        rows = {row.order_number: row for row in plan.rows}
+
+        self.assertFalse(plan.explicit_selection_is_valid)
+        self.assertEqual(plan.missing_explicit_order_ids, (999999,))
+        self.assertEqual(rows[unknown.order_number].classification, "review_unknown")
+        self.assertEqual(rows[sent.order_number].classification, "already_sent")
+        self.assertEqual(rows[active.order_number].classification, "review_active_dispatch")
+        self.assertEqual(
+            rows[dispatch_success.order_number].classification,
+            "review_success_without_receipt",
+        )
+        self.assertEqual(
+            rows[dispatch_failed.order_number].classification,
+            "review_failed_dispatch",
+        )
+        self.assertEqual(
+            rows[success_without_receipt.order_number].classification,
+            "review_success_without_receipt",
+        )
+        self.assertEqual(
+            rows[duplicate.order_number].classification,
+            "review_duplicate_receipt",
+        )
+        self.assertEqual(plan.explicit_rejected_count, 8)
+
+        with self.assertRaisesRegex(
+            B2BLoyverseHistoricalConfirmationError,
+            "contradicciones",
+        ):
+            execute_historical_confirmation(
+                self.Session,
+                confirmed_by_user_id=self.user.id,
+                expected_fingerprint=plan.fingerprint,
+                business_confirmation=EXPLICIT_ID_CONFIRMATION_TEXT,
+                explicit_order_ids=selected_ids,
+            )
+
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(B2BSalesOrder, safe.id).loyverse_invoice_sync_status)
+        self.assertEqual(
+            self.db.query(AuditLog)
+            .filter(AuditLog.action == "b2b_loyverse_historical_invoice_confirmed")
+            .count(),
+            0,
+        )
+
+    def test_explicit_id_csv_and_evidence_are_strict_and_read_only(self) -> None:
+        first = self._order("EXPLICIT-CSV-1", invoice_date=None)
+        second = self._order("EXPLICIT-CSV-2", invoice_date=None)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            approved_file = root / "approved.csv"
+            approved_file.write_text(
+                f"order_id\n{second.id}\n{first.id}\n",
+                encoding="utf-8",
+            )
+            explicit_ids = _load_explicit_order_ids(approved_file)
+            self.assertEqual(explicit_ids, tuple(sorted((first.id, second.id))))
+
+            plan = build_historical_confirmation_plan(
+                self.db,
+                explicit_order_ids=explicit_ids,
+            )
+            export_dir = root / "evidence"
+            _write_evidence(export_dir, plan)
+            summary = json.loads((export_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["execution_scope"], "explicit_ids")
+            self.assertEqual(summary["explicit_id_candidate_count"], 2)
+            self.assertTrue(summary["explicit_selection_is_valid"])
+            self.assertFalse(summary["writes_performed"])
+            with (export_dir / "orders_explicit_id_candidates.csv").open(
+                encoding="utf-8-sig",
+                newline="",
+            ) as source:
+                rows = list(csv.DictReader(source))
+            self.assertEqual(
+                {int(row["order_id"]) for row in rows},
+                {first.id, second.id},
+            )
+
+            duplicate_file = root / "duplicates.csv"
+            duplicate_file.write_text(
+                f"order_id\n{first.id}\n{first.id}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                B2BLoyverseHistoricalConfirmationError,
+                "duplicados",
+            ):
+                _load_explicit_order_ids(duplicate_file)
+
+        self.db.expire_all()
+        self.assertIsNone(self.db.get(B2BSalesOrder, first.id).loyverse_invoice_sync_status)
+        self.assertIsNone(self.db.get(B2BSalesOrder, second.id).loyverse_invoice_sync_status)
+
+    def test_explicit_batch_of_31_preserves_19_sent_and_excludes_october(self) -> None:
+        candidates = [
+            self._order(f"SYNTHETIC-CANDIDATE-{index:02d}", invoice_date=None)
+            for index in range(1, 32)
+        ]
+        already_sent = [
+            self._order(
+                f"SYNTHETIC-SENT-{index:02d}",
+                invoice_date=None,
+                sync_status="success",
+                receipt_id=f"synthetic-receipt-{index:02d}",
+                receipt_number=f"R-SYNTHETIC-{index:02d}",
+            )
+            for index in range(1, 20)
+        ]
+        october = self._order(
+            "SYNTHETIC-OCTOBER",
+            invoice_date=date(2026, 10, 1),
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            approved_file = root / "approved_31_orders.csv"
+            approved_file.write_text(
+                "order_id\n" + "".join(f"{order.id}\n" for order in candidates),
+                encoding="utf-8",
+            )
+            explicit_ids = _load_explicit_order_ids(approved_file)
+            plan = build_historical_confirmation_plan(
+                self.db,
+                explicit_order_ids=explicit_ids,
+            )
+            export_dir = root / "evidence"
+            _write_evidence(export_dir, plan)
+
+            self.assertEqual(len(explicit_ids), 31)
+            self.assertEqual(len(set(explicit_ids)), 31)
+            self.assertEqual(plan.explicit_id_candidate_count, 31)
+            self.assertEqual(plan.already_sent_count, 19)
+            self.assertTrue(plan.explicit_selection_is_valid)
+            self.assertEqual(
+                next(row for row in plan.rows if row.order_id == october.id).classification,
+                "outside_cutoff",
+            )
+            with (export_dir / "orders_explicit_id_candidates.csv").open(
+                encoding="utf-8-sig",
+                newline="",
+            ) as source:
+                self.assertEqual(len(list(csv.DictReader(source))), 31)
+            with (export_dir / "orders_already_sent.csv").open(
+                encoding="utf-8-sig",
+                newline="",
+            ) as source:
+                self.assertEqual(len(list(csv.DictReader(source))), 19)
+
+        execute_historical_confirmation(
+            self.Session,
+            confirmed_by_user_id=self.user.id,
+            expected_fingerprint=plan.fingerprint,
+            business_confirmation=EXPLICIT_ID_CONFIRMATION_TEXT,
+            explicit_order_ids=explicit_ids,
+        )
+
+        self.db.expire_all()
+        self.assertTrue(
+            all(
+                self.db.get(B2BSalesOrder, order.id).loyverse_invoice_sync_status
+                == SYNC_STATUS_HISTORICAL_CONFIRMED
+                for order in candidates
+            )
+        )
+        self.assertTrue(
+            all(
+                self.db.get(B2BSalesOrder, order.id).loyverse_invoice_sync_status
+                == "success"
+                and self.db.get(B2BSalesOrder, order.id).loyverse_receipt_id
+                == f"synthetic-receipt-{index:02d}"
+                for index, order in enumerate(already_sent, start=1)
+            )
+        )
+        self.assertIsNone(
+            self.db.get(B2BSalesOrder, october.id).loyverse_invoice_sync_status
+        )
 
     def test_stale_plan_and_audit_failure_roll_back_all_status_changes(self) -> None:
         first = self._order("HIST-ROLLBACK-1", invoice_date=date(2026, 9, 1))

@@ -92,7 +92,7 @@ Cada dry-run genera `orders.csv` y cuatro archivos separados:
 - `orders_review.csv` para IDs que requieren validación explícita.
 - `orders_from_october.csv` para pedidos controlados por el flujo permanente.
 
-El fingerprint usa la revisión `v2`, por lo que cualquier evidencia producida antes de este ajuste
+El fingerprint usa la revisión `v3`, por lo que cualquier evidencia producida antes de este ajuste
 es obsoleta y no puede utilizarse para ejecutar. El dry-run requiere un directorio nuevo:
 
 ```text
@@ -104,3 +104,59 @@ La ejecución exige posteriormente el fingerprint exacto del dry-run, un usuario
 modifica estados ERP, inventario, Kardex, CxC ni referencias existentes; únicamente guarda
 `loyverse_invoice_sync_status=historical_confirmed` y auditoría transaccional. Los estados
 `unknown`, referencias duplicadas y ejecuciones activas quedan para revisión.
+
+### Excepción controlada por lista exacta de IDs
+
+Si el negocio identifica pedidos históricos sin `invoice_date`, `invoiced_at` ni marca
+`Historical CSV import`, la excepción no usa `delivery_date` como sustituto. Se prepara un CSV
+aprobado con una sola columna `order_id` y una fila por pedido, sin duplicados:
+
+```csv
+order_id
+123
+456
+```
+
+El dry-run específico se genera con un directorio nuevo:
+
+```text
+python tools/mark_b2b_loyverse_historical_invoices.py \
+  --approved-order-ids-file <lista-aprobada.csv> \
+  --export-dir <directorio-nuevo>
+```
+
+El plan comprueba para cada ID que el pedido siga `invoiced`, no tenga una fecha confiable, marca
+de migración, referencia Loyverse, resultado `unknown`/`success` sin referencia, ejecución activa
+ni referencia duplicada. Un ID inexistente, no facturado o contradictorio invalida la selección
+completa. Los pedidos con referencia se reportan como `already_sent` y nunca se modifican.
+
+La evidencia incluye `orders_explicit_id_candidates.csv`,
+`orders_explicit_id_rejected.csv`, `orders_already_sent.csv` y un `summary.json` que declara si la
+selección completa es válida. El fingerprint incorpora la lista exacta, todas las clasificaciones
+y los IDs ausentes, por lo que cambiar la lista o cualquier estado invalida la confirmación.
+
+La ejecución posterior requiere volver a suministrar el mismo archivo, el fingerprint, un usuario
+con `sales.invoice`, la confirmación operacional
+`MARK_APPROVED_B2B_LOYVERSE_HISTORY_BY_ID` y esta declaración textual exacta:
+
+```text
+El negocio confirma que únicamente los pedidos B2B identificados por ID en la lista aprobada, sin fecha de facturación ni marca técnica de migración, corresponden a operaciones históricas ya facturadas en Loyverse antes del 01/10/2026. No se inventarán fechas ni comprobantes.
+```
+
+El modo explícito únicamente puede cambiar a `historical_confirmed` los IDs aprobados que superen
+todas las validaciones. No modifica fechas, comprobantes, estado ERP, importes, inventario,
+Kardex ni CxC. Una confirmación ya aplicada no genera cambios adicionales.
+
+En Render, la lista aprobada debe mantenerse fuera de Git. Se crea o carga como archivo temporal
+de la sesión Shell, por ejemplo `/tmp/approved_b2b_historical_orders.csv`, se comprueba que tenga
+únicamente el encabezado `order_id` y los IDs aprobados, y se usa en el dry-run:
+
+```text
+python tools/mark_b2b_loyverse_historical_invoices.py \
+  --approved-order-ids-file /tmp/approved_b2b_historical_orders.csv \
+  --export-dir /tmp/b2b_loyverse_historical_evidence_<fecha-hora>
+```
+
+Antes de cualquier ejecución se revisan `summary.json`, los candidatos, los rechazados y los ya
+enviados. El archivo temporal no se copia al repositorio y la evidencia de un dry-run anterior no
+se reutiliza si cambia cualquier pedido o la lista aprobada.
