@@ -74,6 +74,36 @@ Fecha final:   2026-10-29
 La vista previa presenta encontrados, elegibles, ya enviados, excluidos, bloqueados, importe y
 mapeos faltantes. No confirmar hasta conciliar todos los bloqueados y aprobar el importe.
 
+## Channel Master y Payment Types de Loyverse
+
+El Channel Master es exclusivamente interno. El flujo no lee ni escribe campos Loyverse en
+`Channel` y tampoco modifica el canal de un pedido. Para un pedido pendiente, usa
+`B2BSalesOrder.channel_id`, resuelve el nombre exacto en `channels` y aplica esta tabla aprobada:
+
+| Channel Master ERP | Payment Type Loyverse |
+|---|---|
+| Horeca | Horeca |
+| Maquila | Maquila |
+| Tiendas Naturales (Minisuper) | Tiendas Naturales |
+| Tiendas Naturales (Supermercados) | Tiendas Naturales |
+| Tiendas Naturas (Macobioticas) | Tiendas Naturales |
+| Tienda Online (Terceros) | Tiendas Naturales |
+
+El ID no está fijo en código: se obtiene del único registro activo con nombre exacto en
+`loyverse_payment_type_mappings`, actualizado desde `GET /payment_types`. Esto permite muchos
+canales ERP hacia el mismo Payment Type sin acoplar ambos maestros. Un canal ausente, no B2B, sin
+mapeo aprobado, o un Payment Type ausente/inactivo/ambiguo bloquea el pedido con un motivo
+específico. El campo legacy `loyverse_payment_type_id_snapshot` no decide el mapeo de pedidos
+nuevos del Channel Master.
+
+La API de Loyverse trata `payments` como pagos reales del receipt, no como una dimensión comercial.
+`POST /receipts` admite un solo pago; el ERP envía exactamente uno, con el ID resuelto y
+`money_amount` igual al total recalculado del pedido. Esto no duplica el total ni crea una segunda
+línea de venta, pero sí clasifica financieramente el receipt completo bajo ese Payment Type en
+Loyverse. Por tanto, estos Payment Types comerciales deben estar aprobados también para ese uso
+financiero; no deben interpretarse como una forma de pago real distinta sin una decisión de
+negocio adicional.
+
 ## Confirmación histórica anterior a octubre de 2026
 
 `tools/mark_b2b_loyverse_historical_invoices.py` prepara evidencia sin escribir por defecto. Solo

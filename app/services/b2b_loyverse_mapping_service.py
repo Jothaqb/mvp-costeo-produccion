@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import (
     B2BSalesOrder,
+    Channel,
     LoyverseCustomerMapping,
     LoyversePaymentTypeMapping,
     LoyverseVariantMapping,
@@ -17,6 +18,15 @@ from app.models import (
 
 LOYVERSE_API_BASE_URL = "https://api.loyverse.com/v1.0"
 LOYVERSE_REQUEST_TIMEOUT_SECONDS = 8
+
+B2B_CHANNEL_TO_LOYVERSE_PAYMENT_TYPE_NAME = {
+    "Horeca": "Horeca",
+    "Maquila": "Maquila",
+    "Tiendas Naturales (Minisuper)": "Tiendas Naturales",
+    "Tiendas Naturales (Supermercados)": "Tiendas Naturales",
+    "Tiendas Naturas (Macobioticas)": "Tiendas Naturales",
+    "Tienda Online (Terceros)": "Tiendas Naturales",
+}
 
 
 class LoyverseMappingSyncError(Exception):
@@ -216,29 +226,102 @@ def _resolve_customer_mapping(db: Session, order: B2BSalesOrder) -> dict:
 
 
 def _resolve_channel_mapping(db: Session, order: B2BSalesOrder) -> dict:
-    payment_type_id = (order.loyverse_payment_type_id_snapshot or "").strip()
-    channel_name = (order.b2b_channel_name_snapshot or "").strip()
-    if not payment_type_id:
-        return {"ready": False, "loyverse_payment_type_id": None, "message": "B2B Channel is not selected for this order."}
+    return resolve_b2b_loyverse_payment_type_mapping(db, order)
 
-    mapping = (
+
+def resolve_b2b_loyverse_payment_type_mapping(
+    db: Session,
+    order: B2BSalesOrder,
+) -> dict:
+    if order.channel_id is None:
+        return {
+            "ready": False,
+            "channel_id": None,
+            "channel_name": None,
+            "loyverse_payment_type_id": None,
+            "loyverse_payment_type_name": None,
+            "message": "The order has no Channel Master selection (channel_id).",
+        }
+
+    channel = db.query(Channel).filter(Channel.id == order.channel_id).one_or_none()
+    if channel is None:
+        return {
+            "ready": False,
+            "channel_id": order.channel_id,
+            "channel_name": None,
+            "loyverse_payment_type_id": None,
+            "loyverse_payment_type_name": None,
+            "message": f"Channel Master id {order.channel_id} does not exist.",
+        }
+    if not channel.applies_to_b2b:
+        return {
+            "ready": False,
+            "channel_id": channel.id,
+            "channel_name": channel.name,
+            "loyverse_payment_type_id": None,
+            "loyverse_payment_type_name": None,
+            "message": f"Channel Master '{channel.name}' is not applicable to B2B orders.",
+        }
+
+    payment_type_name = B2B_CHANNEL_TO_LOYVERSE_PAYMENT_TYPE_NAME.get(channel.name)
+    if payment_type_name is None:
+        return {
+            "ready": False,
+            "channel_id": channel.id,
+            "channel_name": channel.name,
+            "loyverse_payment_type_id": None,
+            "loyverse_payment_type_name": None,
+            "message": (
+                f"Channel Master '{channel.name}' has no approved Loyverse Payment Type mapping."
+            ),
+        }
+
+    mappings = (
         db.query(LoyversePaymentTypeMapping)
         .filter(
             LoyversePaymentTypeMapping.active.is_(True),
-            LoyversePaymentTypeMapping.loyverse_payment_type_id == payment_type_id,
+            LoyversePaymentTypeMapping.name == payment_type_name,
         )
-        .one_or_none()
+        .order_by(LoyversePaymentTypeMapping.id)
+        .all()
     )
-    if mapping is None:
+    if not mappings:
         return {
             "ready": False,
-            "loyverse_payment_type_id": payment_type_id,
-            "message": f"Selected B2B Channel is not active in the local Loyverse payment type cache: {channel_name or payment_type_id}.",
+            "channel_id": channel.id,
+            "channel_name": channel.name,
+            "loyverse_payment_type_id": None,
+            "loyverse_payment_type_name": payment_type_name,
+            "message": (
+                f"Approved Loyverse Payment Type '{payment_type_name}' is not active in the "
+                "local mapping cache for Channel Master "
+                f"'{channel.name}'."
+            ),
         }
+    if len(mappings) > 1:
+        return {
+            "ready": False,
+            "channel_id": channel.id,
+            "channel_name": channel.name,
+            "loyverse_payment_type_id": None,
+            "loyverse_payment_type_name": payment_type_name,
+            "message": (
+                f"Approved Loyverse Payment Type '{payment_type_name}' is ambiguous in the "
+                "local mapping cache; {len(mappings)} active records were found."
+            ),
+        }
+
+    mapping = mappings[0]
     return {
         "ready": True,
-        "loyverse_payment_type_id": payment_type_id,
-        "message": f"B2B Channel is mapped to Loyverse payment type: {channel_name or mapping.name}.",
+        "channel_id": channel.id,
+        "channel_name": channel.name,
+        "loyverse_payment_type_id": mapping.loyverse_payment_type_id,
+        "loyverse_payment_type_name": mapping.name,
+        "message": (
+            f"Channel Master '{channel.name}' maps to Loyverse Payment Type "
+            f"'{mapping.name}'."
+        ),
     }
 
 

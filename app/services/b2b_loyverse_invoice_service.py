@@ -11,10 +11,12 @@ from app.models import (
     B2BSalesOrder,
     B2BSalesOrderLine,
     LoyverseCustomerMapping,
-    LoyversePaymentTypeMapping,
     LoyverseVariantMapping,
 )
 from app.services.b2b_sales_service import ALLOWED_STATUS_TRANSITIONS, B2BValidationError, ZERO
+from app.services.b2b_loyverse_mapping_service import (
+    resolve_b2b_loyverse_payment_type_mapping,
+)
 
 
 LOYVERSE_API_BASE_URL = "https://api.loyverse.com/v1.0"
@@ -161,20 +163,10 @@ def _resolve_customer_id(db: Session, order: B2BSalesOrder) -> str:
 
 
 def _resolve_payment_type_id(db: Session, order: B2BSalesOrder) -> str:
-    payment_type_id = (order.loyverse_payment_type_id_snapshot or "").strip()
-    if not payment_type_id:
-        raise B2BLoyverseInvoiceError("B2B Channel is not selected for this order.")
-    mapping = (
-        db.query(LoyversePaymentTypeMapping)
-        .filter(
-            LoyversePaymentTypeMapping.active.is_(True),
-            LoyversePaymentTypeMapping.loyverse_payment_type_id == payment_type_id,
-        )
-        .one_or_none()
-    )
-    if mapping is None:
-        raise B2BLoyverseInvoiceError("Selected B2B Channel is not active in the local Loyverse payment type cache.")
-    return payment_type_id
+    resolution = resolve_b2b_loyverse_payment_type_mapping(db, order)
+    if not resolution["ready"]:
+        raise B2BLoyverseInvoiceError(str(resolution["message"]))
+    return str(resolution["loyverse_payment_type_id"])
 
 
 def _build_line_payloads(db: Session, order: B2BSalesOrder) -> tuple[list[dict], dict[int, str]]:

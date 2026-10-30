@@ -20,6 +20,8 @@ from app.models import (
     B2BLoyverseInvoiceDispatch,
     B2BSalesOrder,
     B2BSalesOrderLine,
+    Channel,
+    LoyverseCustomerMapping,
     LoyversePaymentTypeMapping,
     LoyverseVariantMapping,
     User,
@@ -34,6 +36,11 @@ from app.services.b2b_loyverse_invoicing_workflow_service import (
     run_b2b_loyverse_invoice_worker_cycle,
     validate_b2b_loyverse_invoicing_confirmation_token,
     validate_b2b_loyverse_invoicing_csrf_token,
+)
+from app.services.b2b_loyverse_mapping_service import (
+    B2B_CHANNEL_TO_LOYVERSE_PAYMENT_TYPE_NAME,
+    build_b2b_invoice_readiness,
+    resolve_b2b_loyverse_payment_type_mapping,
 )
 
 
@@ -54,21 +61,44 @@ class B2BLoyverseInvoicingWorkflowTests(unittest.TestCase):
             password_hash="test-only",
             is_active=True,
         )
+        self.default_channel = Channel(
+            name="Tiendas Naturales (Supermercados)",
+            active=True,
+            applies_to_b2b=True,
+            applies_to_b2c=False,
+        )
+        self.db.add_all([self.user, self.default_channel])
+        self.db.flush()
         self.customer = B2BCustomer(
             customer_name="Cliente de prueba",
             phone="88888888",
             loyverse_customer_id="loyverse-customer-1",
+            channel_id=self.default_channel.id,
             active=True,
         )
-        self.db.add_all([self.user, self.customer])
+        self.db.add(self.customer)
         self.db.flush()
         refreshed_at = datetime(2026, 10, 1)
         self.db.add_all(
             [
                 LoyversePaymentTypeMapping(
                     loyverse_payment_type_id="payment-type-1",
-                    name="B2B Test",
-                    payment_type="CARD",
+                    name="Tiendas Naturales",
+                    payment_type="OTHER",
+                    active=True,
+                    last_refreshed_at=refreshed_at,
+                ),
+                LoyversePaymentTypeMapping(
+                    loyverse_payment_type_id="payment-type-horeca",
+                    name="Horeca",
+                    payment_type="OTHER",
+                    active=True,
+                    last_refreshed_at=refreshed_at,
+                ),
+                LoyversePaymentTypeMapping(
+                    loyverse_payment_type_id="payment-type-maquila",
+                    name="Maquila",
+                    payment_type="OTHER",
                     active=True,
                     last_refreshed_at=refreshed_at,
                 ),
@@ -110,17 +140,34 @@ class B2BLoyverseInvoicingWorkflowTests(unittest.TestCase):
         delivery_date: date = date(2026, 10, 15),
         invoice_date: date | None = None,
         invoiced_at: datetime | None = None,
+        channel_id: int | None = None,
+        without_channel: bool = False,
+        loyverse_customer_id_snapshot: str | None = "loyverse-customer-1",
+        phone_snapshot: str | None = None,
     ) -> B2BSalesOrder:
+        selected_channel_id = (
+            None
+            if without_channel
+            else (channel_id if channel_id is not None else self.default_channel.id)
+        )
+        selected_channel = (
+            self.db.get(Channel, selected_channel_id)
+            if selected_channel_id is not None
+            else None
+        )
         order = B2BSalesOrder(
             order_number=number,
             customer_id=self.customer.id,
             customer_name_snapshot=self.customer.customer_name,
-            phone_snapshot=self.customer.phone,
-            loyverse_customer_id_snapshot="loyverse-customer-1",
+            phone_snapshot=(
+                phone_snapshot if phone_snapshot is not None else self.customer.phone
+            ),
+            loyverse_customer_id_snapshot=loyverse_customer_id_snapshot,
+            channel_id=selected_channel_id,
             delivery_date=delivery_date,
             status=status,
             total_amount=Decimal("2000"),
-            loyverse_payment_type_id_snapshot="payment-type-1",
+            b2b_channel_name_snapshot=(selected_channel.name if selected_channel else None),
             loyverse_invoice_sync_status=sync_status,
             loyverse_receipt_id=receipt_id,
             loyverse_receipt_number=receipt_number,
@@ -161,6 +208,200 @@ class B2BLoyverseInvoicingWorkflowTests(unittest.TestCase):
             headers={},
             state=SimpleNamespace(current_user=self.user),
         )
+
+    def _channel(self, name: str, *, applies_to_b2b: bool = True) -> Channel:
+        channel = Channel(
+            name=name,
+            active=True,
+            applies_to_b2b=applies_to_b2b,
+            applies_to_b2c=not applies_to_b2b,
+        )
+        self.db.add(channel)
+        self.db.commit()
+        self.db.refresh(channel)
+        return channel
+
+    def test_all_six_approved_channels_resolve_many_to_one_payment_types(self) -> None:
+        expected_ids = {
+            "Horeca": "payment-type-horeca",
+            "Maquila": "payment-type-maquila",
+            "Tiendas Naturales (Minisuper)": "payment-type-1",
+            "Tiendas Naturales (Supermercados)": "payment-type-1",
+            "Tiendas Naturas (Macobioticas)": "payment-type-1",
+            "Tienda Online (Terceros)": "payment-type-1",
+        }
+        channels = {self.default_channel.name: self.default_channel}
+        for channel_name in expected_ids:
+            if channel_name not in channels:
+                channels[channel_name] = self._channel(channel_name)
+
+        resolutions = {}
+        for index, (channel_name, expected_payment_type_id) in enumerate(
+            expected_ids.items(),
+            start=1,
+        ):
+            order = self._order(
+                f"B2B-CHANNEL-{index}",
+                channel_id=channels[channel_name].id,
+            )
+            resolution = resolve_b2b_loyverse_payment_type_mapping(self.db, order)
+            resolutions[channel_name] = resolution
+            self.assertTrue(resolution["ready"])
+            self.assertEqual(
+                resolution["loyverse_payment_type_id"],
+                expected_payment_type_id,
+            )
+            self.assertEqual(
+                resolution["loyverse_payment_type_name"],
+                B2B_CHANNEL_TO_LOYVERSE_PAYMENT_TYPE_NAME[channel_name],
+            )
+
+        natural_ids = {
+            resolutions[channel_name]["loyverse_payment_type_id"]
+            for channel_name in (
+                "Tiendas Naturales (Minisuper)",
+                "Tiendas Naturales (Supermercados)",
+                "Tiendas Naturas (Macobioticas)",
+                "Tienda Online (Terceros)",
+            )
+        }
+        self.assertEqual(natural_ids, {"payment-type-1"})
+
+    def test_b2b1244_uses_channel_master_even_with_empty_or_legacy_snapshot(self) -> None:
+        order = self._order("B2B1244")
+        order.loyverse_payment_type_id_snapshot = "legacy-payment-type-must-not-be-used"
+        self.db.commit()
+
+        preview = self._preview()
+        row = next(item for item in preview.rows if item.order_number == "B2B1244")
+        readiness = build_b2b_invoice_readiness(self.db, order.id)
+
+        self.assertTrue(row.eligible)
+        self.assertFalse(row.missing_payment_type_mapping)
+        self.assertTrue(readiness["channel"]["ready"])
+        self.assertEqual(
+            readiness["channel"]["channel_name"],
+            "Tiendas Naturales (Supermercados)",
+        )
+        self.assertEqual(
+            readiness["channel"]["loyverse_payment_type_id"],
+            "payment-type-1",
+        )
+
+    def test_missing_unapproved_or_unavailable_channel_mapping_is_specific(self) -> None:
+        without_channel = self._order("B2B-NO-CHANNEL", without_channel=True)
+        without_channel.b2b_channel_name_snapshot = "Tiendas Naturales (Supermercados)"
+        without_channel.loyverse_payment_type_id_snapshot = "payment-type-1"
+        unmapped_channel = self._channel("Canal B2B sin mapeo")
+        unmapped = self._order("B2B-UNMAPPED-CHANNEL", channel_id=unmapped_channel.id)
+        wrong_scope_channel = self._channel("Canal solo B2C", applies_to_b2b=False)
+        wrong_scope = self._order("B2B-WRONG-SCOPE", channel_id=wrong_scope_channel.id)
+
+        missing_resolution = resolve_b2b_loyverse_payment_type_mapping(
+            self.db,
+            without_channel,
+        )
+        unmapped_resolution = resolve_b2b_loyverse_payment_type_mapping(self.db, unmapped)
+        wrong_scope_resolution = resolve_b2b_loyverse_payment_type_mapping(
+            self.db,
+            wrong_scope,
+        )
+
+        self.assertFalse(missing_resolution["ready"])
+        self.assertIn("no Channel Master", missing_resolution["message"])
+        self.assertFalse(unmapped_resolution["ready"])
+        self.assertIn("no approved", unmapped_resolution["message"])
+        self.assertFalse(wrong_scope_resolution["ready"])
+        self.assertIn("not applicable to B2B", wrong_scope_resolution["message"])
+
+        natural_mapping = (
+            self.db.query(LoyversePaymentTypeMapping)
+            .filter(LoyversePaymentTypeMapping.name == "Tiendas Naturales")
+            .one()
+        )
+        natural_mapping.active = False
+        self.db.commit()
+        unavailable = resolve_b2b_loyverse_payment_type_mapping(
+            self.db,
+            self._order("B2B-PAYMENT-TYPE-UNAVAILABLE"),
+        )
+        self.assertFalse(unavailable["ready"])
+        self.assertIn("not active", unavailable["message"])
+
+    def test_receipt_payload_has_one_payment_for_exact_order_total(self) -> None:
+        from tools import b2b_loyverse_monthly_invoice_job as monthly
+
+        order = self._order("B2B-PAYMENT-PAYLOAD")
+        evaluation = monthly.evaluate_order(self.db, order, "store-1")
+
+        self.assertTrue(evaluation.eligible)
+        self.assertIsNotNone(evaluation.payload)
+        payments = evaluation.payload["payments"]
+        self.assertEqual(len(payments), 1)
+        self.assertEqual(payments[0]["payment_type_id"], "payment-type-1")
+        self.assertEqual(payments[0]["money_amount"], 2000.0)
+        self.assertEqual(evaluation.total_amount, Decimal("2000"))
+
+    def test_missing_or_ambiguous_customer_mapping_stays_blocked(self) -> None:
+        self.customer.loyverse_customer_id = None
+        refreshed_at = datetime(2026, 10, 1)
+        self.db.add_all(
+            [
+                LoyverseCustomerMapping(
+                    loyverse_customer_id="ambiguous-customer-1",
+                    customer_name="Ambiguous one",
+                    phone="71111111",
+                    active=True,
+                    last_refreshed_at=refreshed_at,
+                ),
+                LoyverseCustomerMapping(
+                    loyverse_customer_id="ambiguous-customer-2",
+                    customer_name="Ambiguous two",
+                    phone="7111-1111",
+                    active=True,
+                    last_refreshed_at=refreshed_at,
+                ),
+                LoyverseCustomerMapping(
+                    loyverse_customer_id="unique-customer",
+                    customer_name="Unique customer",
+                    phone="7222-2222",
+                    active=True,
+                    last_refreshed_at=refreshed_at,
+                ),
+            ]
+        )
+        self.db.commit()
+        self._order(
+            "B2B-CUSTOMER-NOT-FOUND",
+            loyverse_customer_id_snapshot=None,
+            phone_snapshot="70000000",
+        )
+        self._order(
+            "B2B-CUSTOMER-AMBIGUOUS",
+            loyverse_customer_id_snapshot=None,
+            phone_snapshot="71111111",
+        )
+        self._order(
+            "B2B-CUSTOMER-UNIQUE-PHONE",
+            loyverse_customer_id_snapshot=None,
+            phone_snapshot="72222222",
+        )
+
+        preview = self._preview()
+        rows = {row.order_number: row for row in preview.rows}
+
+        self.assertEqual(preview.missing_customer_mapping_count, 2)
+        self.assertTrue(rows["B2B-CUSTOMER-NOT-FOUND"].missing_customer_mapping)
+        self.assertIn(
+            "No local Loyverse customer mapping found",
+            rows["B2B-CUSTOMER-NOT-FOUND"].reason,
+        )
+        self.assertTrue(rows["B2B-CUSTOMER-AMBIGUOUS"].missing_customer_mapping)
+        self.assertIn(
+            "Multiple local Loyverse customer mappings",
+            rows["B2B-CUSTOMER-AMBIGUOUS"].reason,
+        )
+        self.assertTrue(rows["B2B-CUSTOMER-UNIQUE-PHONE"].eligible)
 
     def test_preview_only_makes_invoiced_orders_eligible(self) -> None:
         self._order("B2B-ELIGIBLE")
