@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import sys
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -42,24 +44,72 @@ from app.services.shopify_phase1b_service import (  # noqa: E402
 )
 
 
-APPROVED_ORDER_GID = "gid://shopify/Order/8198807126309"
-APPROVED_ORDER_NAME = "#1679"
 APPROVED_API_VERSION = "2026-10"
-APPROVED_TECHNICAL_ORIGIN = "shopify_draft_order"
-APPROVED_PRODUCT_SKU = "10265"
-APPROVED_PRODUCT_QUANTITY = Decimal("1.0000")
-APPROVED_PRODUCT_AMOUNT = Decimal("3300.0000")
-APPROVED_SHIPPING_SKU = "10219"
-APPROVED_SHIPPING_AMOUNT = Decimal("2500.0000")
-APPROVED_SHIPPING_SOURCE = "shopify"
-APPROVED_SHIPPING_CODE = "GAM menos de 20000"
-APPROVED_TOTAL = Decimal("5800.0000")
 APPROVED_ZERO = Decimal("0.0000")
 APPROVED_FINANCIAL_STATUS = "PENDING"
 CONFIRMATION_PREFIX = "PROCESS_SHOPIFY_EVENT"
 READY = "READY"
 BLOCKED = "BLOCKED"
 ALREADY_PROCESSED = "ALREADY_PROCESSED"
+
+
+@dataclass(frozen=True)
+class ApprovedProductExpectation:
+    sku: str
+    quantity: Decimal | None = None
+    net_amount: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class ApprovedEventProfile:
+    event_id: int
+    order_name: str
+    known_order_gid: str | None
+    technical_origin: str
+    products: tuple[ApprovedProductExpectation, ...]
+    shipping_source: str
+    shipping_code: str
+    shipping_sku: str
+    shipping_amount: Decimal
+    total_amount: Decimal
+
+
+APPROVED_ORDER_GID = "gid://shopify/Order/8198807126309"
+APPROVED_EVENT_PROFILES = {
+    1: ApprovedEventProfile(
+        event_id=1,
+        order_name="#1679",
+        known_order_gid=APPROVED_ORDER_GID,
+        technical_origin="shopify_draft_order",
+        products=(
+            ApprovedProductExpectation(
+                sku="10265",
+                quantity=Decimal("1.0000"),
+                net_amount=Decimal("3300.0000"),
+            ),
+        ),
+        shipping_source="shopify",
+        shipping_code="GAM menos de 20000",
+        shipping_sku="10219",
+        shipping_amount=Decimal("2500.0000"),
+        total_amount=Decimal("5800.0000"),
+    ),
+    2: ApprovedEventProfile(
+        event_id=2,
+        order_name="#1680",
+        known_order_gid=None,
+        technical_origin="web",
+        products=tuple(
+            ApprovedProductExpectation(sku=sku)
+            for sku in ("1143", "10229", "10496", "10358", "10062", "10225", "10265")
+        ),
+        shipping_source="shopify",
+        shipping_code="GAM mas de 20 mil",
+        shipping_sku="10219",
+        shipping_amount=Decimal("0.0000"),
+        total_amount=Decimal("22200.0000"),
+    ),
+}
 
 
 class SingleShopifyEventError(Exception):
@@ -74,7 +124,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         )
     )
     parser.add_argument("--event-id", type=int, required=True)
-    parser.add_argument("--expected-order-gid", required=True)
+    parser.add_argument(
+        "--expected-order-gid",
+        default="",
+        help=(
+            "Exact Shopify Order GID. It may be omitted only for dry-run, which then "
+            "discovers it from the immutable event and verifies it with GraphQL."
+        ),
+    )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--execute", action="store_true")
@@ -82,14 +139,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.event_id <= 0:
         parser.error("--event-id must be a positive integer.")
-    args.expected_order_gid = args.expected_order_gid.strip()
+    args.expected_order_gid = args.expected_order_gid.strip() or None
     args.confirm = args.confirm.strip()
-    if not args.expected_order_gid.startswith("gid://shopify/Order/"):
+    if args.expected_order_gid and not args.expected_order_gid.startswith("gid://shopify/Order/"):
         parser.error("--expected-order-gid must be a Shopify Order GID.")
     if args.dry_run and args.confirm:
         parser.error("--confirm is not valid with --dry-run.")
     if args.execute and not args.confirm:
         parser.error("--execute requires --confirm from the immediately preceding dry-run.")
+    if args.execute and not args.expected_order_gid:
+        parser.error("--execute requires the exact --expected-order-gid returned by dry-run.")
     return args
 
 
@@ -110,7 +169,7 @@ def _event_query(db: Session, event_id: int, *, for_update: bool):
     return query
 
 
-def _blocked_plan(event_id: int, expected_order_gid: str, reasons: list[str]) -> dict:
+def _blocked_plan(event_id: int, expected_order_gid: str | None, reasons: list[str]) -> dict:
     return {
         "status": BLOCKED,
         "event_id": event_id,
@@ -129,11 +188,18 @@ def build_single_event_plan(
     db: Session,
     *,
     event_id: int,
-    expected_order_gid: str,
+    expected_order_gid: str | None,
     config: ShopifyRuntimeConfig,
     graph_ql_client: ShopifyGraphQLClient,
     for_update: bool = False,
 ) -> dict:
+    profile = APPROVED_EVENT_PROFILES.get(event_id)
+    if profile is None:
+        return _blocked_plan(
+            event_id,
+            expected_order_gid,
+            ["Event ID is not approved for controlled single-event processing."],
+        )
     reasons: list[str] = []
     event = _event_query(db, event_id, for_update=for_update).one_or_none()
     if event is None:
@@ -150,13 +216,14 @@ def build_single_event_plan(
                 expected_order_gid,
                 ["Processed event has no Shopify order integration."],
             )
-        if expected_order_gid != APPROVED_ORDER_GID:
+        resolved_order_gid = expected_order_gid or profile.known_order_gid or integration.shopify_order_gid
+        if profile.known_order_gid and integration.shopify_order_gid != profile.known_order_gid:
             return _blocked_plan(
                 event_id,
                 expected_order_gid,
-                ["The expected Order GID is not approved for this controlled execution."],
+                ["Processed event does not match its approved Shopify Order GID."],
             )
-        if integration.shopify_order_gid != expected_order_gid:
+        if integration.shopify_order_gid != resolved_order_gid:
             return _blocked_plan(
                 event_id,
                 expected_order_gid,
@@ -169,6 +236,7 @@ def build_single_event_plan(
             and integration.shop_domain == config.shop_domain
             and integration.import_status == "imported"
             and integration.b2c_sales_order_id is not None
+            and integration.shopify_order_name == profile.order_name
         )
         if not processed_scope_is_valid:
             return _blocked_plan(
@@ -179,7 +247,7 @@ def build_single_event_plan(
         return {
             "status": ALREADY_PROCESSED,
             "event_id": event.id,
-            "expected_order_gid": expected_order_gid,
+            "expected_order_gid": resolved_order_gid,
             "integration_id": integration.id,
             "b2c_sales_order_id": integration.b2c_sales_order_id,
             "reasons": ["Event was already processed; no action is required."],
@@ -194,8 +262,6 @@ def build_single_event_plan(
         reasons.append("SHOPIFY_INTEGRATION_ENABLED must be true.")
     if not _background_processor_is_disabled():
         reasons.append("SHOPIFY_BACKGROUND_PROCESSOR_ENABLED must remain false.")
-    if expected_order_gid != APPROVED_ORDER_GID:
-        reasons.append("The expected Order GID is not approved for this controlled execution.")
     if event.shop_domain != config.shop_domain:
         reasons.append("Stored event shop does not match SHOPIFY_SHOP_DOMAIN.")
     if event.topic != SHOPIFY_ORDERS_CREATE_TOPIC:
@@ -220,7 +286,7 @@ def build_single_event_plan(
         reasons.append("Stored event payload is not a JSON object.")
         return _blocked_plan(event_id, expected_order_gid, reasons)
     technical_origin = str(raw_payload.get("source_name") or "").strip()
-    if technical_origin != APPROVED_TECHNICAL_ORIGIN:
+    if technical_origin != profile.technical_origin:
         reasons.append("Stored source_name does not match the approved test order origin.")
 
     try:
@@ -232,10 +298,13 @@ def build_single_event_plan(
     except Exception as exc:
         reasons.append(f"ERP order validation failed: {type(exc).__name__}: {exc}")
         return _blocked_plan(event_id, expected_order_gid, reasons)
-    if prepared.order_gid != expected_order_gid:
+    resolved_order_gid = expected_order_gid or profile.known_order_gid or prepared.order_gid
+    if prepared.order_gid != resolved_order_gid:
         reasons.append("Stored Shopify Order GID does not match --expected-order-gid.")
-    if prepared.order_name != APPROVED_ORDER_NAME:
-        reasons.append("Stored Shopify order name is not the approved order #1679.")
+    if profile.known_order_gid and prepared.order_gid != profile.known_order_gid:
+        reasons.append("Stored Shopify Order GID does not match the approved event profile.")
+    if prepared.order_name != profile.order_name:
+        reasons.append(f"Stored Shopify order name is not the approved order {profile.order_name}.")
 
     existing_integration = (
         db.query(ShopifyOrderIntegration)
@@ -273,36 +342,45 @@ def build_single_event_plan(
 
     product_lines = [line for line in prepared.lines if line.line_type == "product"]
     shipping_lines = [line for line in prepared.lines if line.line_type == "shipping"]
-    if len(product_lines) != 1:
-        reasons.append("Approved order must contain exactly one product line.")
-    else:
-        product_line = product_lines[0]
-        if product_line.sku != APPROVED_PRODUCT_SKU:
-            reasons.append("Approved product SKU 10265 was not found as the only product line.")
-        if product_line.quantity != APPROVED_PRODUCT_QUANTITY:
-            reasons.append("Approved product quantity must be 1.")
-        if product_line.net_amount != APPROVED_PRODUCT_AMOUNT:
-            reasons.append("Approved product net amount must be CRC 3300.")
+    expected_product_counts = Counter(expectation.sku for expectation in profile.products)
+    actual_product_counts = Counter(line.sku for line in product_lines)
+    if actual_product_counts != expected_product_counts:
+        reasons.append(
+            "Shopify product lines do not match the exact approved SKU set and multiplicity."
+        )
+    product_lines_by_sku = {line.sku: line for line in product_lines}
+    for expectation in profile.products:
+        product_line = product_lines_by_sku.get(expectation.sku)
+        if product_line is None:
+            continue
+        if expectation.quantity is not None and product_line.quantity != expectation.quantity:
+            reasons.append(f"Approved quantity changed for SKU {expectation.sku}.")
+        if expectation.net_amount is not None and product_line.net_amount != expectation.net_amount:
+            reasons.append(f"Approved net amount changed for SKU {expectation.sku}.")
     if len(shipping_lines) != 1:
         reasons.append("Approved order must contain exactly one shipping line.")
     else:
         shipping_line = shipping_lines[0]
-        if shipping_line.sku != APPROVED_SHIPPING_SKU:
-            reasons.append("Approved shipping SKU must be 10219.")
+        if shipping_line.sku != profile.shipping_sku:
+            reasons.append(f"Approved shipping SKU must be {profile.shipping_sku}.")
         if shipping_line.quantity != Decimal("1.0000"):
             reasons.append("Approved shipping quantity must be 1.")
-        if shipping_line.net_amount != APPROVED_SHIPPING_AMOUNT:
-            reasons.append("Approved shipping net amount must be CRC 2500.")
-    if prepared.shipping_source != APPROVED_SHIPPING_SOURCE:
-        reasons.append("Shipping source must be exactly shopify.")
-    if prepared.shipping_code != APPROVED_SHIPPING_CODE:
-        reasons.append("Shipping code must be exactly GAM menos de 20000.")
+        if shipping_line.gross_amount != profile.shipping_amount:
+            reasons.append("Approved shipping gross amount changed.")
+        if shipping_line.net_amount != profile.shipping_amount:
+            reasons.append("Approved shipping net amount changed.")
+    if prepared.shipping_source != profile.shipping_source:
+        reasons.append(f"Shipping source must be exactly {profile.shipping_source}.")
+    if prepared.shipping_code != profile.shipping_code:
+        reasons.append(f"Shipping code must be exactly {profile.shipping_code}.")
     approved_shipping_key = normalize_shipping_method_key(
-        APPROVED_SHIPPING_SOURCE,
-        APPROVED_SHIPPING_CODE,
+        profile.shipping_source,
+        profile.shipping_code,
     )
-    if config.shipping_method_map.get(approved_shipping_key) != APPROVED_SHIPPING_SKU:
-        reasons.append("SHOPIFY_SHIPPING_METHOD_MAP does not map the approved GAM method to 10219.")
+    if config.shipping_method_map.get(approved_shipping_key) != profile.shipping_sku:
+        reasons.append(
+            "SHOPIFY_SHIPPING_METHOD_MAP does not map the approved method to the approved ERP SKU."
+        )
     total_discount = sum((line.discount_amount for line in prepared.lines), APPROVED_ZERO)
     if total_discount != APPROVED_ZERO:
         reasons.append("Approved order discount must be zero.")
@@ -310,8 +388,11 @@ def build_single_event_plan(
         reasons.append("Approved order currency must be CRC.")
     if prepared.tax_amount != APPROVED_ZERO:
         reasons.append("Approved order tax must be zero.")
-    if prepared.total_amount != APPROVED_TOTAL:
-        reasons.append("Approved order total must be CRC 5800.")
+    if prepared.total_amount != profile.total_amount:
+        reasons.append(f"Approved order total must be CRC {_safe_decimal(profile.total_amount)}.")
+    product_net_total = sum((line.net_amount for line in product_lines), APPROVED_ZERO)
+    if product_net_total != profile.total_amount - profile.shipping_amount:
+        reasons.append("Approved product line totals do not reconcile to the order total.")
     if prepared.financial_status != APPROVED_FINANCIAL_STATUS:
         reasons.append("Approved webhook financial status must be PENDING.")
 
@@ -325,24 +406,37 @@ def build_single_event_plan(
             reasons.append("Shopify GraphQL returned a different Order GID.")
         if financial.currency_code != "CRC":
             reasons.append("Shopify GraphQL currency must be CRC.")
-        if financial.total_amount != APPROVED_TOTAL:
-            reasons.append("Shopify GraphQL total must be CRC 5800.")
+        if financial.total_amount != profile.total_amount:
+            reasons.append("Shopify GraphQL total does not match the approved order total.")
         if financial.tax_amount != APPROVED_ZERO:
             reasons.append("Shopify GraphQL tax must be zero.")
         if financial.financial_status != APPROVED_FINANCIAL_STATUS:
             reasons.append("Shopify GraphQL financial status must be PENDING.")
         if financial.total_received_amount != APPROVED_ZERO:
             reasons.append("Shopify GraphQL received amount must be zero.")
-        if financial.outstanding_amount != APPROVED_TOTAL:
-            reasons.append("Shopify GraphQL outstanding amount must be CRC 5800.")
+        if financial.outstanding_amount != profile.total_amount:
+            reasons.append("Shopify GraphQL outstanding amount does not match the approved total.")
         if financial.refunded_amount != APPROVED_ZERO:
             reasons.append("Shopify GraphQL refunded amount must be zero.")
 
     if reasons:
         return _blocked_plan(event_id, expected_order_gid, reasons)
 
+    line_plan = [
+        {
+            "sku": line.sku,
+            "line_type": line.line_type,
+            "quantity": _safe_decimal(line.quantity),
+            "unit_price": _safe_decimal(line.unit_price),
+            "gross_amount": _safe_decimal(line.gross_amount),
+            "discount_amount": _safe_decimal(line.discount_amount),
+            "net_amount": _safe_decimal(line.net_amount),
+        }
+        for line in prepared.lines
+    ]
     canonical = {
-        "schema": "green-corner-shopify-single-event-v1",
+        "schema": "green-corner-shopify-single-event-v2",
+        "profile_event_id": profile.event_id,
         "event_id": event.id,
         "webhook_id": event.webhook_id,
         "payload_sha256": event.payload_sha256,
@@ -355,15 +449,7 @@ def build_single_event_plan(
         "channel_id": channel.id if channel else None,
         "customer_action": customer_action,
         "existing_customer_id": customer_match.customer.id if customer_match.customer else None,
-        "lines": [
-            {
-                "sku": line.sku,
-                "line_type": line.line_type,
-                "quantity": _safe_decimal(line.quantity),
-                "net_amount": _safe_decimal(line.net_amount),
-            }
-            for line in prepared.lines
-        ],
+        "lines": line_plan,
         "discount": _safe_decimal(total_discount),
         "total": _safe_decimal(prepared.total_amount),
         "financial_status": financial.financial_status,
@@ -376,15 +462,17 @@ def build_single_event_plan(
     return {
         "status": READY,
         "event_id": event.id,
-        "expected_order_gid": expected_order_gid,
+        "expected_order_gid": resolved_order_gid,
         "order_name": prepared.order_name,
         "technical_origin": technical_origin,
         "channel": channel.name if channel else None,
         "customer_action": customer_action,
         "existing_customer_id": customer_match.customer.id if customer_match.customer else None,
         "line_count": len(prepared.lines),
-        "product_sku": product_lines[0].sku,
-        "shipping_sku": shipping_lines[0].sku,
+        "validated_product_skus": sorted(actual_product_counts),
+        "shipping_sku": shipping_lines[0].sku if len(shipping_lines) == 1 else None,
+        "shipping_amount": _safe_decimal(profile.shipping_amount),
+        "lines": line_plan,
         "discount": _safe_decimal(total_discount),
         "total": _safe_decimal(prepared.total_amount),
         "financial_status": financial.financial_status,
@@ -398,9 +486,12 @@ def _validate_created_order(
     db: Session,
     *,
     event_id: int,
+    expected_order_gid: str,
+    approved_plan: dict,
     integration_id: int | None,
     order_id: int | None,
 ) -> B2CSalesOrder:
+    profile = APPROVED_EVENT_PROFILES[event_id]
     if order_id is None:
         raise SingleShopifyEventError("Processing did not create or return a B2C order.")
     order = db.get(B2CSalesOrder, order_id)
@@ -408,43 +499,77 @@ def _validate_created_order(
         raise SingleShopifyEventError("Processed B2C order was not found.")
     if order.status != "draft" or order.channel != "Online Web":
         raise SingleShopifyEventError("Processed order is not an Online Web B2C draft.")
-    if order.loyverse_receipt_id is not None or order.loyverse_receipt_status is not None:
+    if any(
+        value is not None
+        for value in (
+            order.loyverse_receipt_id,
+            order.loyverse_receipt_number,
+            order.loyverse_receipt_status,
+        )
+    ):
         raise SingleShopifyEventError("Processed draft unexpectedly contains invoice evidence.")
-    if order.total_amount != APPROVED_TOTAL or order.discount_amount != APPROVED_ZERO:
+    expected_total = Decimal(approved_plan["total"])
+    expected_discount = Decimal(approved_plan["discount"])
+    if order.total_amount != expected_total or order.discount_amount != expected_discount:
         raise SingleShopifyEventError("Processed order totals do not match the approved plan.")
-    if len(order.lines) != 2:
-        raise SingleShopifyEventError("Processed order does not contain exactly two lines.")
-    lines = {line.sku_snapshot: line for line in order.lines}
-    if set(lines) != {APPROVED_PRODUCT_SKU, APPROVED_SHIPPING_SKU}:
-        raise SingleShopifyEventError("Processed order lines do not match the approved SKUs.")
-    if lines[APPROVED_PRODUCT_SKU].line_type != "product":
-        raise SingleShopifyEventError("SKU 10265 is not stored as a product line.")
-    if lines[APPROVED_SHIPPING_SKU].line_type != "shipping":
-        raise SingleShopifyEventError("SKU 10219 is not stored as a shipping line.")
+    expected_lines = approved_plan["lines"]
+    if len(order.lines) != len(expected_lines):
+        raise SingleShopifyEventError("Processed order line count changed from the approved plan.")
+    actual_lines = {(line.sku_snapshot, line.line_type): line for line in order.lines}
+    if len(actual_lines) != len(order.lines):
+        raise SingleShopifyEventError("Processed order contains duplicate SKU/type lines.")
+    for expected_line in expected_lines:
+        key = (expected_line["sku"], expected_line["line_type"])
+        actual_line = actual_lines.get(key)
+        if actual_line is None:
+            raise SingleShopifyEventError("Processed order lines do not match the approved plan.")
+        line_values = {
+            "quantity": actual_line.quantity,
+            "unit_price": actual_line.unit_price_snapshot,
+            "gross_amount": actual_line.line_total,
+            "discount_amount": actual_line.discount_amount_snapshot,
+            "net_amount": actual_line.net_line_total_snapshot,
+        }
+        for field_name, actual_value in line_values.items():
+            if actual_value != Decimal(expected_line[field_name]):
+                raise SingleShopifyEventError(
+                    f"Processed order changed approved line field {field_name}."
+                )
     integration = db.get(ShopifyOrderIntegration, integration_id) if integration_id else None
     if integration is None:
         raise SingleShopifyEventError("Processed Shopify integration was not found.")
     if (
         integration.source_webhook_event_id != event_id
-        or integration.shopify_order_gid != APPROVED_ORDER_GID
+        or integration.shopify_order_gid != expected_order_gid
         or integration.b2c_sales_order_id != order.id
     ):
         raise SingleShopifyEventError("Processed Shopify integration identity changed.")
+    product_net_amount = sum(
+        (
+            Decimal(line["net_amount"])
+            for line in expected_lines
+            if line["line_type"] == "product"
+        ),
+        APPROVED_ZERO,
+    )
+    shipping_line = next(
+        line for line in expected_lines if line["line_type"] == "shipping"
+    )
     expected_financial_values = {
         "financial_status": APPROVED_FINANCIAL_STATUS,
         "currency_code": "CRC",
         "total_received_amount": APPROVED_ZERO,
-        "outstanding_amount": APPROVED_TOTAL,
+        "outstanding_amount": expected_total,
         "refunded_amount": APPROVED_ZERO,
-        "product_net_amount": APPROVED_PRODUCT_AMOUNT,
-        "shipping_gross_amount": APPROVED_SHIPPING_AMOUNT,
-        "shipping_discount_amount": APPROVED_ZERO,
-        "shipping_net_amount": APPROVED_SHIPPING_AMOUNT,
+        "product_net_amount": product_net_amount,
+        "shipping_gross_amount": Decimal(shipping_line["gross_amount"]),
+        "shipping_discount_amount": Decimal(shipping_line["discount_amount"]),
+        "shipping_net_amount": Decimal(shipping_line["net_amount"]),
         "tax_amount": APPROVED_ZERO,
-        "shopify_total_amount": APPROVED_TOTAL,
+        "shopify_total_amount": expected_total,
         "delivery_method_type": "shipping",
-        "shipping_source": APPROVED_SHIPPING_SOURCE,
-        "shipping_code": APPROVED_SHIPPING_CODE,
+        "shipping_source": profile.shipping_source,
+        "shipping_code": profile.shipping_code,
     }
     for field_name, expected_value in expected_financial_values.items():
         if getattr(integration, field_name) != expected_value:
@@ -468,7 +593,7 @@ def dry_run_single_event(
     session_factory: Callable[[], Session],
     *,
     event_id: int,
-    expected_order_gid: str,
+    expected_order_gid: str | None,
     config: ShopifyRuntimeConfig,
     graph_ql_client: ShopifyGraphQLClient,
 ) -> dict:
@@ -538,13 +663,15 @@ def execute_single_event(
                 order = _validate_created_order(
                     db,
                     event_id=event_id,
+                    expected_order_gid=plan["expected_order_gid"],
+                    approved_plan=plan,
                     integration_id=result.order_integration_id,
                     order_id=result.b2c_sales_order_id,
                 )
                 return {
                     "status": "PROCESSED",
                     "event_id": event_id,
-                    "order_gid": expected_order_gid,
+                    "order_gid": plan["expected_order_gid"],
                     "integration_id": result.order_integration_id,
                     "b2c_sales_order_id": order.id,
                     "b2c_order_number": order.order_number,

@@ -40,7 +40,7 @@ class ShopifyProcessSingleEventTests(unittest.TestCase):
         with self.Session.begin() as db:
             db.add(Channel(name="Online Web", active=True, applies_to_b2c=True))
             db.add_all(
-                (
+                [
                     Product(
                         sku="10265",
                         name="Producto Shopify controlado",
@@ -55,13 +55,26 @@ class ShopifyProcessSingleEventTests(unittest.TestCase):
                         available_for_sale_gc=True,
                         b2c_price=Decimal("2500"),
                     ),
-                )
+                    *(
+                        Product(
+                            sku=sku,
+                            name=f"Producto sintético {sku}",
+                            active=True,
+                            available_for_sale_gc=True,
+                            b2c_price=Decimal("9999"),
+                        )
+                        for sku in ("1143", "10229", "10496", "10358", "10062", "10225")
+                    ),
+                ]
             )
         self.config = ShopifyRuntimeConfig(
             shop_domain="green-corner.myshopify.com",
             webhook_secret="test-only-secret",
             api_version="2026-10",
-            shipping_method_map={"shopify|gam menos de 20000": "10219"},
+            shipping_method_map={
+                "shopify|gam menos de 20000": "10219",
+                "shopify|gam mas de 20 mil": "10219",
+            },
             max_webhook_bytes=2 * 1024 * 1024,
         )
         self.environment = mock.patch.dict(
@@ -145,6 +158,79 @@ class ShopifyProcessSingleEventTests(unittest.TestCase):
     def _body(payload: dict) -> bytes:
         return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
+    @staticmethod
+    def _payload_1680(*, order_id: int = 8200000001680) -> dict:
+        product_lines = (
+            ("1143", "1", "1000"),
+            ("10229", "2", "1500"),
+            ("10496", "1", "2400"),
+            ("10358", "2", "1800"),
+            ("10062", "1", "4200"),
+            ("10225", "1", "3000"),
+            ("10265", "1", "5000"),
+        )
+        return {
+            "id": order_id,
+            "admin_graphql_api_id": f"gid://shopify/Order/{order_id}",
+            "name": "#1680",
+            "source_name": "web",
+            "created_at": "2026-10-31T10:00:00-06:00",
+            "updated_at": "2026-10-31T10:05:00-06:00",
+            "currency": "CRC",
+            "current_total_tax": "0",
+            "current_total_price": "22200",
+            "current_total_discounts": "0",
+            "financial_status": "pending",
+            "fulfillment_status": None,
+            "total_received": "0",
+            "total_outstanding": "22200",
+            "total_refunded": "0",
+            "phone": "87776666",
+            "email": "shopify-1680@example.invalid",
+            "customer": {
+                "id": 902,
+                "admin_graphql_api_id": "gid://shopify/Customer/902",
+                "first_name": "Cliente",
+                "last_name": "Sintético 1680",
+                "phone": "87776666",
+                "email": "shopify-1680@example.invalid",
+            },
+            "shipping_address": {
+                "name": "Cliente Sintético 1680",
+                "phone": "87776666",
+                "address1": "Dirección sintética",
+                "city": "San José",
+                "province": "San José",
+                "zip": "10101",
+                "country": "Costa Rica",
+            },
+            "line_items": [
+                {
+                    "id": 710 + index,
+                    "admin_graphql_api_id": f"gid://shopify/LineItem/{710 + index}",
+                    "variant_id": 610 + index,
+                    "sku": sku,
+                    "name": f"Producto {sku}",
+                    "quantity": quantity,
+                    "price": price,
+                    "requires_shipping": True,
+                    "discount_allocations": [],
+                }
+                for index, (sku, quantity, price) in enumerate(product_lines)
+            ],
+            "shipping_lines": [
+                {
+                    "id": 802,
+                    "admin_graphql_api_id": "gid://shopify/ShippingLine/802",
+                    "title": "GAM mas de 20 mil",
+                    "source": "shopify",
+                    "code": "GAM mas de 20 mil",
+                    "price": "0",
+                    "discount_allocations": [],
+                }
+            ],
+        }
+
     def _register(self, *, payload: dict | None = None, webhook_id: str = "single-event-1") -> int:
         with self.Session.begin() as db:
             event, _ = register_shopify_webhook_event_in_session(
@@ -157,16 +243,21 @@ class ShopifyProcessSingleEventTests(unittest.TestCase):
             )
             return event.id
 
-    def _financial_client(self) -> mock.Mock:
+    def _financial_client(
+        self,
+        *,
+        order_gid: str = single_event_tool.APPROVED_ORDER_GID,
+        total: Decimal = Decimal("5800.0000"),
+    ) -> mock.Mock:
         client = mock.Mock(spec=ShopifyGraphQLClient)
         client.get_order_financial_snapshot.return_value = ShopifyFinancialSnapshot(
-            order_gid=single_event_tool.APPROVED_ORDER_GID,
+            order_gid=order_gid,
             financial_status="PENDING",
             currency_code="CRC",
-            total_amount=Decimal("5800.0000"),
+            total_amount=total,
             tax_amount=Decimal("0.0000"),
             total_received_amount=Decimal("0.0000"),
-            outstanding_amount=Decimal("5800.0000"),
+            outstanding_amount=total,
             refunded_amount=Decimal("0.0000"),
             updated_at=datetime(2026, 10, 30, 16, 5),
         )
@@ -196,6 +287,14 @@ class ShopifyProcessSingleEventTests(unittest.TestCase):
                     "--execute",
                 ]
             )
+        with self.assertRaises(SystemExit):
+            single_event_tool.parse_args(
+                ["--event-id", "2", "--execute", "--confirm", "synthetic"]
+            )
+        discovery_args = single_event_tool.parse_args(
+            ["--event-id", "2", "--dry-run"]
+        )
+        self.assertIsNone(discovery_args.expected_order_gid)
         args = single_event_tool.parse_args(
             [
                 "--event-id",
@@ -207,6 +306,106 @@ class ShopifyProcessSingleEventTests(unittest.TestCase):
         )
         self.assertTrue(args.dry_run)
 
+    def test_event_two_discovers_gid_and_preserves_shopify_prices_and_free_shipping(self) -> None:
+        self._register(webhook_id="single-event-profile-1")
+        payload = self._payload_1680()
+        event_id = self._register(payload=payload, webhook_id="single-event-profile-2")
+        self.assertEqual(event_id, 2)
+        actual_gid = payload["admin_graphql_api_id"]
+        graph_client = self._financial_client(
+            order_gid=actual_gid,
+            total=Decimal("22200.0000"),
+        )
+
+        plan = single_event_tool.dry_run_single_event(
+            self.Session,
+            event_id=event_id,
+            expected_order_gid=None,
+            config=self.config,
+            graph_ql_client=graph_client,
+        )
+
+        self.assertEqual(plan["status"], "READY")
+        self.assertEqual(plan["expected_order_gid"], actual_gid)
+        self.assertEqual(plan["order_name"], "#1680")
+        self.assertEqual(plan["technical_origin"], "web")
+        self.assertEqual(plan["channel"], "Online Web")
+        self.assertEqual(plan["line_count"], 8)
+        self.assertEqual(plan["shipping_sku"], "10219")
+        self.assertEqual(plan["shipping_amount"], "0.0000")
+        self.assertEqual(plan["discount"], "0.0000")
+        self.assertEqual(plan["total"], "22200.0000")
+        self.assertEqual(
+            set(plan["validated_product_skus"]),
+            {"1143", "10229", "10496", "10358", "10062", "10225", "10265"},
+        )
+        graph_client.get_order_financial_snapshot.assert_called_once_with(actual_gid)
+        with self.Session() as db:
+            enabled_product = db.query(Product).filter(Product.sku == "10496").one()
+            self.assertTrue(enabled_product.active)
+            self.assertTrue(enabled_product.available_for_sale_gc)
+            self.assertEqual(db.get(ShopifyWebhookEvent, event_id).processing_status, "received")
+            self.assertEqual(db.query(B2CSalesOrder).count(), 0)
+            self.assertEqual(db.query(ShopifyOrderIntegration).count(), 0)
+
+        result = single_event_tool.execute_single_event(
+            self.Session,
+            event_id=event_id,
+            expected_order_gid=actual_gid,
+            confirmation=plan["confirmation"],
+            config=self.config,
+            graph_ql_client=self._financial_client(
+                order_gid=actual_gid,
+                total=Decimal("22200.0000"),
+            ),
+        )
+
+        self.assertEqual(result["status"], "PROCESSED")
+        with self.Session() as db:
+            order = db.query(B2CSalesOrder).one()
+            self.assertEqual(order.status, "draft")
+            self.assertEqual(order.channel, "Online Web")
+            self.assertEqual(order.total_amount, Decimal("22200.0000"))
+            self.assertEqual(len(order.lines), 8)
+            lines = {line.sku_snapshot: line for line in order.lines}
+            self.assertEqual(lines["10496"].unit_price_snapshot, Decimal("2400.0000"))
+            self.assertNotEqual(
+                lines["10496"].unit_price_snapshot,
+                db.query(Product).filter(Product.sku == "10496").one().b2c_price,
+            )
+            self.assertEqual(lines["10219"].line_type, "shipping")
+            self.assertEqual(lines["10219"].unit_price_snapshot, Decimal("0.0000"))
+            self.assertEqual(lines["10219"].net_line_total_snapshot, Decimal("0.0000"))
+            self.assertEqual(db.query(InventoryTransaction).count(), 0)
+
+    def test_event_two_blocks_when_10496_is_not_enabled_for_gc_sales(self) -> None:
+        self._register(webhook_id="single-event-profile-1-disabled-product")
+        payload = self._payload_1680()
+        event_id = self._register(
+            payload=payload,
+            webhook_id="single-event-profile-2-disabled-product",
+        )
+        with self.Session.begin() as db:
+            product = db.query(Product).filter(Product.sku == "10496").one()
+            product.available_for_sale_gc = False
+
+        plan = single_event_tool.dry_run_single_event(
+            self.Session,
+            event_id=event_id,
+            expected_order_gid=None,
+            config=self.config,
+            graph_ql_client=self._financial_client(
+                order_gid=payload["admin_graphql_api_id"],
+                total=Decimal("22200.0000"),
+            ),
+        )
+
+        self.assertEqual(plan["status"], "BLOCKED")
+        self.assertTrue(any("10496" in reason for reason in plan["reasons"]))
+        with self.Session() as db:
+            self.assertEqual(db.get(ShopifyWebhookEvent, event_id).processing_status, "received")
+            self.assertEqual(db.query(B2CSalesOrder).count(), 0)
+
     def test_dry_run_is_read_only_and_reports_approved_plan(self) -> None:
         event_id = self._register()
 
@@ -215,7 +414,7 @@ class ShopifyProcessSingleEventTests(unittest.TestCase):
         self.assertEqual(plan["status"], single_event_tool.READY)
         self.assertEqual(plan["channel"], "Online Web")
         self.assertEqual(plan["technical_origin"], "shopify_draft_order")
-        self.assertEqual(plan["product_sku"], "10265")
+        self.assertEqual(plan["validated_product_skus"], ["10265"])
         self.assertEqual(plan["shipping_sku"], "10219")
         self.assertEqual(plan["total"], "5800.0000")
         with self.Session() as db:
