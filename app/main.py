@@ -646,13 +646,19 @@ PRODUCTION_ORDER_REVERSE_ROLE_CODES = {"admin"}
 AUTH_PUBLIC_EXTRA_PATHS = {
     "/auth/forgot-password",
     "/auth/reset-password",
-    SHOPIFY_WEBHOOK_PATH,
 }
 templates.env.globals["can"] = can
 _shopify_worker_task: asyncio.Task | None = None
 _shopify_worker_stop: asyncio.Event | None = None
 _b2b_loyverse_worker_task: asyncio.Task | None = None
 _b2b_loyverse_worker_stop: asyncio.Event | None = None
+
+
+def _is_shopify_orders_create_webhook_request(request: Request) -> bool:
+    return (
+        request.method.upper() == "POST"
+        and request.url.path == SHOPIFY_WEBHOOK_PATH
+    )
 
 
 async def _shopify_worker_loop(stop_event: asyncio.Event) -> None:
@@ -1128,7 +1134,12 @@ async def authentication_middleware(request: Request, call_next):
     db = SessionLocal()
     try:
         _apply_branding_state(db, request)
-        if is_public_path(path) or path in AUTH_PUBLIC_EXTRA_PATHS or path == "/branding/logo":
+        if (
+            is_public_path(path)
+            or path in AUTH_PUBLIC_EXTRA_PATHS
+            or path == "/branding/logo"
+            or _is_shopify_orders_create_webhook_request(request)
+        ):
             db.rollback()
             return await call_next(request)
         current_auth = get_current_user_from_request(db, request)
@@ -1155,6 +1166,8 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             status_code=403,
         )
     if exc.status_code == 401:
+        if _is_shopify_orders_create_webhook_request(request):
+            return JSONResponse(status_code=401, content={"detail": exc.detail})
         return _auth_redirect("/login", request)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 

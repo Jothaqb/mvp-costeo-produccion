@@ -192,15 +192,95 @@ class ShopifyPhase1BTests(unittest.TestCase):
         return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
     @staticmethod
-    def _main_attribute(name: str):
+    def _main_module():
         with mock.patch("zoneinfo.ZoneInfo", return_value=timezone(timedelta(hours=-6))):
             import app.main as main_module
 
-        return getattr(main_module, name)
+        return main_module
+
+    @classmethod
+    def _main_attribute(cls, name: str):
+        return getattr(cls._main_module(), name)
 
     @classmethod
     def _webhook_route(cls):
         return cls._main_attribute("receive_shopify_orders_create_webhook")
+
+    def _full_app_request(
+        self,
+        *,
+        method: str,
+        path: str,
+        body: bytes = b"",
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        main_module = self._main_module()
+        app = main_module.app
+
+        def override_get_db():
+            db = self.Session()
+            try:
+                yield db
+            finally:
+                db.close()
+
+        request_headers = {"host": "erp.example", **(headers or {})}
+        request_headers.setdefault("content-length", str(len(body)))
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": method.upper(),
+            "scheme": "https",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "headers": [
+                (key.lower().encode(), value.encode())
+                for key, value in request_headers.items()
+            ],
+            "client": ("127.0.0.1", 1234),
+            "server": ("erp.example", 443),
+        }
+        request_sent = False
+        response_messages: list[dict] = []
+
+        async def receive():
+            nonlocal request_sent
+            if request_sent:
+                return {"type": "http.disconnect"}
+            request_sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def send(message):
+            response_messages.append(message)
+
+        previous_overrides = dict(app.dependency_overrides)
+        app.dependency_overrides[main_module.get_db] = override_get_db
+        try:
+            with mock.patch.object(main_module, "SessionLocal", self.Session), mock.patch.object(
+                main_module,
+                "any_active_users",
+                return_value=True,
+            ):
+                asyncio.run(app(scope, receive, send))
+        finally:
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(previous_overrides)
+
+        response_start = next(
+            message for message in response_messages if message["type"] == "http.response.start"
+        )
+        response_headers = {
+            key.decode().lower(): value.decode()
+            for key, value in response_start.get("headers", [])
+        }
+        response_body = b"".join(
+            message.get("body", b"")
+            for message in response_messages
+            if message["type"] == "http.response.body"
+        )
+        return response_start["status"], response_headers, response_body
 
     def _register(self, payload: dict, *, webhook_id: str = "wh-1") -> int:
         with self.Session() as db:
@@ -795,6 +875,119 @@ class ShopifyPhase1BTests(unittest.TestCase):
             event = db.query(ShopifyWebhookEvent).one()
             self.assertEqual(event.processing_status, "received")
             self.assertEqual(db.query(B2CSalesOrder).count(), 0)
+
+    def test_full_app_webhook_without_or_with_invalid_hmac_returns_401_not_login_redirect(
+        self,
+    ) -> None:
+        body = self._body(self._payload())
+        valid_headers = self._headers(body)
+        missing_hmac_headers = {
+            key: value
+            for key, value in valid_headers.items()
+            if key != "x-shopify-hmac-sha256"
+        }
+        invalid_hmac_headers = {
+            **valid_headers,
+            "x-shopify-hmac-sha256": "invalid",
+        }
+        wrong_shop_headers = {
+            **valid_headers,
+            "x-shopify-shop-domain": "other.myshopify.com",
+        }
+        wrong_topic_headers = {
+            **valid_headers,
+            "x-shopify-topic": "orders/updated",
+        }
+        env = {
+            "SHOPIFY_INTEGRATION_ENABLED": "true",
+            "SHOPIFY_BACKGROUND_PROCESSOR_ENABLED": "false",
+            "SHOPIFY_SHOP_DOMAIN": self.config.shop_domain,
+            "SHOPIFY_WEBHOOK_SECRET": self.config.webhook_secret,
+            "SHOPIFY_API_VERSION": self.config.api_version,
+        }
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            missing_status, missing_headers, _ = self._full_app_request(
+                method="POST",
+                path="/integrations/shopify/webhooks/orders-create",
+                body=body,
+                headers=missing_hmac_headers,
+            )
+            invalid_status, invalid_headers, _ = self._full_app_request(
+                method="POST",
+                path="/integrations/shopify/webhooks/orders-create",
+                body=body,
+                headers=invalid_hmac_headers,
+            )
+            wrong_shop_status, _, _ = self._full_app_request(
+                method="POST",
+                path="/integrations/shopify/webhooks/orders-create",
+                body=body,
+                headers=wrong_shop_headers,
+            )
+            wrong_topic_status, _, _ = self._full_app_request(
+                method="POST",
+                path="/integrations/shopify/webhooks/orders-create",
+                body=body,
+                headers=wrong_topic_headers,
+            )
+
+        self.assertEqual(missing_status, 401)
+        self.assertEqual(invalid_status, 401)
+        self.assertEqual(wrong_shop_status, 401)
+        self.assertEqual(wrong_topic_status, 401)
+        self.assertNotIn("location", missing_headers)
+        self.assertNotIn("location", invalid_headers)
+        with self.Session() as db:
+            self.assertEqual(db.query(ShopifyWebhookEvent).count(), 0)
+
+    def test_full_app_valid_webhook_is_persisted_once_with_worker_disabled(self) -> None:
+        body = self._body(self._payload())
+        headers = self._headers(body)
+        env = {
+            "SHOPIFY_INTEGRATION_ENABLED": "true",
+            "SHOPIFY_BACKGROUND_PROCESSOR_ENABLED": "false",
+            "SHOPIFY_SHOP_DOMAIN": self.config.shop_domain,
+            "SHOPIFY_WEBHOOK_SECRET": self.config.webhook_secret,
+            "SHOPIFY_API_VERSION": self.config.api_version,
+        }
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            first_status, _, first_body = self._full_app_request(
+                method="POST",
+                path="/integrations/shopify/webhooks/orders-create",
+                body=body,
+                headers=headers,
+            )
+            second_status, _, second_body = self._full_app_request(
+                method="POST",
+                path="/integrations/shopify/webhooks/orders-create",
+                body=body,
+                headers=headers,
+            )
+
+        self.assertEqual(first_status, 202)
+        self.assertEqual(second_status, 202)
+        self.assertFalse(json.loads(first_body)["duplicate"])
+        self.assertTrue(json.loads(second_body)["duplicate"])
+        with self.Session() as db:
+            self.assertEqual(db.query(ShopifyWebhookEvent).count(), 1)
+            self.assertEqual(db.query(B2CSalesOrder).count(), 0)
+
+    def test_full_app_only_exact_shopify_post_bypasses_login(self) -> None:
+        webhook_get_status, webhook_get_headers, _ = self._full_app_request(
+            method="GET",
+            path="/integrations/shopify/webhooks/orders-create",
+        )
+        protected_status, protected_headers, _ = self._full_app_request(
+            method="GET",
+            path="/b2b/orders",
+        )
+
+        self.assertEqual(webhook_get_status, 303)
+        self.assertIn("/login", webhook_get_headers["location"])
+        self.assertEqual(protected_status, 303)
+        self.assertIn("/login", protected_headers["location"])
 
     def test_webhook_endpoint_database_failure_never_returns_success(self) -> None:
         payload = self._payload()
